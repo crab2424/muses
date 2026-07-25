@@ -1,2 +1,4 @@
 .DS_Store
 /memory
+/node_modules
+/dist
