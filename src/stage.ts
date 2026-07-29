@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { COLORS, type StageConfig } from './config';
-import type { Derived } from './derive';
+import { laneX, type Derived } from './derive';
 
 /**
  * 奥行きで表示範囲を切るマテリアル。面もラインも同じシェーダを使う。
@@ -60,54 +60,77 @@ export class Stage {
     // 各層の面は「その層の手前端」から「両層共通の最遠端 zFar」まで描く。
     // 最遠端は層に依らず同じ奥行きなので、画面上では空中側のほうが上に出る
     // （＝最遠端の断面が奥行き一定の垂直な切り口になる）。
+    // レーンの x は laneConverge に応じて奥行きの1次式になる（0=画面上で長方形、1=現行の台形）ので、
+    // 面は「手前端の x」と「奥端の x」が異なる4頂点の平面として組む。
     const layers = [
       {
         y: 0,
-        laneX: d.groundLaneX,
+        layerF: 0,
         color: COLORS.ground,
         grid: COLORS.gridGround,
         near: d.groundNear,
+        fillAlpha: cfg.groundFillAlpha,
+        step: cfg.laneLineStepGround,
       },
       {
         y: d.skyHeight,
-        laneX: d.skyLaneX,
+        layerF: 1,
         color: COLORS.sky,
         grid: COLORS.gridSky,
         near: d.skyNear,
+        fillAlpha: cfg.skyFillAlpha,
+        step: cfg.laneLineStepSky,
       },
     ];
 
-    const step = Math.max(1, Math.round(cfg.laneLineStep));
-
     for (const L of layers) {
-      const x0 = L.laneX[0];
-      const x1 = L.laneX[L.laneX.length - 1];
       const n0 = Math.max(d.zJudge * 0.02, L.near);
       const f0 = d.zFar;
       if (f0 <= n0) continue;
 
-      // 面（帯そのもの）
-      const plane = new THREE.PlaneGeometry(x1 - x0, f0 - n0);
-      plane.rotateX(-Math.PI / 2);
-      plane.translate((x0 + x1) / 2, L.y, -(n0 + f0) / 2);
-      const planeMesh = new THREE.Mesh(
-        plane,
-        stageMaterial(L.grid, 0.2, n0, f0, cfg.hardFarEdge),
-      );
-      planeMesh.renderOrder = 0;
-      this.root.add(planeMesh);
+      const xAt = (u: number, z: number) => laneX(cfg, d, u, L.layerF, z);
+      const xLeftNear = xAt(-1, n0);
+      const xRightNear = xAt(1, n0);
+      const xLeftFar = xAt(-1, f0);
+      const xRightFar = xAt(1, f0);
 
-      // レーン境界（カメラの向きに平行 = ワールドの x 一定の直線）
-      // → 画面上では消失点に収束する。判定帯オーバーレイの垂直線とは判定線上でのみ一致する。
+      // 面（帯そのもの）。手前と奥で x が異なりうる台形/長方形の平面
+      if (L.fillAlpha > 0.001) {
+        const plane = new THREE.BufferGeometry();
+        plane.setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(
+            [
+              xLeftNear, L.y, -n0,
+              xRightNear, L.y, -n0,
+              xRightFar, L.y, -f0,
+              xLeftFar, L.y, -f0,
+            ],
+            3,
+          ),
+        );
+        plane.setIndex([0, 1, 2, 0, 2, 3]);
+        plane.computeVertexNormals();
+        const planeMesh = new THREE.Mesh(
+          plane,
+          stageMaterial(L.grid, L.fillAlpha, n0, f0, cfg.hardFarEdge),
+        );
+        planeMesh.renderOrder = 0;
+        this.root.add(planeMesh);
+      }
+
+      // レーン境界。laneConverge=1 ではカメラの向きに平行（画面上は消失点に収束）、
+      // laneConverge=0 では画面上の u が一定の直線（画面上は長方形）になる。
       // step で間引き、両端は必ず描く。
+      const step = Math.max(1, Math.round(L.step));
       const pts: number[] = [];
-      for (let k = 0; k < L.laneX.length; k++) {
-        if (k % step !== 0 && k !== L.laneX.length - 1) continue;
-        const x = L.laneX[k];
-        pts.push(x, L.y, -n0, x, L.y, -f0);
+      for (let k = 0; k <= cfg.cells; k++) {
+        if (k % step !== 0 && k !== cfg.cells) continue;
+        const u = -1 + (2 * k) / cfg.cells;
+        pts.push(xAt(u, n0), L.y, -n0, xAt(u, f0), L.y, -f0);
       }
       // 最遠端の横線（はっきりさせる場合のみ）
-      if (cfg.hardFarEdge) pts.push(x0, L.y, -f0, x1, L.y, -f0);
+      if (cfg.hardFarEdge) pts.push(xLeftFar, L.y, -f0, xRightFar, L.y, -f0);
       const lg = new THREE.BufferGeometry();
       lg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
       const lines = new THREE.LineSegments(

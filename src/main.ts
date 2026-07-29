@@ -50,6 +50,7 @@ function aspect(): number {
 
 function rebuild(): void {
   d = derive(cfg, aspect());
+  renderer.setClearColor(new THREE.Color(cfg.bgColor), 1);
   camera.fov = cfg.phiDeg;
   camera.aspect = aspect();
   camera.near = Math.max(0.01, d.zJudge * 0.01);

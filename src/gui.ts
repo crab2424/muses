@@ -83,8 +83,22 @@ export function buildGui(
 
   const fLook = gui.addFolder('見た目');
   fLook.add(cfg, 'hardFarEdge').name('最遠端をはっきり切る').onChange(R);
-  fLook.add(cfg, 'laneLineStep', [1, 2, 3, 4, 6, 12]).name('レーン線の間引き').onChange(R);
+  fLook
+    .add(cfg, 'laneConverge', 0, 1, 0.01)
+    .name('レーン収束 (0=長方形 / 1=台形)')
+    .onChange(R);
   fLook.add(cfg, 'skyFloorFromJudge').name('空中面を判定線で切る').onChange(R);
+  fLook.addColor(cfg, 'bgColor').name('背景色').onChange(R);
+  fLook.add(cfg, 'groundFillAlpha', 0, 1, 0.01).name('地上面の不透明度').onChange(R);
+  fLook.add(cfg, 'skyFillAlpha', 0, 1, 0.01).name('空中面の不透明度').onChange(R);
+  fLook
+    .add(cfg, 'laneLineStepGround', [1, 2, 3, 4, 6, 12])
+    .name('地上 レーン線の間引き')
+    .onChange(R);
+  fLook
+    .add(cfg, 'laneLineStepSky', [1, 2, 3, 4, 6, 12])
+    .name('空中 レーン線の間引き')
+    .onChange(R);
 
   const fDbg = gui.addFolder('デバッグ表示');
   fDbg.add(cfg, 'showBand').name('判定帯（枠・セル境界）');

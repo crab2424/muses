@@ -80,10 +80,22 @@ export interface StageConfig {
   // ---- 見た目 ----
   /** 最遠端をぼかさずはっきり切る */
   hardFarEdge: boolean;
-  /** レーン境界線の間引き。1 = 全部、3 = 3セルごと */
-  laneLineStep: number;
+  /**
+   * レーンの収束具合。0 = 画面上で完全な長方形（ワールド x が奥行きに比例して広がる）、
+   * 1 = 現行のワールド平行レーン（画面上は台形）。z の1次式で連続的に補間する。
+   * 0 に近いほど、判定帯オーバーレイの垂直なセル境界と描画上のレーンが判定線上以外でも一致する。
+   */
+  laneConverge: number;
+  /** レーン境界線の間引き（層別）。1 = 全部、3 = 3セルごと */
+  laneLineStepGround: number;
+  laneLineStepSky: number;
   /** 空中面を判定線で切る（判定線より手前＝時間的に以降を描かない） */
   skyFloorFromJudge: boolean;
+  /** ステージ面の塗りつぶし不透明度（層別） */
+  groundFillAlpha: number;
+  skyFillAlpha: number;
+  /** 背景色 (#rrggbb) */
+  bgColor: string;
 
   // ---- デバッグ表示 ----
   showBand: boolean;
@@ -123,8 +135,13 @@ export const DEFAULT_CONFIG: StageConfig = {
   splitHysteresis: 0.05,
 
   hardFarEdge: true,
-  laneLineStep: 3,
+  laneConverge: 1,
+  laneLineStepGround: 3,
+  laneLineStepSky: 3,
   skyFloorFromJudge: true,
+  groundFillAlpha: 0.2,
+  skyFillAlpha: 0.2,
+  bgColor: '#05060c',
 
   showBand: true,
   showJudgeLine: true,

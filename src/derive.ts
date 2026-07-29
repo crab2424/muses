@@ -57,9 +57,11 @@ export interface Derived {
   groundCellWidth: number;
   skyCellWidth: number;
 
-  /** 各層のセル境界の x 座標（判定線上で NDC の u_k に一致する。以降 x は一定） */
-  groundLaneX: number[];
-  skyLaneX: number[];
+  /** cfg.thetaDeg のクランプ後の sin/cos。laneX の計算に使う */
+  sinTheta: number;
+  cosTheta: number;
+  /** レーン x = u_k・laneK・zc(z) の係数（U・aspect・tan(φ/2)） */
+  laneK: number;
 
   /**
    * 最遠端の奥行き。**両層で共有する単一の値**。
@@ -112,6 +114,33 @@ function halfWidthAt(zc: number, aspect: number, tanHalfPhi: number): number {
 }
 
 /**
+ * レーンの x 座標。奥行き z における画面 u=u_k の位置を、
+ * cfg.laneConverge で「画面上の長方形 (0)」〜「ワールド平行 = 現行の台形 (1)」の間で連続的に補間する。
+ *
+ *   zc(z)      = (yCam − yPlane)·sinθ + z·cosθ        （視線方向距離。z の1次式）
+ *   zc(zJudge) = 同上を z=zJudge で評価した定数
+ *   x(z) = u_k・laneK・[ (1−c)・zc(z) + c・zc(zJudge) ]
+ *
+ * c=0 のとき x は zc(z) に比例して奥ほど広がる → 画面上の u が z に依らず一定＝長方形。
+ * c=1 のとき x は zc(zJudge) の定数（z に依らない）→ 現行のワールド平行レーン（画面上は台形）。
+ * yPlane は層ごとに異なる（layerF で連続的に補間できる）ので、アークが層をまたいでも破綻しない。
+ */
+export function laneX(
+  cfg: StageConfig,
+  d: Derived,
+  u: number,
+  layerF: number,
+  z: number,
+): number {
+  const yPlane = layerF * d.skyHeight;
+  const zc = (cfg.yCam - yPlane) * d.sinTheta + z * d.cosTheta;
+  const zcJudge = (cfg.yCam - yPlane) * d.sinTheta + d.zJudge * d.cosTheta;
+  const c = Math.min(1, Math.max(0, cfg.laneConverge));
+  const zcMix = zc + (zcJudge - zc) * c;
+  return u * d.laneK * zcMix;
+}
+
+/**
  * θ の有効域。判定線が地平線を越えず、かつ視野の裏側に回らない範囲。
  * 端ちょうどでは奥行きが発散するのでマージン (ψ ∈ [1.5°, 88.5°]) を取る。
  */
@@ -153,13 +182,9 @@ export function derive(cfg: StageConfig, aspectIn: number): Derived {
   const halfGround = halfWidthAt(zcGround, aspect, tanHalfPhi) * cfg.U;
   const halfSky = halfWidthAt(zcSky, aspect, tanHalfPhi) * cfg.U;
 
-  const groundLaneX: number[] = [];
-  const skyLaneX: number[] = [];
-  for (let k = 0; k <= cfg.cells; k++) {
-    const t = -1 + (2 * k) / cfg.cells; // -1 .. +1
-    groundLaneX.push(t * halfGround);
-    skyLaneX.push(t * halfSky);
-  }
+  const sinTheta = Math.sin(theta);
+  const cosTheta = Math.cos(theta);
+  const laneK = cfg.U * aspect * tanHalfPhi;
 
   // 最遠端。「地上判定線 → 地平線（画面外なら画面上端）」の何割かで指定する。
   // 地平線ちょうどでは奥行きが発散するのでマージンを取る。
@@ -197,8 +222,9 @@ export function derive(cfg: StageConfig, aspectIn: number): Derived {
     skyWidth: halfSky * 2,
     groundCellWidth: (halfGround * 2) / cfg.cells,
     skyCellWidth: (halfSky * 2) / cfg.cells,
-    groundLaneX,
-    skyLaneX,
+    sinTheta,
+    cosTheta,
+    laneK,
     zFar,
     vFarSky,
     groundNear,

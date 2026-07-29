@@ -20,55 +20,62 @@ export interface NoteRuntime {
 /**
  * ノーツの描画。
  *
- * 頂点は (x, y, ノーツ時刻) を持ち、奥行きは頂点シェーダで毎フレーム計算する:
+ * 頂点は (u, y, ノーツ時刻) を持つ。u はレーン内の符号付き位置（-1〜+1、判定帯の u_k と同じ座標系）。
+ * 奥行きとワールド x は頂点シェーダで毎フレーム計算する:
  *
- *   depth = z_j + (aTime − songTime) · aSpeed
+ *   depth  = z_j + (aTime − songTime) · speed
+ *   x(z)   = u · laneK · mix(zc(depth), zc(z_j), laneConverge)     （derive.laneX と同じ式）
  *
  * ジオメトリを動かさないので、
- *  - 層ごとにスクロール速度を変えられる（aSpeed を頂点ごとに持てる）
  *  - 長い譜面でもワールド座標が巨大にならず float32 精度が劣化しない
+ *  - laneConverge を変えても再ビルドなしで見た目が追従する（stage.ts の静的面と一貫）
  */
 export class NoteField {
   readonly root = new THREE.Group();
   runtimes: NoteRuntime[] = [];
   private stateAttr: THREE.BufferAttribute | null = null;
   private uniforms: Record<string, THREE.IUniform> = {};
-  private d!: Derived;
+  private cells = 12;
 
-  /** 層 (連続値) とセル境界インデックス (連続値) からワールド x を求める */
-  xAt(layerF: number, cellF: number): number {
-    const gi = lerpArray(this.d.groundLaneX, cellF);
-    const si = lerpArray(this.d.skyLaneX, cellF);
-    return gi + (si - gi) * layerF;
+  /** セル境界インデックス（連続値）からレーン内の符号付き位置 u (-1〜+1) を求める */
+  uAt(cellF: number): number {
+    return -1 + (2 * cellF) / this.cells;
   }
 
-  yAt(layerF: number): number {
-    return layerF * this.d.skyHeight;
+  yAt(layerF: number, skyHeight: number): number {
+    return layerF * skyHeight;
   }
 
   build(cfg: StageConfig, d: Derived, notes: Note[]): void {
     this.dispose();
-    this.d = d;
+    this.cells = cfg.cells;
 
     const pos: number[] = [];
     const col: number[] = [];
     const st: number[] = [];
     const nearArr: number[] = [];
+    const layerArr: number[] = [];
     this.runtimes = [];
 
     // 最遠端 zFar と速度は両層共通（uniform）。手前端だけは層ごとに違うので頂点属性で持つ。
     const nearOf = (layerF: number) => d.groundNear + (d.skyNear - d.groundNear) * layerF;
 
-    const push = (x: number, y: number, time: number, c: THREE.Color, nearD: number) => {
-      pos.push(x, y, time);
+    const push = (u: number, y: number, time: number, layerF: number, c: THREE.Color, nearD: number) => {
+      pos.push(u, y, time);
       col.push(c.r, c.g, c.b);
       st.push(1);
       nearArr.push(nearD);
+      layerArr.push(layerF);
     };
-    const quad = (p: [number, number, number][], c: THREE.Color, nearD: number) => {
-      // p = [左手前, 右手前, 右奥, 左奥]（3 番目の要素は z ではなく「時刻」）
+    const quad = (
+      p: [number, number, number][],
+      layerF: number,
+      c: THREE.Color,
+      nearD: number,
+    ) => {
+      // p = [左手前, 右手前, 右奥, 左奥]（1番目は u、3番目は z ではなく「時刻」）
       const idx: number[] = [0, 1, 2, 0, 2, 3];
-      for (const i of idx) push(p[i][0], p[i][1], p[i][2], c, nearD);
+      for (const i of idx) push(p[i][0], p[i][1], p[i][2], layerF, c, nearD);
     };
 
     const cG = new THREE.Color(COLORS.ground);
@@ -83,54 +90,57 @@ export class NoteField {
       if (n.kind === 'tap') {
         const layerF = n.layer === LAYER_SKY ? 1 : 0;
         const dt = thicknessWorld / d.speed / 2; // 厚みを時刻の幅に換算
-        const y = this.yAt(layerF) + d.zJudge * 0.002;
-        const x0 = this.xAt(layerF, n.cell + 0.04);
-        const x1 = this.xAt(layerF, n.cell + n.width - 0.04);
+        const y = this.yAt(layerF, d.skyHeight) + d.zJudge * 0.002;
+        const u0 = this.uAt(n.cell + 0.04);
+        const u1 = this.uAt(n.cell + n.width - 0.04);
         quad(
           [
-            [x0, y, n.time - dt],
-            [x1, y, n.time - dt],
-            [x1, y, n.time + dt],
-            [x0, y, n.time + dt],
+            [u0, y, n.time - dt],
+            [u1, y, n.time - dt],
+            [u1, y, n.time + dt],
+            [u0, y, n.time + dt],
           ],
+          layerF,
           n.layer === LAYER_SKY ? cS : cG,
           nearOf(layerF),
         );
       } else if (n.kind === 'hold') {
         const layerF = n.layer === LAYER_SKY ? 1 : 0;
         const dt = thicknessWorld / d.speed / 2;
-        const y = this.yAt(layerF) + d.zJudge * 0.002;
+        const y = this.yAt(layerF, d.skyHeight) + d.zJudge * 0.002;
         const c = n.layer === LAYER_SKY ? cS : cG;
         const nr = nearOf(layerF);
         // 本体
-        const x0 = this.xAt(layerF, n.cell + 0.16);
-        const x1 = this.xAt(layerF, n.cell + n.width - 0.16);
+        const u0 = this.uAt(n.cell + 0.16);
+        const u1 = this.uAt(n.cell + n.width - 0.16);
         quad(
           [
-            [x0, y, n.time],
-            [x1, y, n.time],
-            [x1, y, n.endTime],
-            [x0, y, n.endTime],
+            [u0, y, n.time],
+            [u1, y, n.time],
+            [u1, y, n.endTime],
+            [u0, y, n.endTime],
           ],
+          layerF,
           c.clone().multiplyScalar(0.6),
           nr,
         );
         // 始点（タップ相当の判定を持つ）
-        const hx0 = this.xAt(layerF, n.cell + 0.04);
-        const hx1 = this.xAt(layerF, n.cell + n.width - 0.04);
+        const hu0 = this.uAt(n.cell + 0.04);
+        const hu1 = this.uAt(n.cell + n.width - 0.04);
         const hy = y + d.zJudge * 0.001;
         quad(
           [
-            [hx0, hy, n.time - dt],
-            [hx1, hy, n.time - dt],
-            [hx1, hy, n.time + dt],
-            [hx0, hy, n.time + dt],
+            [hu0, hy, n.time - dt],
+            [hu1, hy, n.time - dt],
+            [hu1, hy, n.time + dt],
+            [hu0, hy, n.time + dt],
           ],
+          layerF,
           c,
           nr,
         );
       } else {
-        this.pushArc(n, push, nearOf);
+        this.pushArc(n, d, push, nearOf);
       }
 
       this.runtimes.push({
@@ -148,35 +158,56 @@ export class NoteField {
     const last = notes.length ? noteEnd(notes[notes.length - 1]) : 0;
     const beatPos: number[] = [];
     const beatNear: number[] = [];
-    const gx0 = d.groundLaneX[0];
-    const gx1 = d.groundLaneX[d.groundLaneX.length - 1];
+    const beatLayer: number[] = [];
     for (let t = 0; t < last + 4; t += b * 4) {
-      beatPos.push(gx0, d.zJudge * 0.0005, t, gx1, d.zJudge * 0.0005, t);
+      beatPos.push(-1, d.zJudge * 0.0005, t, 1, d.zJudge * 0.0005, t);
       beatNear.push(d.groundNear, d.groundNear);
+      beatLayer.push(0, 0);
     }
 
+    const laneConverge = Math.min(1, Math.max(0, cfg.laneConverge));
     this.uniforms = {
       uSongTime: { value: 0 },
       uZJudge: { value: d.zJudge },
       uSpeed: { value: d.speed },
       uFar: { value: d.zFar },
       uHardFar: { value: cfg.hardFarEdge ? 1 : 0 },
+      uYCam: { value: cfg.yCam },
+      uSkyHeight: { value: d.skyHeight },
+      uSinTheta: { value: d.sinTheta },
+      uCosTheta: { value: d.cosTheta },
+      uLaneK: { value: d.laneK },
+      uLaneConverge: { value: laneConverge },
     };
 
-    // 速度と最遠端は両層共通なので uniform。手前端だけ層ごとに違うので属性。
+    // 速度と最遠端は両層共通なので uniform。手前端・層は頂点ごとに違うので属性。
+    // x はワールド座標を焼き込まず、u (符号付きレーン位置) から毎フレーム再計算する
+    // （derive.laneX と同じ式）。laneConverge の変更にジオメトリ再構築なしで追従できる。
     const vertexCommon = /* glsl */ `
       attribute float aNear;
+      attribute float aLayerF;
       uniform float uSongTime;
       uniform float uZJudge;
       uniform float uSpeed;
+      uniform float uYCam;
+      uniform float uSkyHeight;
+      uniform float uSinTheta;
+      uniform float uCosTheta;
+      uniform float uLaneK;
+      uniform float uLaneConverge;
       varying float vDepth;
       varying float vNear;
       vec4 placeNote(vec3 p) {
-        // p = (x, y, ノーツ時刻)
+        // p = (u, y, ノーツ時刻)
         float depth = uZJudge + (p.z - uSongTime) * uSpeed;
+        float yPlane = aLayerF * uSkyHeight;
+        float zc = (uYCam - yPlane) * uSinTheta + depth * uCosTheta;
+        float zcJudge = (uYCam - yPlane) * uSinTheta + uZJudge * uCosTheta;
+        float zcMix = mix(zc, zcJudge, uLaneConverge);
+        float x = p.x * uLaneK * zcMix;
         vDepth = depth;
         vNear = aNear;
-        return projectionMatrix * viewMatrix * vec4(p.x, p.y, -depth, 1.0);
+        return projectionMatrix * viewMatrix * vec4(x, p.y, -depth, 1.0);
       }
     `;
 
@@ -186,6 +217,7 @@ export class NoteField {
     this.stateAttr = new THREE.Float32BufferAttribute(st, 1);
     geo.setAttribute('aState', this.stateAttr);
     geo.setAttribute('aNear', new THREE.Float32BufferAttribute(nearArr, 1));
+    geo.setAttribute('aLayerF', new THREE.Float32BufferAttribute(layerArr, 1));
 
     const mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -234,6 +266,7 @@ export class NoteField {
     const bgeo = new THREE.BufferGeometry();
     bgeo.setAttribute('position', new THREE.Float32BufferAttribute(beatPos, 3));
     bgeo.setAttribute('aNear', new THREE.Float32BufferAttribute(beatNear, 1));
+    bgeo.setAttribute('aLayerF', new THREE.Float32BufferAttribute(beatLayer, 1));
     const bmat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       vertexShader: vertexCommon + `void main() { gl_Position = placeNote(position); }`,
@@ -261,10 +294,13 @@ export class NoteField {
    * アークは層をまたぐため、頂点ごとに自分の layerF に応じた手前端を持たせる。
    * （速度と最遠端は層共通になったので uniform 側で処理される。以前は速度も層ごとに
    *   違ったため、セグメント単位で速度を与えると隣接セグメントで奥行きがずれて帯が裂けた）
+   * 幅もセル分数（cellF ± arc.width/2）を u に変換して持たせる。ワールド単位に焼き込まないので
+   * 頂点シェーダの zc スケーリングが左右の頂点にも一貫して効く。
    */
   private pushArc(
     arc: ArcNote,
-    push: (x: number, y: number, time: number, c: THREE.Color, nearD: number) => void,
+    d: Derived,
+    push: (u: number, y: number, time: number, layerF: number, c: THREE.Color, nearD: number) => void,
     nearOf: (layerF: number) => number,
   ): void {
     const t0 = noteStart(arc);
@@ -272,21 +308,18 @@ export class NoteField {
     const steps = Math.max(8, Math.ceil((t1 - t0) / 0.03));
     const c = new THREE.Color(0x35e8ff);
 
-    type P = { x: number; y: number; t: number; w: number; layerF: number };
+    type P = { cellF: number; y: number; t: number; layerF: number };
     const at = (t: number): P => {
       const { layerF, cellF } = arcAt(arc, t);
-      const cellW =
-        this.d.groundCellWidth + (this.d.skyCellWidth - this.d.groundCellWidth) * layerF;
       return {
-        x: this.xAt(layerF, cellF),
-        y: this.yAt(layerF) + this.d.zJudge * 0.01,
+        cellF,
+        y: this.yAt(layerF, d.skyHeight) + d.zJudge * 0.01,
         t,
-        w: (cellW * arc.width) / 2,
         layerF,
       };
     };
     const emit = (p: P, side: -1 | 1) =>
-      push(p.x + side * p.w, p.y, p.t, c, nearOf(p.layerF));
+      push(this.uAt(p.cellF + (side * arc.width) / 2), p.y, p.t, p.layerF, c, nearOf(p.layerF));
 
     let prev = at(t0);
     for (let i = 1; i <= steps; i++) {
@@ -325,10 +358,4 @@ export class NoteField {
     this.stateAttr = null;
     this.uniforms = {};
   }
-}
-
-function lerpArray(arr: number[], idx: number): number {
-  const i = Math.max(0, Math.min(arr.length - 2, Math.floor(idx)));
-  const f = idx - i;
-  return arr[i] + (arr[i + 1] - arr[i]) * f;
 }
