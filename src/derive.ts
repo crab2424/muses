@@ -62,6 +62,8 @@ export interface Derived {
   cosTheta: number;
   /** レーン x = u_k・laneK・zc(z) の係数（U・aspect・tan(φ/2)） */
   laneK: number;
+  /** 地上面の最遠端における視線方向距離。層別の収束率補正の基準（laneX 参照） */
+  zcFarGround: number;
 
   /**
    * 最遠端の奥行き。**両層で共有する単一の値**。
@@ -122,8 +124,30 @@ function halfWidthAt(zc: number, aspect: number, tanHalfPhi: number): number {
  *   x(z) = u_k・laneK・[ (1−c)・zc(z) + c・zc(zJudge) ]
  *
  * c=0 のとき x は zc(z) に比例して奥ほど広がる → 画面上の u が z に依らず一定＝長方形。
- * c=1 のとき x は zc(zJudge) の定数（z に依らない）→ 現行のワールド平行レーン（画面上は台形）。
+ * c=1 のとき x は zc(zJudge) の定数（z に依らない）→ ワールド平行レーン（画面上は台形）。
  * yPlane は層ごとに異なる（layerF で連続的に補間できる）ので、アークが層をまたいでも破綻しない。
+ *
+ * ## 最遠端の断面を長方形にするための層別補正
+ *
+ * 上式の画面上の u は
+ *
+ *   u_screen(z) = U・[ (1−c) + c・zc(z_j)/zc(z) ]
+ *
+ * となる。zc は層ごとに違う（空中面は高いぶんカメラに近く zc が小さい）ので、両層に同じ c を
+ * 使うと最遠端で空中のほうが狭くなり、断面が「上が狭い台形」になる。
+ *
+ * そこで最遠端の u_screen が層に依らず一致する条件を解くと、
+ *
+ *   u_screen(z_far) = U・[ 1 − c・(z_far − z_j)・cosθ / zc_far ]
+ *
+ * なので c を zc_far に比例させればよい:
+ *
+ *   c(layer) = laneConverge・zc_far(layer) / zc_far(地上)
+ *
+ * これで最遠端の項が層に依存しなくなり、断面は laneConverge の値によらず常に長方形になる。
+ * 地上は c(0) = laneConverge で不変、判定線上は c に関係なく必ず ±U なので、
+ * スクリーン空間の権威（判定線の位置と幅）も現状の見た目も損なわない。
+ * c は zc_far ≤ zc_far(地上) より必ず laneConverge 以下に収まる（クランプは保険）。
  */
 export function laneX(
   cfg: StageConfig,
@@ -133,9 +157,11 @@ export function laneX(
   z: number,
 ): number {
   const yPlane = layerF * d.skyHeight;
-  const zc = (cfg.yCam - yPlane) * d.sinTheta + z * d.cosTheta;
-  const zcJudge = (cfg.yCam - yPlane) * d.sinTheta + d.zJudge * d.cosTheta;
-  const c = Math.min(1, Math.max(0, cfg.laneConverge));
+  const a = (cfg.yCam - yPlane) * d.sinTheta;
+  const zc = a + z * d.cosTheta;
+  const zcJudge = a + d.zJudge * d.cosTheta;
+  const zcFar = a + d.zFar * d.cosTheta;
+  const c = Math.min(1, Math.max(0, cfg.laneConverge * (zcFar / d.zcFarGround)));
   const zcMix = zc + (zcJudge - zc) * c;
   return u * d.laneK * zcMix;
 }
@@ -197,6 +223,9 @@ export function derive(cfg: StageConfig, aspectIn: number): Derived {
   // 共有 zFar における空中面の画面位置（描画には使わない。ズレ量を GUI で見るための参考値）
   const vFarSky = Math.tan(theta - Math.atan((cfg.yCam - skyHeight) / zFar)) / tanHalfPhi;
 
+  // 層別の収束率補正の基準（laneX 参照）。zFar が確定してから求める
+  const zcFarGround = viewDist(cfg.yCam, theta, 0, zFar);
+
   // 手前側の消える位置。空中は判定線で切ると見やすい（ユーザー要望）
   const groundNear = gbNear;
   const skyNear = cfg.skyFloorFromJudge ? zJudge : sbNear;
@@ -225,6 +254,7 @@ export function derive(cfg: StageConfig, aspectIn: number): Derived {
     sinTheta,
     cosTheta,
     laneK,
+    zcFarGround,
     zFar,
     vFarSky,
     groundNear,

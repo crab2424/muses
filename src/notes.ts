@@ -178,6 +178,7 @@ export class NoteField {
       uCosTheta: { value: d.cosTheta },
       uLaneK: { value: d.laneK },
       uLaneConverge: { value: laneConverge },
+      uZcFarGround: { value: d.zcFarGround },
     };
 
     // 速度と最遠端は両層共通なので uniform。手前端・層は頂点ごとに違うので属性。
@@ -189,21 +190,27 @@ export class NoteField {
       uniform float uSongTime;
       uniform float uZJudge;
       uniform float uSpeed;
+      uniform float uFar;
       uniform float uYCam;
       uniform float uSkyHeight;
       uniform float uSinTheta;
       uniform float uCosTheta;
       uniform float uLaneK;
       uniform float uLaneConverge;
+      uniform float uZcFarGround;
       varying float vDepth;
       varying float vNear;
       vec4 placeNote(vec3 p) {
         // p = (u, y, ノーツ時刻)
         float depth = uZJudge + (p.z - uSongTime) * uSpeed;
         float yPlane = aLayerF * uSkyHeight;
-        float zc = (uYCam - yPlane) * uSinTheta + depth * uCosTheta;
-        float zcJudge = (uYCam - yPlane) * uSinTheta + uZJudge * uCosTheta;
-        float zcMix = mix(zc, zcJudge, uLaneConverge);
+        float a = (uYCam - yPlane) * uSinTheta;
+        float zc = a + depth * uCosTheta;
+        float zcJudge = a + uZJudge * uCosTheta;
+        // 最遠端の断面を長方形にするため収束率を層別に補正する（derive.laneX と同じ式）
+        float zcFar = a + uFar * uCosTheta;
+        float c = clamp(uLaneConverge * (zcFar / uZcFarGround), 0.0, 1.0);
+        float zcMix = mix(zc, zcJudge, c);
         float x = p.x * uLaneK * zcMix;
         vDepth = depth;
         vNear = aNear;
