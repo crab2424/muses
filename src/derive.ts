@@ -12,12 +12,34 @@ import type { StageConfig } from './config';
  *
  * ワールド座標系: カメラは (0, yCam, 0) にあり、俯角 θ で −z 方向を向く。
  * 「奥行き d」は水平距離であり、ワールド z = −d に対応する。
+ *
+ * 権威の所在:
+ *  - θ（視点）は**入力**。地平線 v_horizon はそこからの導出値。
+ *    以前は逆（v_horizon が入力）だったが、それだと判定帯の上下端まで θ を制約してしまい
+ *    可動域がほぼ無くなる。判定帯はスクリーン空間オーバーレイなので θ を制約すべきでない。
+ *  - 判定線の画面位置（vGroundJudge / vSkyJudge）は人間工学上の固定点。ここから
+ *    z_j と空中面の高さ h が決まる。したがって θ の有効域は判定線2本だけで決まる。
+ *
+ * スケール不変性について:
+ *  - yCam は純粋なスケール。変えても投影像は完全に不変（全ワールド寸法が比例するだけ）。
+ *  - φ は像の遠近の付き方（圧縮のカーブ）を変える。
+ *  - 最遠端と速度はワールド単位ではなく比率 farFrac と先読み秒数で指定しているので、
+ *    φ・yCam を動かしても最遠端の見た目と先読み時間は変わらない。
  */
 export interface Derived {
   aspect: number;
   tanHalfPhi: number;
-  /** カメラ俯角 (rad) */
+  /** カメラ俯角 (rad)。cfg.thetaDeg を有効域にクランプしたもの */
   theta: number;
+  /** θ の有効域 (deg)。判定線2本の画面位置と φ から決まる */
+  thetaMinDeg: number;
+  thetaMaxDeg: number;
+  /** cfg.thetaDeg が有効域外でクランプされたか */
+  thetaClamped: boolean;
+  /** 地平線の画面位置 (NDC v)。θ からの導出値。1 を超えると画面外 */
+  vHorizon: number;
+  /** 最遠端の画面位置 (NDC v)。farFrac からの導出値。※これは地上面での位置 */
+  vFar: number;
 
   /** 判定線の奥行き（層に依らない単一の値。ノーツのタイミングはこれだけで決まる） */
   zJudge: number;
@@ -39,24 +61,44 @@ export interface Derived {
   groundLaneX: number[];
   skyLaneX: number[];
 
-  /** 地上ノーツが空中判定帯の下端に隠れるまでの奥行き（実質的な可視限界） */
-  groundVisibleFar: number;
-  /** 先読み時間 (秒) */
-  readAheadSec: number;
+  /**
+   * 最遠端の奥行き。**両層で共有する単一の値**。
+   * 同じ画面行で切ると層ごとに全く別の奥行きになってしまうため、奥行きで切る。
+   */
+  zFar: number;
+  /** 空中面の最遠端が画面上のどこに来るか（zFar は共有なので vFar より上に出る。参考値） */
+  vFarSky: number;
+  /** 各層の面・ノーツが消える手前側の奥行き */
+  groundNear: number;
+  skyNear: number;
+
+  /** ワールド単位のスクロール速度。z_j も z_far も層共通なので速度も層共通 */
+  speed: number;
+  /** 先読み時間 (秒)。両層とも同じ */
+  readAhead: number;
+
+  /** カメラの far クリップに使う値 */
+  drawFar: number;
 }
 
 const deg = (d: number) => (d * Math.PI) / 180;
+const rad = (r: number) => (r * 180) / Math.PI;
 
 /** NDC の v に対応する俯角 ψ (rad) */
 export function psi(theta: number, tanHalfPhi: number, v: number): number {
   return theta - Math.atan(v * tanHalfPhi);
 }
 
-/** NDC の v と面の高さ y_p から、その面に当たる水平奥行き d を求める */
+/**
+ * NDC の v と面の高さ y_p から、その面に当たる水平奥行き d を求める。
+ *
+ * ψ ≥ 90° は「その画面行がカメラ真下より後ろを向いている」状態で、面との交点は
+ * カメラ背後になる。手前端の指定に使われるので 0（＝手前は切らない）を返す。
+ */
 export function depthAt(yCam: number, yPlane: number, psiRad: number): number {
-  const t = Math.tan(psiRad);
-  if (t <= 1e-6) return Infinity; // 地平線より上 → 面に当たらない
-  return (yCam - yPlane) / t;
+  if (psiRad <= 1e-6) return Infinity; // 地平線より上 → 面に当たらない
+  if (psiRad >= Math.PI / 2 - 1e-6) return 0; // 真下より後ろ
+  return (yCam - yPlane) / Math.tan(psiRad);
 }
 
 /** カメラ空間での視線方向距離 z_c。横幅の計算に使う */
@@ -69,11 +111,30 @@ function halfWidthAt(zc: number, aspect: number, tanHalfPhi: number): number {
   return zc * aspect * tanHalfPhi;
 }
 
-export function derive(cfg: StageConfig, aspect: number): Derived {
+/**
+ * θ の有効域。判定線が地平線を越えず、かつ視野の裏側に回らない範囲。
+ * 端ちょうどでは奥行きが発散するのでマージン (ψ ∈ [1.5°, 88.5°]) を取る。
+ */
+export function thetaRange(cfg: StageConfig, tanHalfPhi: number): [min: number, max: number] {
+  const vTop = Math.max(cfg.vSkyJudge, cfg.vGroundJudge);
+  const vBot = Math.min(cfg.vSkyJudge, cfg.vGroundJudge);
+  return [
+    rad(Math.atan(vTop * tanHalfPhi) + deg(1.5)),
+    rad(Math.atan(vBot * tanHalfPhi) + deg(88.5)),
+  ];
+}
+
+export function derive(cfg: StageConfig, aspectIn: number): Derived {
+  // アスペクト比が 0 や NaN だと全ワールド座標が NaN に伝播するので吸収しておく
+  const aspect = Number.isFinite(aspectIn) && aspectIn > 0 ? aspectIn : 1;
   const tanHalfPhi = Math.tan(deg(cfg.phiDeg) / 2);
-  // 地平線の指定から俯角が決まる
-  const theta = Math.atan(cfg.vHorizon * tanHalfPhi);
+
+  // 視点（俯角）が入力。地平線はここからの導出値
+  const [thetaMinDeg, thetaMaxDeg] = thetaRange(cfg, tanHalfPhi);
+  const thetaDeg = Math.min(thetaMaxDeg, Math.max(thetaMinDeg, cfg.thetaDeg));
+  const theta = deg(thetaDeg);
   const P = (v: number) => psi(theta, tanHalfPhi, v);
+  const vHorizon = Math.tan(theta) / tanHalfPhi;
 
   // 判定線の奥行きは地上判定線の指定から決まる（地上面は y=0）
   const zJudge = depthAt(cfg.yCam, 0, P(cfg.vGroundJudge));
@@ -100,13 +161,34 @@ export function derive(cfg: StageConfig, aspect: number): Derived {
     skyLaneX.push(t * halfSky);
   }
 
-  // 地上ノーツは空中判定帯の下端 (vSkyBot) より奥では帯に隠れる
-  const groundVisibleFar = Math.min(depthAt(cfg.yCam, 0, P(cfg.vSkyBot)), cfg.drawFar);
+  // 最遠端。「地上判定線 → 地平線（画面外なら画面上端）」の何割かで指定する。
+  // 地平線ちょうどでは奥行きが発散するのでマージンを取る。
+  const vCeil = Math.min(vHorizon - 0.02, 1);
+  const frac = Math.min(0.995, Math.max(0.02, cfg.farFrac));
+  const vFar = cfg.vGroundJudge + frac * (vCeil - cfg.vGroundJudge);
+  // これを単一のワールド奥行きに変換し、空中面も同じ奥行きで切る。
+  // → 最遠端の断面は奥行き一定の垂直な切り口になる。
+  const zFar = Math.min(depthAt(cfg.yCam, 0, P(vFar)), zJudge * 200);
+  // 共有 zFar における空中面の画面位置（描画には使わない。ズレ量を GUI で見るための参考値）
+  const vFarSky = Math.tan(theta - Math.atan((cfg.yCam - skyHeight) / zFar)) / tanHalfPhi;
+
+  // 手前側の消える位置。空中は判定線で切ると見やすい（ユーザー要望）
+  const groundNear = gbNear;
+  const skyNear = cfg.skyFloorFromJudge ? zJudge : sbNear;
+
+  // 最遠端も判定線も層共通の奥行きなので、速度も層共通で先読み時間は自動的に一致する。
+  const readAhead = Math.max(cfg.readAheadSec, 0.05);
+  const speed = (zFar - zJudge) / readAhead;
 
   return {
     aspect,
     tanHalfPhi,
     theta,
+    thetaMinDeg,
+    thetaMaxDeg,
+    thetaClamped: Math.abs(thetaDeg - cfg.thetaDeg) > 1e-6,
+    vHorizon,
+    vFar,
     zJudge,
     skyHeight,
     groundBandDepth: [gbNear, gbFar],
@@ -117,7 +199,12 @@ export function derive(cfg: StageConfig, aspect: number): Derived {
     skyCellWidth: (halfSky * 2) / cfg.cells,
     groundLaneX,
     skyLaneX,
-    groundVisibleFar,
-    readAheadSec: (groundVisibleFar - zJudge) / cfg.scrollSpeed,
+    zFar,
+    vFarSky,
+    groundNear,
+    skyNear,
+    speed,
+    readAhead,
+    drawFar: zFar * 1.15,
   };
 }

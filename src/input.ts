@@ -42,6 +42,19 @@ export class InputManager {
   private cfg: StageConfig;
   private el: HTMLElement;
   private nowSec: () => number;
+  /** 直近1秒に届いたポインタイベントの時刻。入力のポーリングレート実測用 */
+  private evTimes: number[] = [];
+
+  /**
+   * 直近1秒間のポインタイベント数。
+   * 音ゲーでは描画レートより「指の位置が何Hzで届くか」が判定精度を決めるので、
+   * 120Hz 対応端末で実際に 120 出ているかをここで確認する。
+   */
+  get eventRate(): number {
+    const now = performance.now();
+    while (this.evTimes.length && now - this.evTimes[0] > 1000) this.evTimes.shift();
+    return this.evTimes.length;
+  }
 
   constructor(el: HTMLElement, cfg: StageConfig, nowSec: () => number) {
     this.el = el;
@@ -89,6 +102,7 @@ export class InputManager {
 
   private onDown = (e: PointerEvent) => {
     e.preventDefault();
+    this.evTimes.push(performance.now());
     const { u, v } = this.ndc(e);
     const layer = this.layerOf(v, null);
     const cell = this.cellOf(u);
@@ -103,6 +117,7 @@ export class InputManager {
     const c = this.contacts.get(e.pointerId);
     if (!c) return;
     e.preventDefault();
+    this.evTimes.push(performance.now());
     const { u, v } = this.ndc(e);
     const layer = this.layerOf(v, c.layer);
     const cell = this.cellOf(u);

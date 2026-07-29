@@ -52,8 +52,8 @@ function rebuild(): void {
   d = derive(cfg, aspect());
   camera.fov = cfg.phiDeg;
   camera.aspect = aspect();
-  camera.near = 0.1;
-  camera.far = cfg.drawFar * 2;
+  camera.near = Math.max(0.01, d.zJudge * 0.01);
+  camera.far = d.drawFar * 1.5;
   camera.position.set(0, cfg.yCam, 0);
   camera.rotation.set(-d.theta, 0, 0);
   camera.updateProjectionMatrix();
@@ -67,7 +67,7 @@ function rebuild(): void {
 }
 
 function rechart(): void {
-  chart = buildDemoChart(cfg.bpm, CHART_SECONDS);
+  chart = buildDemoChart(cfg.bpm, CHART_SECONDS, cfg.cells);
   rebuild();
 }
 
@@ -95,11 +95,12 @@ input.onEnter = (e) => {
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 250));
 
-chart = buildDemoChart(cfg.bpm, CHART_SECONDS);
+chart = buildDemoChart(cfg.bpm, CHART_SECONDS, cfg.cells);
 resize();
 
 // ---- ループ ----
 let fps = 60;
+let fpsPeak = 0;
 let lastFrame = performance.now();
 let hudAcc = 0;
 
@@ -117,10 +118,12 @@ function frame(): void {
   if (clock.running) judge.update(t, input);
 
   renderer.render(scene, camera);
-  overlay.draw(cfg, input, t);
+  overlay.draw(cfg, d, input, t);
 
   hudAcc += dt;
   if (hudAcc > 0.1) {
+    // 起動直後や一時停止明けの外れ値を拾わないよう、平滑化後の値でピークを取る
+    if (clock.running && t > 2) fpsPeak = Math.max(fpsPeak, fps);
     hudAcc = 0;
     const s = judge.score;
     hud.innerHTML =
@@ -132,13 +135,20 @@ function frame(): void {
         ? ` ${s.lastMs > 0 ? '+' : ''}${s.lastMs.toFixed(0)}ms`
         : '') +
       `</span>`;
-    refresh(d, { fps, latencyMs: clock.outputLatencyMs, aspect: aspect() });
+    refresh(d, {
+      fps,
+      fpsPeak,
+      latencyMs: clock.outputLatencyMs,
+      eventRate: input.eventRate,
+      aspect: aspect(),
+    });
   }
 }
 
 startBtn.addEventListener('click', async () => {
   startScreen.style.display = 'none';
   await clock.start(cfg.bpm);
+  fpsPeak = 0;
   rechart();
 });
 

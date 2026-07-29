@@ -1,10 +1,16 @@
 import { LAYER_GROUND, LAYER_SKY, type Layer } from './config';
 
+/**
+ * ノーツは `cell` から始まり `width` セル分の幅を占める。
+ * 判定は「[cell, cell + width) のいずれかのセルに新規接触が入った」で成立する。
+ */
 export interface TapNote {
   kind: 'tap';
   time: number;
   layer: Layer;
   cell: number;
+  /** 占有するセル数 (整数, 1 以上) */
+  width: number;
 }
 
 export interface HoldNote {
@@ -13,9 +19,10 @@ export interface HoldNote {
   endTime: number;
   layer: Layer;
   cell: number;
+  width: number;
 }
 
-/** アーク制御点。layerF は 0=地上 / 1=空中 の連続値、cellF はセル番号の連続値 */
+/** アーク制御点。layerF は 0=地上 / 1=空中 の連続値、cellF はセル境界インデックスの連続値 */
 export interface ArcPoint {
   time: number;
   layerF: number;
@@ -25,6 +32,8 @@ export interface ArcPoint {
 export interface ArcNote {
   kind: 'arc';
   points: ArcPoint[];
+  /** 帯の幅（セル数単位、小数可） */
+  width: number;
 }
 
 export type Note = TapNote | HoldNote | ArcNote;
@@ -63,71 +72,81 @@ export function arcAt(arc: ArcNote, t: number): { layerF: number; cellF: number 
 
 /**
  * デモ譜面。ステージUIの見え方を確認するのが目的なので、
- * 「両層の同時押し」「層をまたぐアーク」「ホールド」を一通り含む 32 拍のループ。
+ * 「両層の同時押し」「層をまたぐアーク」「ホールド」「ノーツ幅の違い」を一通り含む 32 拍のループ。
  */
-export function buildDemoChart(bpm: number, durationSec: number): Note[] {
+export function buildDemoChart(bpm: number, durationSec: number, cells: number): Note[] {
   const b = 60 / bpm;
   const notes: Note[] = [];
   const loopBeats = 32;
   const loopSec = loopBeats * b;
   const loops = Math.ceil(durationSec / loopSec);
+  // 12 セル基準で書いた譜面を任意のセル数へスケールする
+  const S = cells / 12;
+  const C = (c: number) => Math.max(0, Math.min(cells - 1, Math.round(c * S)));
+  const W = (w: number) => Math.max(1, Math.min(cells, Math.round(w * S)));
+  const F = (c: number) => c * S; // アーク用（小数のまま）
 
   for (let L = 0; L < loops; L++) {
     const t0 = 3 + L * loopSec; // 開始 3 秒の余白
 
-    // 0–7 拍: 地上の階段
+    // 0–7 拍: 地上の階段。幅 2 セル
     for (let i = 0; i < 8; i++) {
-      notes.push({ kind: 'tap', time: t0 + i * b, layer: LAYER_GROUND, cell: 2 + i });
+      notes.push({ kind: 'tap', time: t0 + i * b, layer: LAYER_GROUND, cell: C(1 + i), width: W(2) });
     }
-    // 8–11 拍: 空中の 8 分刻み（3 連ではなく 4 分割 → 12 マスの利点確認）
+    // 8–11 拍: 空中の 8 分刻み。幅 3 セルの太いノーツ
     for (let i = 0; i < 8; i++) {
       notes.push({
         kind: 'tap',
         time: t0 + (8 + i * 0.5) * b,
         layer: LAYER_SKY,
-        cell: i % 2 === 0 ? 3 : 8,
+        cell: C(i % 2 === 0 ? 1 : 8),
+        width: W(3),
       });
     }
-    // 12–15 拍: 両層同時押し（左右対称）
+    // 12–15 拍: 両層同時押し（左右対称）。片方は幅 1 の細ノーツ
     for (let i = 0; i < 4; i++) {
       const t = t0 + (12 + i) * b;
-      notes.push({ kind: 'tap', time: t, layer: LAYER_GROUND, cell: 1 + i });
-      notes.push({ kind: 'tap', time: t, layer: LAYER_SKY, cell: 10 - i });
+      notes.push({ kind: 'tap', time: t, layer: LAYER_GROUND, cell: C(i), width: W(2) });
+      notes.push({ kind: 'tap', time: t, layer: LAYER_SKY, cell: C(11 - i), width: W(1) });
     }
-    // 16–19 拍: 地上ホールド + 空中の 3 連符（12 が 3 で割り切れる確認）
+    // 16–19 拍: 地上の幅広ホールド + 空中の 3 連符
     notes.push({
       kind: 'hold',
       time: t0 + 16 * b,
       endTime: t0 + 20 * b,
       layer: LAYER_GROUND,
-      cell: 5,
+      cell: C(4),
+      width: W(4),
     });
     for (let i = 0; i < 6; i++) {
       notes.push({
         kind: 'tap',
         time: t0 + (16 + (i * 4) / 6) * b,
         layer: LAYER_SKY,
-        cell: i * 2,
+        cell: C(i * 2),
+        width: W(2),
       });
     }
     // 20–27 拍: 層をまたぐアーク（地上 → 空中 → 地上）
     notes.push({
       kind: 'arc',
+      width: 1.2 * S,
       points: [
-        { time: t0 + 20 * b, layerF: 0, cellF: 1.5 },
-        { time: t0 + 22 * b, layerF: 0, cellF: 4.5 },
-        { time: t0 + 24 * b, layerF: 1, cellF: 7.5 },
-        { time: t0 + 26 * b, layerF: 1, cellF: 9.5 },
-        { time: t0 + 28 * b, layerF: 0, cellF: 6.5 },
+        { time: t0 + 20 * b, layerF: 0, cellF: F(1.5) },
+        { time: t0 + 22 * b, layerF: 0, cellF: F(4.5) },
+        { time: t0 + 24 * b, layerF: 1, cellF: F(7.5) },
+        { time: t0 + 26 * b, layerF: 1, cellF: F(9.5) },
+        { time: t0 + 28 * b, layerF: 0, cellF: F(6.5) },
       ],
     });
     // 20–27 拍: 反対側にもう1本（交差の見え方確認）
     notes.push({
       kind: 'arc',
+      width: 1.2 * S,
       points: [
-        { time: t0 + 21 * b, layerF: 1, cellF: 10.5 },
-        { time: t0 + 24 * b, layerF: 0.5, cellF: 5.5 },
-        { time: t0 + 27 * b, layerF: 0, cellF: 0.5 },
+        { time: t0 + 21 * b, layerF: 1, cellF: F(10.5) },
+        { time: t0 + 24 * b, layerF: 0.5, cellF: F(5.5) },
+        { time: t0 + 27 * b, layerF: 0, cellF: F(0.5) },
       ],
     });
     // 28–31 拍: 地上の 16 分の詰め（高速時の視認性確認）
@@ -136,7 +155,8 @@ export function buildDemoChart(bpm: number, durationSec: number): Note[] {
         kind: 'tap',
         time: t0 + (28 + i * 0.25) * b,
         layer: LAYER_GROUND,
-        cell: i % 12,
+        cell: C((i % 6) * 2),
+        width: W(2),
       });
     }
   }

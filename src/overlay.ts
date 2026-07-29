@@ -1,9 +1,11 @@
 import { COLORS, LAYER_GROUND, LAYER_SKY, type Layer, type StageConfig } from './config';
+import type { Derived } from './derive';
 import type { InputManager } from './input';
 
 export interface HitFlash {
   layer: Layer;
   cell: number;
+  width: number;
   born: number;
   kind: 'perfect' | 'good' | 'miss';
 }
@@ -40,17 +42,19 @@ export class Overlay {
     return ((1 - v) / 2) * this.h;
   }
 
-  draw(cfg: StageConfig, input: InputManager, now: number): void {
+  draw(cfg: StageConfig, d: Derived, input: InputManager, now: number): void {
     const c = this.ctx;
     c.clearRect(0, 0, this.w, this.h);
 
-    if (cfg.showHorizon) {
+    // 地平線と最遠端は θ・farFrac からの導出値なので Derived から取る。
+    // 地平線は θ が大きいと画面外 (v > 1) に出るので、そのときは描かない。
+    if (cfg.showHorizon && d.vHorizon <= 1) {
       c.strokeStyle = 'rgba(120,150,220,0.35)';
       c.lineWidth = 1;
       c.setLineDash([6, 6]);
-      this.hline(cfg.vHorizon);
+      this.hline(d.vHorizon);
       c.setLineDash([]);
-      this.label('horizon', this.px(-cfg.U), this.py(cfg.vHorizon) - 4, 'rgba(140,170,230,0.6)');
+      this.label('horizon', this.px(cfg.U) - 60, this.py(d.vHorizon) - 4, 'rgba(140,170,230,0.6)');
     }
 
     // 空中レイヤー
@@ -84,10 +88,10 @@ export class Overlay {
       c.setLineDash([3, 7]);
       this.hline(cfg.vSplit);
       c.setLineDash([]);
-      this.label('y_split', this.px(-cfg.U), this.py(cfg.vSplit) - 4, 'rgba(200,205,235,0.55)');
+      this.label('y_split', 0, this.py(cfg.vSplit) - 4, 'rgba(200,205,235,0.55)');
     }
 
-    if (cfg.showTouchDebug) this.touches(cfg, input, now);
+    if (cfg.showTouchDebug) this.touches(input);
 
     // 判定フラッシュ
     this.flashes = this.flashes.filter((f) => now - f.born >= 0 && now - f.born < 0.45);
@@ -95,7 +99,7 @@ export class Overlay {
       const k = Math.min(1, Math.max(0, (now - f.born) / 0.45));
       const vJ = f.layer === LAYER_SKY ? cfg.vSkyJudge : cfg.vGroundJudge;
       const x0 = this.px(this.cellU(cfg, f.cell));
-      const x1 = this.px(this.cellU(cfg, f.cell + 1));
+      const x1 = this.px(this.cellU(cfg, f.cell + f.width));
       const y = this.py(vJ);
       const col =
         f.kind === 'perfect' ? '255,255,255' : f.kind === 'good' ? '120,220,255' : '255,80,80';
@@ -127,60 +131,69 @@ export class Overlay {
     const xL = this.px(-cfg.U);
     const xR = this.px(cfg.U);
 
-    // 帯の背景
-    const g = c.createLinearGradient(0, yT, 0, yB);
-    g.addColorStop(0, `rgba(${rgb},0.02)`);
-    g.addColorStop((yJ - yT) / (yB - yT), `rgba(${rgb},0.13)`);
-    g.addColorStop(1, `rgba(${rgb},0.02)`);
-    c.fillStyle = g;
-    c.fillRect(xL, yT, xR - xL, yB - yT);
+    if (cfg.showBand) {
+      // 帯の背景
+      const g = c.createLinearGradient(0, yT, 0, yB);
+      const stop = Math.min(1, Math.max(0, (yJ - yT) / (yB - yT || 1)));
+      g.addColorStop(0, `rgba(${rgb},0.02)`);
+      g.addColorStop(stop, `rgba(${rgb},0.13)`);
+      g.addColorStop(1, `rgba(${rgb},0.02)`);
+      c.fillStyle = g;
+      c.fillRect(xL, yT, xR - xL, yB - yT);
+    }
 
-    // アクティブセルのハイライト
+    // アクティブセルのハイライト（帯を消していても押した位置は出す）
     for (let k = 0; k < cfg.cells; k++) {
       if (!input.isOccupied(layer, k)) continue;
+      const a = this.px(this.cellU(cfg, k));
+      const b = this.px(this.cellU(cfg, k + 1));
       c.fillStyle = `rgba(${rgb},0.30)`;
-      c.fillRect(this.px(this.cellU(cfg, k)), yT, this.px(this.cellU(cfg, k + 1)) - this.px(this.cellU(cfg, k)), yB - yT);
+      c.fillRect(a, yT, b - a, yB - yT);
     }
 
-    // セル境界（垂直。消失点へは収束させない）
-    c.strokeStyle = `rgba(${rgb},0.38)`;
-    c.lineWidth = 1;
-    c.beginPath();
-    for (let k = 0; k <= cfg.cells; k++) {
-      const x = this.px(this.cellU(cfg, k));
-      c.moveTo(x, yT);
-      c.lineTo(x, yB);
+    if (cfg.showBand) {
+      // セル境界（垂直。消失点へは収束させない）
+      c.strokeStyle = `rgba(${rgb},0.38)`;
+      c.lineWidth = 1;
+      c.beginPath();
+      for (let k = 0; k <= cfg.cells; k++) {
+        const x = this.px(this.cellU(cfg, k));
+        c.moveTo(x, yT);
+        c.lineTo(x, yB);
+      }
+      c.stroke();
+
+      // 帯の上下端
+      c.strokeStyle = `rgba(${rgb},0.5)`;
+      c.beginPath();
+      c.moveTo(xL, yT);
+      c.lineTo(xR, yT);
+      c.moveTo(xL, yB);
+      c.lineTo(xR, yB);
+      c.stroke();
     }
-    c.stroke();
 
-    // 帯の上下端
-    c.strokeStyle = `rgba(${rgb},0.5)`;
-    c.beginPath();
-    c.moveTo(xL, yT);
-    c.lineTo(xR, yT);
-    c.moveTo(xL, yB);
-    c.lineTo(xR, yB);
-    c.stroke();
+    if (cfg.showJudgeLine) {
+      c.strokeStyle = css;
+      c.lineWidth = 2.5;
+      c.shadowColor = css;
+      c.shadowBlur = 12;
+      c.beginPath();
+      c.moveTo(xL, yJ);
+      c.lineTo(xR, yJ);
+      c.stroke();
+      c.shadowBlur = 0;
+    }
 
-    // 判定線
-    c.strokeStyle = css;
-    c.lineWidth = 2.5;
-    c.shadowColor = css;
-    c.shadowBlur = 12;
-    c.beginPath();
-    c.moveTo(xL, yJ);
-    c.lineTo(xR, yJ);
-    c.stroke();
-    c.shadowBlur = 0;
-
-    // セル番号
+    // セル番号（画面外にはみ出さないようクランプする）
     if (cfg.showCellIndex) {
       c.fillStyle = `rgba(${rgb},0.75)`;
       c.font = '10px ui-monospace, Menlo, monospace';
       c.textAlign = 'center';
+      const y = Math.min(this.h - 3, Math.max(10, yB - 4));
       for (let k = 0; k < cfg.cells; k++) {
         const x = (this.px(this.cellU(cfg, k)) + this.px(this.cellU(cfg, k + 1))) / 2;
-        c.fillText(String(k), x, yB - 4);
+        c.fillText(String(k), x, y);
       }
       c.textAlign = 'left';
     }
@@ -200,7 +213,7 @@ export class Overlay {
     input.ripples = input.ripples.filter((r) => now - r.born >= 0 && now - r.born < 0.3);
   }
 
-  private touches(cfg: StageConfig, input: InputManager, _now: number): void {
+  private touches(input: InputManager): void {
     const c = this.ctx;
     for (const t of input.contacts.values()) {
       const x = this.px(t.u);
@@ -214,7 +227,6 @@ export class Overlay {
       c.font = '10px ui-monospace, Menlo, monospace';
       c.fillText(`L${t.layer} C${t.cell}`, x + 30, y + 4);
     }
-    void cfg;
   }
 
   private hline(v: number): void {
@@ -228,6 +240,6 @@ export class Overlay {
   private label(text: string, x: number, y: number, color: string): void {
     this.ctx.fillStyle = color;
     this.ctx.font = '10px ui-monospace, Menlo, monospace';
-    this.ctx.fillText(text, x + 4, y);
+    this.ctx.fillText(text, x + 4, Math.max(10, y));
   }
 }
