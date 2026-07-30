@@ -15,6 +15,13 @@ namespace Muses.Notes
         [SerializeField] private Shader noteShader;
         [SerializeField] private Shader beatLineShader;
 
+        // StageView が GroundPlane/GroundLines/SkyPlane/SkyLines に 3000〜3003 を使う。
+        // Notes側にキューを明示しないとデフォルト(3000)でGroundPlaneと同キューになり、
+        // 距離ソート次第でほぼ不透明なGroundPlaneが加算合成のノーツを覆い隠してしまう
+        // （groundFillAlpha=1 のときに顕著）。必ずステージより後ろに描画されるよう固定する。
+        private const int NotesRenderQueue = 3010;
+        private const int BeatLinesRenderQueue = 3011;
+
         public List<NoteRuntime> Runtimes { get; private set; } = new();
 
         private GameObject notesGo;
@@ -134,6 +141,7 @@ namespace Muses.Notes
             notesFilter.sharedMesh = notesMesh;
             bool needsMat = notesRenderer.sharedMaterial == null || notesRenderer.sharedMaterial.shader != noteShader;
             notesMaterial = needsMat ? new Material(noteShader) { name = "Notes" } : notesRenderer.sharedMaterial;
+            notesMaterial.renderQueue = NotesRenderQueue;
             notesRenderer.sharedMaterial = notesMaterial;
         }
 
@@ -155,6 +163,7 @@ namespace Muses.Notes
             beatFilter.sharedMesh = beatMesh;
             bool needsMat = beatRenderer.sharedMaterial == null || beatRenderer.sharedMaterial.shader != beatLineShader;
             beatMaterial = needsMat ? new Material(beatLineShader) { name = "BeatLines" } : beatRenderer.sharedMaterial;
+            beatMaterial.renderQueue = BeatLinesRenderQueue;
             beatRenderer.sharedMaterial = beatMaterial;
         }
 
