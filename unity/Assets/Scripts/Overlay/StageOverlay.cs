@@ -28,6 +28,7 @@ namespace Muses.Overlay
     {
         [SerializeField] private StageController stageController;
         [SerializeField] private TouchInputManager input;
+        [SerializeField] private bool showHud = true;
 
         /// <summary>Judge はプレーンなC#クラス（MonoBehaviourではない）なので Inspector には出せない。
         /// GameController が生成後にコードから設定する。</summary>
@@ -35,6 +36,15 @@ namespace Muses.Overlay
 
         private Camera cam;
         private static Material lineMaterial;
+        private float hudSongTime;
+        private float hudFps;
+
+        /// <summary>main.ts の frame() 内 HUD 更新相当。GameController が毎フレーム呼ぶ。</summary>
+        public void SetHudTime(float songTime, float fps)
+        {
+            hudSongTime = songTime;
+            hudFps = fps;
+        }
 
         private void Awake() => cam = GetComponent<Camera>();
 
@@ -218,6 +228,8 @@ namespace Muses.Overlay
             var d = stageController.Derived;
             var style = new GUIStyle { fontSize = 10, normal = { textColor = Color.white } };
 
+            if (showHud) DrawHud();
+
             if (cfg.showHorizon && d.vHorizon <= 1f)
                 Label("horizon", PxX(cfg.U) - 60, Screen.height - PxY(d.vHorizon) - 14,
                     new Color(140 / 255f, 170 / 255f, 230 / 255f, 0.6f), style);
@@ -241,6 +253,27 @@ namespace Muses.Overlay
                     GUI.Label(new Rect(x + 30, Screen.height - y - 6, 100, 20), $"L{(int)t.layer} C{t.cell}", style);
                 }
             }
+        }
+
+        /// <summary>移植元: web-prototype/src/main.ts の frame() 内 HUD更新（#hud要素の innerHTML 相当）</summary>
+        private void DrawHud()
+        {
+            if (Judge == null) return;
+            var s = Judge.Score;
+
+            GUI.Box(new Rect(8, 8, 190, 78), "");
+
+            var line = new GUIStyle { fontSize = 12, normal = { textColor = Color.white } };
+            var judgeLine = new GUIStyle(line) { normal = { textColor = new Color(0.91f, 0.94f, 1f) } };
+
+            string msSuffix = "";
+            if (s.lastJudge == "PERFECT" || s.lastJudge == "GOOD")
+                msSuffix = $" {(s.lastMs > 0 ? "+" : "")}{s.lastMs:F0}ms";
+
+            GUI.Label(new Rect(16, 12, 180, 18), $"t {hudSongTime:F2}s   {hudFps:F0}fps", line);
+            GUI.Label(new Rect(16, 30, 180, 18), $"COMBO {s.combo} (max {s.maxCombo})", line);
+            GUI.Label(new Rect(16, 48, 180, 18), $"P {s.perfect} / G {s.good} / M {s.miss}", line);
+            GUI.Label(new Rect(16, 66, 180, 18), $"{s.lastJudge}{msSuffix}", judgeLine);
         }
 
         private void DrawCellIndex(StageConfig cfg, float vBot, GUIStyle style)

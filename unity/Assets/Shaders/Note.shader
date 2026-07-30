@@ -1,5 +1,8 @@
 // タップ/ホールド/アークの本体。移植元: web-prototype/src/notes.ts のノーツ用 ShaderMaterial。
-// 加算合成（AdditiveBlending）。頂点色×state、奥行きの遠端/近端フェード。
+// 通常のアルファブレンド。頂点色×state、奥行きの遠端/近端フェード。
+// Web版は加算合成(AdditiveBlending)だが、Unity側の実機チューニング設定は明背景(#a0b298)+
+// 不透明なステージ面が前提のため、加算だと白飛びしてコントラストが低く見えていた
+// （NoteBeatLine.shaderと同じ通常アルファブレンドに揃えて解消）。
 Shader "Muses/Note"
 {
     Properties
@@ -23,7 +26,7 @@ Shader "Muses/Note"
 
         Pass
         {
-            Blend One One
+            Blend SrcAlpha OneMinusSrcAlpha
             ZWrite Off
             Cull Off
 

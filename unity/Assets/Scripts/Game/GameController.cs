@@ -31,6 +31,7 @@ namespace Muses.Game
         private SongClock clock;
         private Judge judge;
         private List<Chart.Note> chart = new();
+        private float fps = 60f;
 
         private void Awake()
         {
@@ -69,9 +70,14 @@ namespace Muses.Game
         private void Update()
         {
             float t = clock.SongTime;
+            float dt = Time.deltaTime;
+            fps += (1f / Mathf.Max(dt, 1e-4f) - fps) * 0.08f;
+
             clock.TickMetronome(stageController.Config.bpm, stageController.Config.metronome);
             noteView.SetSongTime(t);
             if (clock.Running) judge.Update(t, input);
+
+            if (overlay != null) overlay.SetHudTime(t, fps);
         }
     }
 }
