@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 using Muses.Stage;
 using Muses.TouchInput;
 using Muses.Gameplay;
@@ -9,16 +10,19 @@ namespace Muses.Overlay
     /// 判定帯のスクリーン空間オーバーレイ。移植元: web-prototype/src/overlay.ts。
     ///
     /// 設計メモの帰結どおり、判定帯はワールド空間のポリゴンではなくスクリーン空間で描く。
-    /// 図形は GL immediate mode（OnRenderObject）、セル番号・ラベル・タッチデバッグの文字は
-    /// OnGUI で描画する。
+    /// 図形は GL immediate mode、セル番号・ラベル・タッチデバッグの文字は OnGUI で描画する。
     ///
     /// 簡略化した点（TS版との差分）:
     /// - 地平線の破線は実線で近似している。
     /// - 判定帯背景の3色グラデーションは、判定線を境に上下2枚の単色矩形で近似している。
     /// - 判定線のシャドウブラー（発光っぽい見た目）は省略している。
-    /// GL immediate mode の material は "Hidden/Internal-Colored" を使う、Unityのデバッグ描画で
-    /// 広く使われる標準パターン。URPでも動作するはずだが、映らない場合は要確認。
+    ///
+    /// GL描画のフック: 当初 OnRenderObject を使っていたが、Unity 6 の URP（Render Graph有効時）では
+    /// OnRenderObject が実カメラのレンダーパスから呼ばれず Camera.current も設定されないことを実機で確認した
+    /// （呼ばれても Editor の GUIView.ProcessEvent 経由の別コンテキストで、描画対象カメラと一致しない）。
+    /// 代わりに RenderPipelineManager.endCameraRendering を使う（URP公式のカメラ描画完了後フック）。
     /// </summary>
+    [ExecuteAlways]
     [RequireComponent(typeof(Camera))]
     public class StageOverlay : MonoBehaviour
     {
@@ -33,6 +37,15 @@ namespace Muses.Overlay
         private static Material lineMaterial;
 
         private void Awake() => cam = GetComponent<Camera>();
+
+        private void OnEnable() => RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
+        private void OnDisable() => RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
+
+        private void OnEndCameraRendering(ScriptableRenderContext context, Camera renderedCamera)
+        {
+            if (renderedCamera != cam) return;
+            DrawOverlay();
+        }
 
         private static void EnsureMaterial()
         {
@@ -49,9 +62,9 @@ namespace Muses.Overlay
         private static float PxY(float v) => (v + 1f) / 2f * Screen.height; // y-up（GL.LoadPixelMatrixに合わせる）
         private static float CellU(StageConfig cfg, float cellIdx) => -cfg.U + 2f * cfg.U * cellIdx / cfg.cells;
 
-        private void OnRenderObject()
+        private void DrawOverlay()
         {
-            if (Camera.current != cam || stageController == null || input == null) return;
+            if (stageController == null || input == null) return;
             var cfg = stageController.Config;
             var d = stageController.Derived;
             float now = Time.time;

@@ -515,13 +515,13 @@ MonoBehaviour:
     groundFillAlpha: 1
     skyFillAlpha: 0.05
     bgColor: '#a0b298'
-    showBand: 0
+    showBand: 1
     showJudgeLine: 1
     showSplitLine: 0
     showLaneFloor: 1
     showHorizon: 1
     showCellIndex: 0
-    showTouchDebug: 0
+    showTouchDebug: 1
     metronome: 0
 --- !u!4 &548285725
 Transform:
