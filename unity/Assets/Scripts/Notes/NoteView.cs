@@ -1,0 +1,178 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Rendering;
+using Muses.Stage;
+
+namespace Muses.Notes
+{
+    /// <summary>
+    /// ノーツの Mesh/Material 管理。頂点生成は <see cref="NoteGeometry"/> が担当する。
+    /// 移植元: web-prototype/src/notes.ts の NoteField（THREE依存部分を除く）。
+    /// </summary>
+    [ExecuteAlways]
+    public class NoteView : MonoBehaviour
+    {
+        [SerializeField] private Shader noteShader;
+        [SerializeField] private Shader beatLineShader;
+
+        public List<NoteRuntime> Runtimes { get; private set; } = new();
+
+        private GameObject notesGo;
+        private MeshFilter notesFilter;
+        private MeshRenderer notesRenderer;
+        private Mesh notesMesh;
+        private Material notesMaterial;
+        private Vector2[] notesUv0;
+
+        private GameObject beatGo;
+        private MeshFilter beatFilter;
+        private MeshRenderer beatRenderer;
+        private Mesh beatMesh;
+        private Material beatMaterial;
+
+        public void Build(StageConfig cfg, in Derived d, List<Chart.Note> notes)
+        {
+            if (noteShader == null || beatLineShader == null)
+            {
+                Debug.LogWarning("NoteView: シェーダが未設定です。", this);
+                return;
+            }
+
+            var data = NoteGeometry.Build(cfg, d, notes);
+            Runtimes = data.runtimes;
+
+            EnsureNotesObject();
+            notesMesh.Clear();
+            notesMesh.SetVertices(data.positions);
+            notesMesh.SetColors(data.colors);
+            notesUv0 = Pack(data.state, data.near);
+            notesMesh.SetUVs(0, notesUv0);
+            notesMesh.SetUVs(1, Pack(data.layerF, null));
+            var tris = new int[data.positions.Length];
+            for (int i = 0; i < tris.Length; i++) tris[i] = i;
+            notesMesh.SetTriangles(tris, 0);
+            notesMesh.RecalculateBounds();
+            notesRenderer.enabled = data.positions.Length > 0;
+
+            EnsureBeatObject();
+            beatMesh.Clear();
+            beatMesh.SetVertices(data.beatPositions);
+            beatMesh.SetUVs(0, Pack(null, data.beatNear));
+            beatMesh.SetUVs(1, Pack(data.beatLayerF, null));
+            var beatIdx = new int[data.beatPositions.Length];
+            for (int i = 0; i < beatIdx.Length; i++) beatIdx[i] = i;
+            beatMesh.SetIndices(beatIdx, MeshTopology.Lines, 0);
+            beatMesh.RecalculateBounds();
+            beatRenderer.enabled = data.beatPositions.Length > 0;
+
+            ApplyStaticUniforms(cfg, d);
+        }
+
+        public void SetSongTime(float t)
+        {
+            if (notesMaterial != null) notesMaterial.SetFloat("_SongTime", t);
+            if (beatMaterial != null) beatMaterial.SetFloat("_SongTime", t);
+        }
+
+        /// <summary>ノーツの表示状態を更新（0で非表示）。値が変わらないときは何もしない</summary>
+        public void SetNoteAlpha(NoteRuntime rt, float alpha)
+        {
+            if (notesUv0 == null || rt.alpha == alpha) return;
+            rt.alpha = alpha;
+            for (int i = rt.vStart; i < rt.vStart + rt.vCount; i++) notesUv0[i].x = alpha;
+            notesMesh.SetUVs(0, notesUv0);
+        }
+
+        private void ApplyStaticUniforms(StageConfig cfg, in Derived d)
+        {
+            // ローカル関数は in パラメータを直接キャプチャできない (CS1628) ため値コピーを介す
+            Derived dCopy = d;
+            float laneConverge = Mathf.Clamp01(cfg.laneConverge);
+
+            void Apply(Material m)
+            {
+                m.SetFloat("_ZJudge", dCopy.zJudge);
+                m.SetFloat("_Speed", dCopy.speed);
+                m.SetFloat("_Far", dCopy.zFar);
+                m.SetFloat("_HardFar", cfg.hardFarEdge ? 1f : 0f);
+                m.SetFloat("_YCam", cfg.yCam);
+                m.SetFloat("_SkyHeight", dCopy.skyHeight);
+                m.SetFloat("_SinTheta", dCopy.sinTheta);
+                m.SetFloat("_CosTheta", dCopy.cosTheta);
+                m.SetFloat("_LaneK", dCopy.laneK);
+                m.SetFloat("_LaneConverge", laneConverge);
+                m.SetFloat("_ZcFarGround", dCopy.zcFarGround);
+            }
+
+            Apply(notesMaterial);
+            Apply(beatMaterial);
+        }
+
+        private static Vector2[] Pack(float[] a, float[] b)
+        {
+            int n = a?.Length ?? b?.Length ?? 0;
+            var outArr = new Vector2[n];
+            for (int i = 0; i < n; i++) outArr[i] = new Vector2(a != null ? a[i] : 0f, b != null ? b[i] : 0f);
+            return outArr;
+        }
+
+        private void EnsureNotesObject()
+        {
+            if (notesGo != null) return;
+            var existing = transform.Find("Notes");
+            notesGo = existing != null ? existing.gameObject : new GameObject("Notes");
+            if (existing == null) notesGo.transform.SetParent(transform, false);
+            notesGo.hideFlags = HideFlags.DontSave;
+            notesFilter = notesGo.GetComponent<MeshFilter>();
+            if (notesFilter == null) notesFilter = notesGo.AddComponent<MeshFilter>();
+            notesRenderer = notesGo.GetComponent<MeshRenderer>();
+            if (notesRenderer == null) notesRenderer = notesGo.AddComponent<MeshRenderer>();
+            notesRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            notesRenderer.receiveShadows = false;
+            notesMesh = notesFilter.sharedMesh != null ? notesFilter.sharedMesh : new Mesh { name = "Notes" };
+            notesMesh.MarkDynamic();
+            notesFilter.sharedMesh = notesMesh;
+            bool needsMat = notesRenderer.sharedMaterial == null || notesRenderer.sharedMaterial.shader != noteShader;
+            notesMaterial = needsMat ? new Material(noteShader) { name = "Notes" } : notesRenderer.sharedMaterial;
+            notesRenderer.sharedMaterial = notesMaterial;
+        }
+
+        private void EnsureBeatObject()
+        {
+            if (beatGo != null) return;
+            var existing = transform.Find("BeatLines");
+            beatGo = existing != null ? existing.gameObject : new GameObject("BeatLines");
+            if (existing == null) beatGo.transform.SetParent(transform, false);
+            beatGo.hideFlags = HideFlags.DontSave;
+            beatFilter = beatGo.GetComponent<MeshFilter>();
+            if (beatFilter == null) beatFilter = beatGo.AddComponent<MeshFilter>();
+            beatRenderer = beatGo.GetComponent<MeshRenderer>();
+            if (beatRenderer == null) beatRenderer = beatGo.AddComponent<MeshRenderer>();
+            beatRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            beatRenderer.receiveShadows = false;
+            beatMesh = beatFilter.sharedMesh != null ? beatFilter.sharedMesh : new Mesh { name = "BeatLines" };
+            beatMesh.MarkDynamic();
+            beatFilter.sharedMesh = beatMesh;
+            bool needsMat = beatRenderer.sharedMaterial == null || beatRenderer.sharedMaterial.shader != beatLineShader;
+            beatMaterial = needsMat ? new Material(beatLineShader) { name = "BeatLines" } : beatRenderer.sharedMaterial;
+            beatRenderer.sharedMaterial = beatMaterial;
+        }
+
+        private void OnDestroy()
+        {
+            DestroyObj(notesGo);
+            DestroyObj(notesMesh);
+            DestroyObj(notesMaterial);
+            DestroyObj(beatGo);
+            DestroyObj(beatMesh);
+            DestroyObj(beatMaterial);
+        }
+
+        private static void DestroyObj(Object o)
+        {
+            if (o == null) return;
+            if (Application.isPlaying) Destroy(o);
+            else DestroyImmediate(o);
+        }
+    }
+}
