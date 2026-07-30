@@ -15,6 +15,12 @@ namespace Muses.Notes
         [SerializeField] private Shader noteShader;
         [SerializeField] private Shader beatLineShader;
 
+        [Header("タップ/ホールド始点の奥行き厚み（詳細は NotePlacement.hlsl のコメント）")]
+        [Tooltip("ワールド固定の厚み。judge線の奥行きに対する割合（半幅）。遠近感を出す本来の厚み")]
+        [SerializeField] private float thicknessFrac = 0.025f;
+        [Tooltip("画面上の最小厚みを保つための下限。現在の奥行きに対する割合（半幅）。遠方の点滅防止にのみ効く")]
+        [SerializeField] private float thicknessMinFrac = 0.004f;
+
         // StageView が GroundPlane/GroundLines/SkyPlane/SkyLines に 3000〜3003 を使う。
         // Notes側にキューを明示しないとデフォルト(3000)でGroundPlaneと同キューになり、
         // 距離ソート次第でほぼ不透明なGroundPlaneが加算合成のノーツを覆い隠してしまう
@@ -109,7 +115,8 @@ namespace Muses.Notes
                 m.SetFloat("_LaneK", dCopy.laneK);
                 m.SetFloat("_LaneConverge", laneConverge);
                 m.SetFloat("_ZcFarGround", dCopy.zcFarGround);
-                m.SetFloat("_ThicknessFrac", 0.025f);
+                m.SetFloat("_ThicknessFrac", thicknessFrac);
+                m.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
             }
 
             Apply(notesMaterial);
