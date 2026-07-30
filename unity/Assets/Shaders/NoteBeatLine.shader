@@ -17,6 +17,7 @@ Shader "Muses/NoteBeatLine"
         _LaneK ("Lane K", Float) = 1
         _LaneConverge ("Lane Converge", Float) = 1
         _ZcFarGround ("Zc Far Ground", Float) = 1
+        _ThicknessFrac ("Thickness Frac", Float) = 0.025
     }
     SubShader
     {

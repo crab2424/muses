@@ -54,7 +54,7 @@ namespace Muses.Notes
             notesMesh.SetColors(data.colors);
             notesUv0 = Pack(data.state, data.near);
             notesMesh.SetUVs(0, notesUv0);
-            notesMesh.SetUVs(1, Pack(data.layerF, null));
+            notesMesh.SetUVs(1, Pack(data.layerF, data.side));
             var tris = new int[data.positions.Length];
             for (int i = 0; i < tris.Length; i++) tris[i] = i;
             notesMesh.SetTriangles(tris, 0);
@@ -109,6 +109,7 @@ namespace Muses.Notes
                 m.SetFloat("_LaneK", dCopy.laneK);
                 m.SetFloat("_LaneConverge", laneConverge);
                 m.SetFloat("_ZcFarGround", dCopy.zcFarGround);
+                m.SetFloat("_ThicknessFrac", 0.025f);
             }
 
             Apply(notesMaterial);

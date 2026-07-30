@@ -13,6 +13,9 @@ namespace Muses.Notes
         public float[] state;
         public float[] near;
         public float[] layerF;
+        /// <summary>タップ/ホールド始点の厚み方向の頂点符号（-1=近い側 / +1=遠い側 / 0=無関係）。
+        /// シェーダ側で現在の奥行きに比例した厚みを付けるために使う（<see cref="NoteGeometry"/>のコメント参照）。</summary>
+        public float[] side;
         public List<NoteRuntime> runtimes;
 
         public Vector3[] beatPositions;
@@ -43,6 +46,7 @@ namespace Muses.Notes
             var st = new List<float>();
             var nearArr = new List<float>();
             var layerArr = new List<float>();
+            var sideArr = new List<float>();
             var runtimes = new List<NoteRuntime>();
 
             void Push(float u, float y, float time, float layerF, Color c, float nearD)
@@ -52,6 +56,26 @@ namespace Muses.Notes
                 st.Add(1f);
                 nearArr.Add(nearD);
                 layerArr.Add(layerF);
+                sideArr.Add(0f);
+            }
+
+            // タップ/ホールド始点用: 奥行き方向に薄い板を、頂点シェーダ側で「現在の奥行きに
+            // 比例した厚み」に広げてもらうための頂点を積む（このメソッドでは全頂点を同じ中心時刻
+            // centerTimeで積み、near/far側の判定を side (-1/+1) に持たせる。理由は下のコメント参照）。
+            void QuadThin(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD)
+            {
+                float[] uu = { u0, u1, u1, u0 };
+                float[] su = { -1f, -1f, 1f, 1f };
+                int[] idx = { 0, 1, 2, 0, 2, 3 };
+                foreach (var i in idx)
+                {
+                    pos.Add(new Vector3(uu[i], y, centerTime));
+                    col.Add(c);
+                    st.Add(1f);
+                    nearArr.Add(nearD);
+                    layerArr.Add(layerF);
+                    sideArr.Add(su[i]);
+                }
             }
 
             void Quad(Vector3[] p, float layerF, Color c, float nearD)
@@ -62,8 +86,6 @@ namespace Muses.Notes
 
             var cG = StageGeometry.ColorFromHex(StageColors.Ground);
             var cS = StageGeometry.ColorFromHex(StageColors.Sky);
-            // タップノーツの奥行き方向の厚み。判定線の奥行きに比例させ、画角を変えても見た目の厚みを保つ
-            float thicknessWorld = dCopy.zJudge * 0.05f;
 
             foreach (var n in notes)
             {
@@ -72,22 +94,14 @@ namespace Muses.Notes
                 if (n.kind == NoteKind.Tap)
                 {
                     float layerF = n.layer == Layer.Sky ? 1f : 0f;
-                    float dt = thicknessWorld / dCopy.speed / 2f;
                     float y = YAt(layerF, dCopy.skyHeight) + dCopy.zJudge * 0.002f;
                     float u0 = UAt(n.cell + 0.04f);
                     float u1 = UAt(n.cell + n.width - 0.04f);
-                    Quad(new[]
-                    {
-                        new Vector3(u0, y, n.time - dt),
-                        new Vector3(u1, y, n.time - dt),
-                        new Vector3(u1, y, n.time + dt),
-                        new Vector3(u0, y, n.time + dt),
-                    }, layerF, n.layer == Layer.Sky ? cS : cG, NearOf(layerF));
+                    QuadThin(u0, u1, y, n.time, layerF, n.layer == Layer.Sky ? cS : cG, NearOf(layerF));
                 }
                 else if (n.kind == NoteKind.Hold)
                 {
                     float layerF = n.layer == Layer.Sky ? 1f : 0f;
-                    float dt = thicknessWorld / dCopy.speed / 2f;
                     float y = YAt(layerF, dCopy.skyHeight) + dCopy.zJudge * 0.002f;
                     var c = n.layer == Layer.Sky ? cS : cG;
                     float nr = NearOf(layerF);
@@ -105,13 +119,7 @@ namespace Muses.Notes
                     float hu0 = UAt(n.cell + 0.04f);
                     float hu1 = UAt(n.cell + n.width - 0.04f);
                     float hy = y + dCopy.zJudge * 0.001f;
-                    Quad(new[]
-                    {
-                        new Vector3(hu0, hy, n.time - dt),
-                        new Vector3(hu1, hy, n.time - dt),
-                        new Vector3(hu1, hy, n.time + dt),
-                        new Vector3(hu0, hy, n.time + dt),
-                    }, layerF, c, nr);
+                    QuadThin(hu0, hu1, hy, n.time, layerF, c, nr);
                 }
                 else
                 {
@@ -152,6 +160,7 @@ namespace Muses.Notes
                 state = st.ToArray(),
                 near = nearArr.ToArray(),
                 layerF = layerArr.ToArray(),
+                side = sideArr.ToArray(),
                 runtimes = runtimes,
                 beatPositions = beatPos.ToArray(),
                 beatNear = beatNear.ToArray(),
