@@ -56,6 +56,17 @@ namespace Muses.Stage
         public float windowGood;
         /// <summary>押下中ポインタの層切り替えヒステリシス (NDC v)</summary>
         public float splitHysteresis;
+        /// <summary>
+        /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
+        /// （実機の出力レイテンシ分、判定を「音が実際に鳴った後」にずらす想定）。
+        /// 実機キャリブレーション用の値なので <see cref="OffsetSettings"/> でPlayerPrefsに永続化する。
+        /// </summary>
+        public float judgeOffsetMs;
+        /// <summary>
+        /// 描画オフセット (ms)。音とノーツ描画位置のズレ補正。judgeOffsetMsとは独立
+        /// （判定の基準時刻と、ノーツを画面上どこに置くかの基準時刻は別物になりうるため）。
+        /// </summary>
+        public float visualOffsetMs;
 
         // ---- 見た目 ----
         /// <summary>最遠端をぼかさずはっきり切る</summary>
@@ -109,6 +120,8 @@ namespace Muses.Stage
             windowPerfect = 40f,
             windowGood = 100f,
             splitHysteresis = 0.05f,
+            judgeOffsetMs = 0f,
+            visualOffsetMs = 0f,
 
             hardFarEdge = true,
             laneConverge = 1f,

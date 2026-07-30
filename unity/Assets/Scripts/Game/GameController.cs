@@ -40,17 +40,25 @@ namespace Muses.Game
 
         private void Start()
         {
+            OffsetSettings.Load(stageController.Config);
+
             judge = new Judge(stageController.Config, noteView);
             if (overlay != null) overlay.Judge = judge;
 
             input.Init(() => clock.SongTime);
             input.OnEnter = e =>
             {
-                if (clock.Running) judge.OnEnter(e, clock.SongTime);
+                if (clock.Running) judge.OnEnter(e, JudgeTime());
             };
 
             StartGame();
         }
+
+        /// <summary>judgeOffsetMs を適用した、判定にだけ使う時刻。音と入力のズレ補正用</summary>
+        private float JudgeTime() => clock.SongTime + stageController.Config.judgeOffsetMs / 1000f;
+
+        /// <summary>visualOffsetMs を適用した、ノーツ描画位置にだけ使う時刻。音と描画のズレ補正用</summary>
+        private float VisualTime() => clock.SongTime + stageController.Config.visualOffsetMs / 1000f;
 
         /// <summary>main.ts の restart() 相当</summary>
         public void StartGame()
@@ -74,8 +82,8 @@ namespace Muses.Game
             fps += (1f / Mathf.Max(dt, 1e-4f) - fps) * 0.08f;
 
             clock.TickMetronome(stageController.Config.bpm, stageController.Config.metronome);
-            noteView.SetSongTime(t);
-            if (clock.Running) judge.Update(t, input);
+            noteView.SetSongTime(VisualTime());
+            if (clock.Running) judge.Update(JudgeTime(), input);
 
             if (overlay != null) overlay.SetHudTime(t, fps);
         }
