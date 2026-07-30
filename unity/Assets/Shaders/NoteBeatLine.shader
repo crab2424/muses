@@ -1,4 +1,6 @@
 // 拍線（地上のみ）。移植元: web-prototype/src/notes.ts の beatLines 用 ShaderMaterial。
+// ZTest Always: Note.shaderと同じ理由（地面からの浮きが極小でZファイティングするため、
+// renderQueueで保証済みの描画順に任せてデプステストを無効化）。
 Shader "Muses/NoteBeatLine"
 {
     Properties
@@ -24,6 +26,7 @@ Shader "Muses/NoteBeatLine"
         {
             Blend SrcAlpha OneMinusSrcAlpha
             ZWrite Off
+            ZTest Always
             Cull Off
 
             HLSLPROGRAM

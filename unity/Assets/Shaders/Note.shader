@@ -3,6 +3,12 @@
 // Web版は加算合成(AdditiveBlending)だが、Unity側の実機チューニング設定は明背景(#a0b298)+
 // 不透明なステージ面が前提のため、加算だと白飛びしてコントラストが低く見えていた
 // （NoteBeatLine.shaderと同じ通常アルファブレンドに揃えて解消）。
+// ZTest Always: ノーツは地面からごくわずか(zJudge*0.002)しか浮かせておらず、遠距離では
+// デプスバッファの精度不足で地面とのZファイティングが起きる。描画順は既にrenderQueue
+// （NoteView.csのNotesRenderQueue=3010、StageViewの3000番台より後）で保証済みなので
+// デプステスト自体が不要。ONにしたままだとタップノーツのように小さい面積のノーツは
+// フレームごとに丸ごと表示/非表示が切り替わり「途切れ途切れ」に見える
+// （ホールドは面積が大きく一部ピクセルが負けても目立たないため気づきにくかった）。
 Shader "Muses/Note"
 {
     Properties
@@ -28,6 +34,7 @@ Shader "Muses/Note"
         {
             Blend SrcAlpha OneMinusSrcAlpha
             ZWrite Off
+            ZTest Always
             Cull Off
 
             HLSLPROGRAM
