@@ -72,6 +72,7 @@ namespace Muses.Game
             noteView.Build(stageController.Config, stageController.Derived, chart.notes);
             judge.SetConfig(stageController.Config);
             judge.Reset();
+            judge.Prepare(noteView.Runtimes); // 縦連判定(中点分割)の実効窓をここで1回だけprecompute
         }
 
         private void Update()

@@ -51,9 +51,6 @@ namespace Muses.Stage
         public float readAheadSec;
         /// <summary>譜面の BPM（デモ譜面生成用）</summary>
         public float bpm;
-        /// <summary>判定ウィンドウ (ms)。※暫定値、未設計項目</summary>
-        public float windowPerfect;
-        public float windowGood;
         /// <summary>押下中ポインタの層切り替えヒステリシス (NDC v)</summary>
         public float splitHysteresis;
         /// <summary>
@@ -117,8 +114,6 @@ namespace Muses.Stage
 
             readAheadSec = 1.2f,
             bpm = 150f,
-            windowPerfect = 40f,
-            windowGood = 100f,
             splitHysteresis = 0.05f,
             judgeOffsetMs = 0f,
             visualOffsetMs = 0f,

@@ -119,9 +119,13 @@ namespace Muses.Overlay
                     float x1 = PxX(CellU(cfg, f.cell + f.width));
                     float y = PxY(vJ);
                     float r = 6f + 26f * k;
-                    Color col = f.kind == JudgeKind.Perfect ? Color.white
-                        : f.kind == JudgeKind.Good ? new Color(120 / 255f, 220 / 255f, 255 / 255f)
-                        : new Color(1f, 80 / 255f, 80 / 255f);
+                    Color col = f.kind switch
+                    {
+                        JudgeKind.PerfectPlus => Color.white,
+                        JudgeKind.Perfect => new Color(220 / 255f, 230 / 255f, 255 / 255f),
+                        JudgeKind.Good => new Color(120 / 255f, 220 / 255f, 255 / 255f),
+                        _ => new Color(1f, 80 / 255f, 80 / 255f), // Miss
+                    };
                     col.a = (1f - k) * 0.55f;
                     GL.Color(col);
                     Quad(x0 + 2f, y - r / 2f, x1 - 2f, y + r / 2f);
@@ -267,12 +271,12 @@ namespace Muses.Overlay
             var judgeLine = new GUIStyle(line) { normal = { textColor = new Color(0.91f, 0.94f, 1f) } };
 
             string msSuffix = "";
-            if (s.lastJudge == "PERFECT" || s.lastJudge == "GOOD")
+            if (s.lastJudge == "PERFECT+" || s.lastJudge == "PERFECT" || s.lastJudge == "GOOD")
                 msSuffix = $" {(s.lastMs > 0 ? "+" : "")}{s.lastMs:F0}ms";
 
             GUI.Label(new Rect(16, 12, 180, 18), $"t {hudSongTime:F2}s   {hudFps:F0}fps", line);
             GUI.Label(new Rect(16, 30, 180, 18), $"COMBO {s.combo} (max {s.maxCombo})", line);
-            GUI.Label(new Rect(16, 48, 180, 18), $"P {s.perfect} / G {s.good} / M {s.miss}", line);
+            GUI.Label(new Rect(16, 48, 180, 18), $"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}", line);
             GUI.Label(new Rect(16, 66, 180, 18), $"{s.lastJudge}{msSuffix}", judgeLine);
         }
 
