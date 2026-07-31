@@ -13,7 +13,7 @@ namespace Muses.Chart
     /// <summary>
     /// note-spec.md §5.5。ソフランイベント。group ごとに独立した speed 倍率を持つ。
     /// mul=0 で停止、mul&lt;0 で逆走を許す。durationTicks=0 は階段状（即座に変化）。
-    /// 本セッションでは譜面フォーマットとしてのみ保持し、実際の速度積分（X(t)）は未実装（Phase 1後続項目）。
+    /// 速度積分 X(t) は <see cref="ScrollTimeline"/> が担う（<see cref="ChartFormat.BuildScrollTimelines"/> 参照）。
     /// </summary>
     public struct ScrollEvent
     {
@@ -186,6 +186,29 @@ namespace Muses.Chart
                 foreach (var t in ticks) times.Add(tickToSeconds(t));
                 note.comboTimes = times;
             }
+        }
+
+        /// <summary>
+        /// note-spec.md §5.5。scrollEvents をグループごとに束ね、各グループの X(t) を
+        /// ScrollTimeline として構築する。ResolveTimes() 後どのタイミングで呼んでもよい
+        /// （tick→秒変換を独自に再構築するため）。scrollEvents を持たないグループは
+        /// 呼び出し側で ScrollTimeline.Identity を使うこと（このMapには含まれない）。
+        /// </summary>
+        public static Dictionary<int, ScrollTimeline> BuildScrollTimelines(ChartData chart)
+        {
+            var tickToSeconds = BuildTickToSeconds(chart.bpmEvents);
+            var byGroup = new Dictionary<int, List<ScrollEvent>>();
+            foreach (var ev in chart.scrollEvents)
+            {
+                if (!byGroup.TryGetValue(ev.group, out var list))
+                    byGroup[ev.group] = list = new List<ScrollEvent>();
+                list.Add(ev);
+            }
+
+            var result = new Dictionary<int, ScrollTimeline>();
+            foreach (var kv in byGroup)
+                result[kv.Key] = ScrollTimeline.Build(kv.Value, tickToSeconds);
+            return result;
         }
     }
 }

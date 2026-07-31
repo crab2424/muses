@@ -143,6 +143,27 @@ namespace Muses.Chart
         }
 
         /// <summary>
+        /// note-spec.md §5.5。Ease(e, k) の 0→k の定積分（閉形式）。ソフランの X(t) を
+        /// イージング区間内で厳密に積分するために使う（数値積分ではなく解析解）。
+        /// </summary>
+        public static float EaseAntiderivative01(Easing e, float k)
+        {
+            switch (e)
+            {
+                case Easing.Smooth: return k * k * k - 0.5f * k * k * k * k;
+                case Easing.SineIn: return k - (2f / MathF.PI) * MathF.Sin(k * MathF.PI / 2f);
+                case Easing.SineOut: return (2f / MathF.PI) * (1f - MathF.Cos(k * MathF.PI / 2f));
+                case Easing.SineInOut: return k / 2f - MathF.Sin(MathF.PI * k) / (2f * MathF.PI);
+                case Easing.QuadIn: return k * k * k / 3f;
+                case Easing.QuadOut: return k + (1f - k) * (1f - k) * (1f - k) / 3f - 1f / 3f;
+                default: return k * k / 2f; // Linear
+            }
+        }
+
+        /// <summary>区間全体 (k: 0→1) での Ease の平均値 = 定積分。EaseAntiderivative01 の k=1 特化形。</summary>
+        public static float EaseIntegral01(Easing e) => EaseAntiderivative01(e, 1f);
+
+        /// <summary>
         /// ノーツ上の時刻 t における (layerF, cellF, width) を区間補間で求める。
         /// points.Length==1 の Tap/ExTap/Flick にもそのまま使える（常に始点の値を返す）。
         /// 区間の easing は区間開始側 Waypoint の easing を使う（note-spec.md §1.1）。

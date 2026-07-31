@@ -69,7 +69,8 @@ namespace Muses.Game
         private void Rechart()
         {
             chart = ChartBuilder.BuildDemoChart(stageController.Config.bpm, chartSeconds, stageController.Config.cells);
-            noteView.Build(stageController.Config, stageController.Derived, chart.notes);
+            var scrollTimelines = Chart.ChartFormat.BuildScrollTimelines(chart); // note-spec.md §5.5
+            noteView.Build(stageController.Config, stageController.Derived, chart.notes, scrollTimelines);
             judge.SetConfig(stageController.Config);
             judge.Reset();
             judge.Prepare(noteView.Runtimes); // 縦連判定(中点分割)の実効窓をここで1回だけprecompute
@@ -82,7 +83,7 @@ namespace Muses.Game
             fps += (1f / Mathf.Max(dt, 1e-4f) - fps) * 0.08f;
 
             clock.TickMetronome(stageController.Config.bpm, stageController.Config.metronome);
-            noteView.SetSongTime(VisualTime());
+            noteView.UpdateScroll(VisualTime(), stageController.Config.hiSpeed);
             if (clock.Running) judge.Update(JudgeTime(), input);
 
             if (overlay != null) overlay.SetHudTime(t, fps);

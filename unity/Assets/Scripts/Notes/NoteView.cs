@@ -28,7 +28,15 @@ namespace Muses.Notes
         private const int NotesRenderQueue = 3010;
         private const int BeatLinesRenderQueue = 3011;
 
+        /// <summary>note-spec.md §5.5。シェーダの _GroupX[] と同じ長さで固定（グループ数に理論上限はないが、
+        /// GPUへ渡す配列は実装上の上限を設ける。Note.shader の MUSES_MAX_SCROLL_GROUPS と一致させること）。</summary>
+        private const int MaxScrollGroups = 16;
+
         public List<NoteRuntime> Runtimes { get; private set; } = new();
+
+        private Dictionary<int, Chart.ScrollTimeline> scrollTimelines = new();
+        private readonly float[] groupXBuffer = new float[MaxScrollGroups];
+        private float baseSpeed;
 
         private GameObject notesGo;
         private MeshFilter notesFilter;
@@ -43,7 +51,8 @@ namespace Muses.Notes
         private Mesh beatMesh;
         private Material beatMaterial;
 
-        public void Build(StageConfig cfg, in Derived d, List<Chart.Note> notes)
+        public void Build(StageConfig cfg, in Derived d, List<Chart.Note> notes,
+            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null)
         {
             if (noteShader == null || beatLineShader == null)
             {
@@ -51,7 +60,10 @@ namespace Muses.Notes
                 return;
             }
 
-            var data = NoteGeometry.Build(cfg, d, notes);
+            this.scrollTimelines = scrollTimelines ?? new Dictionary<int, Chart.ScrollTimeline>();
+            baseSpeed = d.speed;
+
+            var data = NoteGeometry.Build(cfg, d, notes, this.scrollTimelines);
             Runtimes = data.runtimes;
 
             EnsureNotesObject();
@@ -66,6 +78,7 @@ namespace Muses.Notes
             notesUv0 = Pack(data.state, data.near);
             notesMesh.SetUVs(0, notesUv0);
             notesMesh.SetUVs(1, Pack(data.layerF, data.side));
+            notesMesh.SetUVs(2, Pack(data.group, null));
             var tris = new int[data.positions.Length];
             for (int i = 0; i < tris.Length; i++) tris[i] = i;
             notesMesh.SetTriangles(tris, 0);
@@ -87,10 +100,31 @@ namespace Muses.Notes
             ApplyStaticUniforms(cfg, d);
         }
 
-        public void SetSongTime(float t)
+        /// <summary>
+        /// note-spec.md §5.5。毎フレーム呼ぶ。グループごとの表示位置 X(songTime) を求めて
+        /// シェーダの _GroupX[] に渡し、実効速度 baseSpeed×hiSpeed を _Speed に渡す。
+        /// scrollEvents を持たないグループは Chart.ScrollTimeline.Identity（X(t)=t）を使うため、
+        /// ソフラン未使用の譜面では従来（_SongTime を直接引く）と同じ結果になる。
+        /// </summary>
+        public void UpdateScroll(float songTime, float hiSpeed)
         {
-            if (notesMaterial != null) notesMaterial.SetFloat("_SongTime", t);
-            if (beatMaterial != null) beatMaterial.SetFloat("_SongTime", t);
+            for (int g = 0; g < MaxScrollGroups; g++)
+            {
+                var tl = scrollTimelines.TryGetValue(g, out var found) ? found : Chart.ScrollTimeline.Identity;
+                groupXBuffer[g] = tl.XAt(songTime);
+            }
+
+            float speed = baseSpeed * hiSpeed;
+            if (notesMaterial != null)
+            {
+                notesMaterial.SetFloatArray("_GroupX", groupXBuffer);
+                notesMaterial.SetFloat("_Speed", speed);
+            }
+            if (beatMaterial != null)
+            {
+                beatMaterial.SetFloatArray("_GroupX", groupXBuffer);
+                beatMaterial.SetFloat("_Speed", speed);
+            }
         }
 
         /// <summary>ノーツの表示状態を更新（0で非表示）。値が変わらないときは何もしない</summary>
@@ -111,7 +145,7 @@ namespace Muses.Notes
             void Apply(Material m)
             {
                 m.SetFloat("_ZJudge", dCopy.zJudge);
-                m.SetFloat("_Speed", dCopy.speed);
+                // _Speed は note-spec.md §5.5 により hiSpeed 込みで毎フレーム変わるため UpdateScroll() 側で設定する
                 m.SetFloat("_Far", dCopy.zFar);
                 m.SetFloat("_HardFar", cfg.hardFarEdge ? 1f : 0f);
                 m.SetFloat("_YCam", cfg.yCam);

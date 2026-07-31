@@ -16,6 +16,8 @@ namespace Muses.Notes
         /// <summary>タップ系ノーツの厚み方向の頂点符号（-1=近い側 / +1=遠い側 / 0=無関係）。
         /// シェーダ側で現在の奥行きに比例した厚みを付けるために使う（<see cref="NoteGeometry"/>のコメント参照）。</summary>
         public float[] side;
+        /// <summary>note-spec.md §5.5。頂点が属するスクロールグループ（NoteView が _GroupX[] を引くためのインデックス）</summary>
+        public float[] group;
         public List<NoteRuntime> runtimes;
 
         public Vector3[] beatPositions;
@@ -37,7 +39,8 @@ namespace Muses.Notes
     {
         private delegate void PushFn(float u, float y, float time, float layerF, Color c, float nearD);
 
-        public static NoteMeshData Build(StageConfig cfg, in Derived d, List<Note> notes)
+        public static NoteMeshData Build(StageConfig cfg, in Derived d, List<Note> notes,
+            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null)
         {
             Derived dCopy = d; // in パラメータはローカル関数から直接キャプチャできない (CS1628)
             int cells = cfg.cells;
@@ -46,12 +49,17 @@ namespace Muses.Notes
             float YAt(float layerF, float skyHeight) => layerF * skyHeight;
             float NearOf(float layerF) => dCopy.groundNear + (dCopy.skyNear - dCopy.groundNear) * layerF;
 
+            // note-spec.md §5.5。グループごとの X(t)。scrollEvents を持たないグループは恒等写像(X(t)=t)。
+            Chart.ScrollTimeline TimelineFor(int group) =>
+                scrollTimelines != null && scrollTimelines.TryGetValue(group, out var tl) ? tl : Chart.ScrollTimeline.Identity;
+
             var pos = new List<Vector3>();
             var col = new List<Color>();
             var st = new List<float>();
             var nearArr = new List<float>();
             var layerArr = new List<float>();
             var sideArr = new List<float>();
+            var groupArr = new List<float>();
             var runtimes = new List<NoteRuntime>();
 
             void Push(float u, float y, float time, float layerF, Color c, float nearD)
@@ -93,6 +101,7 @@ namespace Muses.Notes
             foreach (var n in notes)
             {
                 int vStart = st.Count;
+                var timeline = TimelineFor(n.scrollGroup);
 
                 if (n.kind == NoteKind.Tap || n.kind == NoteKind.ExTap || n.kind == NoteKind.Flick)
                 {
@@ -104,11 +113,11 @@ namespace Muses.Notes
                     var c = n.kind == NoteKind.ExTap ? cEx
                         : n.kind == NoteKind.Flick ? cFlick
                         : (layerF > 0.5f ? cS : cG);
-                    QuadThin(u0, u1, y, wp.time, layerF, c, NearOf(layerF));
+                    QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF));
                 }
                 else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
-                    PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, cSlide);
+                    PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, cSlide, timeline.XAt);
 
                     // note-spec.md §3: Visible中継点はTapと同じ形・別色で描く（コンボ点として扱われる、item11）。
                     // Slideのcellは中心基準（PushSlideBandと同じ、Tapの左端基準とは異なる）。
@@ -118,9 +127,13 @@ namespace Muses.Notes
                         float y = YAt(wp.layerF, dCopy.skyHeight) + dCopy.zJudge * 0.012f; // 帯(0.01)より上にして隠れないようにする
                         float u0 = UAt(wp.cellF - wp.width / 2f + 0.04f);
                         float u1 = UAt(wp.cellF + wp.width / 2f - 0.04f);
-                        QuadThin(u0, u1, y, wp.time, wp.layerF, cSlideMarker, NearOf(wp.layerF));
+                        QuadThin(u0, u1, y, timeline.XAt(wp.time), wp.layerF, cSlideMarker, NearOf(wp.layerF));
                     }
                 }
+
+                // note-spec.md §5.5。グループはノーツ単位。生成した全頂点に同じインデックスを焼く。
+                float gIdx = n.scrollGroup;
+                while (groupArr.Count < st.Count) groupArr.Add(gIdx);
 
                 runtimes.Add(new NoteRuntime
                 {
@@ -132,7 +145,8 @@ namespace Muses.Notes
                 });
             }
 
-            // ビートライン（地上のみ）
+            // ビートライン（地上のみ）。note-spec.md §5.5: グループ0のX(t)に乗せる（複数グループには対応しない簡略化）。
+            var beatTimeline = TimelineFor(0);
             float b = 60f / cfg.bpm;
             float last = notes.Count > 0 ? ChartMath.NoteEnd(notes[notes.Count - 1]) : 0f;
             var beatPos = new List<Vector3>();
@@ -140,8 +154,9 @@ namespace Muses.Notes
             var beatLayer = new List<float>();
             for (float t = 0; t < last + 4f; t += b * 4f)
             {
-                beatPos.Add(new Vector3(-1f, dCopy.zJudge * 0.0005f, t));
-                beatPos.Add(new Vector3(1f, dCopy.zJudge * 0.0005f, t));
+                float x = beatTimeline.XAt(t);
+                beatPos.Add(new Vector3(-1f, dCopy.zJudge * 0.0005f, x));
+                beatPos.Add(new Vector3(1f, dCopy.zJudge * 0.0005f, x));
                 beatNear.Add(dCopy.groundNear);
                 beatNear.Add(dCopy.groundNear);
                 beatLayer.Add(0f);
@@ -156,6 +171,7 @@ namespace Muses.Notes
                 near = nearArr.ToArray(),
                 layerF = layerArr.ToArray(),
                 side = sideArr.ToArray(),
+                group = groupArr.ToArray(),
                 runtimes = runtimes,
                 beatPositions = beatPos.ToArray(),
                 beatNear = beatNear.ToArray(),
@@ -167,11 +183,13 @@ namespace Muses.Notes
         /// Slide は層をまたぐため、頂点ごとに自分の layerF に応じた手前端を持たせる。
         /// 幅もセル分数（cellF ± width/2）をuに変換して持たせ、ワールド単位に焼き込まない。
         /// points.Length==2 の直線区間（旧Holdに相当）も同じコードパスで描ける。
+        /// xOf は note-spec.md §5.5 の X(t)（このSlideが属するスクロールグループの表示位置関数）。
+        /// 形状(cellF/layerF/width)の補間は実時間 time のまま行い、頂点に焼く「時刻」座標だけを xOf(time) に変える。
         /// </summary>
         private static void PushSlideBand(
             Note slide, Derived d,
             PushFn push, Func<float, float> nearOf,
-            Func<float, float> uAt, Func<float, float, float> yAt, Color c)
+            Func<float, float> uAt, Func<float, float, float> yAt, Color c, Func<float, float> xOf)
         {
             float t0 = ChartMath.NoteStart(slide);
             float t1 = ChartMath.NoteEnd(slide);
@@ -180,7 +198,7 @@ namespace Muses.Notes
             (float cellF, float y, float t, float layerF, float width) At(float time)
             {
                 var (layerF, cellF, width) = ChartMath.At(slide, time);
-                return (cellF, yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, time, layerF, width);
+                return (cellF, yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, xOf(time), layerF, width);
             }
 
             void Emit((float cellF, float y, float t, float layerF, float width) p, float side) =>

@@ -13,7 +13,6 @@ Shader "Muses/Note"
 {
     Properties
     {
-        _SongTime ("Song Time", Float) = 0
         _ZJudge ("Z Judge", Float) = 0
         _Speed ("Speed", Float) = 1
         _Far ("Far", Float) = 100
@@ -50,6 +49,7 @@ Shader "Muses/Note"
                 float4 color : COLOR;
                 float2 uv0 : TEXCOORD0; // x = aState, y = aNear
                 float2 uv1 : TEXCOORD1; // x = aLayerF
+                float2 uv2 : TEXCOORD2; // x = aScrollGroup（note-spec.md §5.5、_GroupX[] のインデックス）
             };
 
             struct Varyings
@@ -65,7 +65,8 @@ Shader "Muses/Note"
             {
                 Varyings OUT;
                 float depth;
-                float3 os = PlaceNote(IN.positionOS.xyz, IN.uv0, IN.uv1, depth);
+                int group = clamp((int)(IN.uv2.x + 0.5), 0, MUSES_MAX_SCROLL_GROUPS - 1);
+                float3 os = PlaceNote(IN.positionOS.xyz, IN.uv0, IN.uv1, _GroupX[group], depth);
                 float3 ws = TransformObjectToWorld(os);
                 OUT.positionCS = TransformWorldToHClip(ws);
                 OUT.color = IN.color.rgb;

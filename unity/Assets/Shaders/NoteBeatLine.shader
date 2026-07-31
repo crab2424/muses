@@ -5,7 +5,6 @@ Shader "Muses/NoteBeatLine"
 {
     Properties
     {
-        _SongTime ("Song Time", Float) = 0
         _ZJudge ("Z Judge", Float) = 0
         _Speed ("Speed", Float) = 1
         _Far ("Far", Float) = 100
@@ -54,7 +53,8 @@ Shader "Muses/NoteBeatLine"
             {
                 Varyings OUT;
                 float depth;
-                float3 os = PlaceNote(IN.positionOS.xyz, IN.uv0, IN.uv1, depth);
+                // ビートラインは常にグループ0のX(t)に乗せる（NoteGeometry.Build参照、複数グループ非対応の簡略化）
+                float3 os = PlaceNote(IN.positionOS.xyz, IN.uv0, IN.uv1, _GroupX[0], depth);
                 float3 ws = TransformObjectToWorld(os);
                 OUT.positionCS = TransformWorldToHClip(ws);
                 OUT.depth = depth;

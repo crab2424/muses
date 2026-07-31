@@ -53,8 +53,13 @@ namespace Muses.Stage
         public int cells;
 
         // ---- ゲームプレイ ----
-        /// <summary>ノーツが最遠端 z_far から判定線 z_j まで来るのにかかる秒数 = 先読み時間</summary>
+        /// <summary>ノーツが最遠端 z_far から判定線 z_j まで来るのにかかる秒数 = 先読み時間（倍率1.0のときの基準値）</summary>
         public float readAheadSec;
+        /// <summary>
+        /// note-spec.md §5.5。プレイヤーが操作するスクロール速度倍率（いわゆる"ハイスピード"）。
+        /// 実効速度 = baseSpeed(readAheadSecから導出) × hiSpeed × scrollMul(group, t)。判定には影響しない。
+        /// </summary>
+        public float hiSpeed;
         /// <summary>譜面の BPM（デモ譜面生成用）</summary>
         public float bpm;
         /// <summary>押下中ポインタの層切り替えヒステリシス (NDC v)</summary>
@@ -130,6 +135,7 @@ namespace Muses.Stage
             cells = 12,
 
             readAheadSec = 1.2f,
+            hiSpeed = 1f,
             bpm = 150f,
             splitHysteresis = 0.05f,
             layerJudgeRadius = 0.5f,

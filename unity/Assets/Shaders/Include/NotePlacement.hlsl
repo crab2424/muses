@@ -6,7 +6,6 @@
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
 CBUFFER_START(UnityPerMaterial)
-    float _SongTime;
     float _ZJudge;
     float _Speed;
     float _Far;
@@ -22,8 +21,16 @@ CBUFFER_START(UnityPerMaterial)
     float _ThicknessMinFrac;
 CBUFFER_END
 
-// positionOS = (u, y, ノーツ時刻)。uv0.y = aNear, uv1.x = aLayerF, uv1.y = aSide。
+// note-spec.md §5.5。スクロールグループごとの現在の表示位置 X(songTime)。配列で cbuffer の外に置く
+// （cbuffer 内の float 配列は要素ごとに16byte境界へパディングされ無駄が出るため）。
+// 要素数は NoteView.MaxScrollGroups と一致させること。
+#define MUSES_MAX_SCROLL_GROUPS 16
+float _GroupX[MUSES_MAX_SCROLL_GROUPS];
+
+// positionOS = (u, y, ノーツの表示位置X(noteTime))。uv0.y = aNear, uv1.x = aLayerF, uv1.y = aSide。
 // 戻り値はオブジェクト空間の座標（呼び出し側で TransformObjectToWorld する）。depthOut に奥行きを返す。
+// groupX は呼び出し側があらかじめ _GroupX[] から引いた、このノーツのグループの現在の表示位置 X(songTime)
+// （note-spec.md §5.5: 頂点に焼く値を「時刻」から「表示位置」に、uniformを「songTime」から「X(songTime)」に変える）。
 //
 // aSide (-1/近い側, 0/無関係, +1/遠い側): タップ/ホールド始点は奥行き方向に薄い板。
 // 厚みの決め方には2つの要求があり、両立させるために max() を取っている:
@@ -35,9 +42,9 @@ CBUFFER_END
 //      これは画面上で一定の厚みに相当するので、最遠部でも必ず一定ピクセル数を確保できる。
 // _ThicknessMinFrac は _ThicknessFrac よりずっと小さく、遠方でのみ下限として効く
 // （depth > zJudge * _ThicknessFrac / _ThicknessMinFrac の範囲だけ 2. が勝つ）。
-float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, out float depthOut)
+float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out float depthOut)
 {
-    float depth = _ZJudge + (positionOS.z - _SongTime) * _Speed;
+    float depth = _ZJudge + (positionOS.z - groupX) * _Speed;
     float halfThickness = max(_ZJudge * _ThicknessFrac, depth * _ThicknessMinFrac);
     depth += uv1.y * halfThickness;
     float yPlane = uv1.x * _SkyHeight;
