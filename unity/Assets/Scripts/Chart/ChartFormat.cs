@@ -87,5 +87,105 @@ namespace Muses.Chart
                 }
             }
         }
+
+        private static List<BpmEvent> SortedBpmEvents(List<BpmEvent> bpmEvents)
+        {
+            var sorted = new List<BpmEvent>(bpmEvents);
+            sorted.Sort((a, b) => a.tick.CompareTo(b.tick));
+            if (sorted.Count == 0 || sorted[0].tick != 0)
+                sorted.Insert(0, new BpmEvent { tick = 0, bpm = 120f });
+            return sorted;
+        }
+
+        private static float BpmAt(List<BpmEvent> sortedBpmEvents, int tick)
+        {
+            float bpm = sortedBpmEvents[0].bpm;
+            foreach (var e in sortedBpmEvents)
+            {
+                if (e.tick > tick) break;
+                bpm = e.bpm;
+            }
+            return bpm;
+        }
+
+        /// <summary>
+        /// note-spec.md §2.3。刻みの実時間が0.125〜0.25秒(毎秒4〜8コンボ)に収まる音価を選ぶ表。
+        /// 境界の60/120/240はこの帯の切れ目そのものなので、表外のBPMも実時間基準で自動的に決まる。
+        /// </summary>
+        private static int ComboStepTicksForBpm(float bpm)
+        {
+            if (bpm < 60f) return ChartData.TicksPerBeat / 8; // 32分
+            if (bpm < 120f) return ChartData.TicksPerBeat / 4; // 16分
+            if (bpm < 240f) return ChartData.TicksPerBeat / 2; // 8分
+            if (bpm < 480f) return ChartData.TicksPerBeat; // 4分
+            return ChartData.TicksPerBeat * 2; // 2分
+        }
+
+        /// <summary>
+        /// note-spec.md §2.2/§2.3。Slide のコンボ点集合を生成し Note.comboTimes に秒で格納する。
+        /// ResolveTimes() の後に呼ぶこと。
+        ///
+        /// 規則: 始点は無条件コンボ点だが Contact 駆動で Judge.OnEnter が別途解決するため
+        /// comboTimes には含めない。終点は marker 不問で無条件に含む。Visible 中継点を含む。
+        /// 始点を基準に comboStep 刻みで自動生成した点を、区間ごとに刻み直さず連続して積む
+        /// （中継点は位相をリセットしない）。端数（最後の自動生成点〜終点）は捨てる。
+        /// Waypoint.comboStep による上書きは、その tick 以降の自動生成刻みに適用する。
+        /// </summary>
+        public static void ResolveSlideComboPoints(ChartData chart)
+        {
+            var sortedBpm = SortedBpmEvents(chart.bpmEvents);
+            var tickToSeconds = BuildTickToSeconds(chart.bpmEvents);
+
+            foreach (var note in chart.notes)
+            {
+                if (note.kind != NoteKind.Slide)
+                {
+                    note.comboTimes = new List<float>();
+                    continue;
+                }
+
+                var pts = note.points;
+                int startTick = pts[0].tick;
+                int endTick = pts[^1].tick;
+
+                var overrides = new List<(int tick, int step)>();
+                foreach (var wp in pts)
+                    if (wp.comboStep.HasValue)
+                        overrides.Add((wp.tick, wp.comboStep.Value));
+                overrides.Sort((a, b) => a.tick.CompareTo(b.tick));
+
+                int StepAt(int tick)
+                {
+                    int step = -1;
+                    foreach (var o in overrides)
+                    {
+                        if (o.tick > tick) break;
+                        step = o.step;
+                    }
+                    return step >= 0 ? step : ComboStepTicksForBpm(BpmAt(sortedBpm, tick));
+                }
+
+                var ticks = new SortedSet<int> { endTick };
+                foreach (var wp in pts)
+                    if (wp.marker == WaypointMarker.Visible)
+                        ticks.Add(wp.tick);
+
+                int cur = startTick;
+                while (true)
+                {
+                    int step = Math.Max(1, StepAt(cur));
+                    int next = cur + step;
+                    if (next >= endTick) break;
+                    ticks.Add(next);
+                    cur = next;
+                }
+
+                ticks.Remove(startTick); // 始点はContact駆動で別解決するため含めない
+
+                var times = new List<float>(ticks.Count);
+                foreach (var t in ticks) times.Add(tickToSeconds(t));
+                note.comboTimes = times;
+            }
+        }
     }
 }

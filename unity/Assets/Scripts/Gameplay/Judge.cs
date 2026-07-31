@@ -15,10 +15,12 @@ namespace Muses.Gameplay
     /// 判定ティアは4段の配列データ(<see cref="JudgeTiers"/>)を参照、縦連判定（中点分割）を
     /// ロード時にprecompute、同時刻ノーツはまとめて解決する（§6.4）。
     ///
-    /// **今回まだ未実装（次の増分）**: Slideの連続座標判定・コンボ点ごとの独立判定（§2.4対称窓、
-    /// item7）、Flickの移動量判定本体（item8、現状はTapと同じ接触判定の暫定代用）、
-    /// 入力のバンド分割（item6）、Slide始点のContact駆動統一（item16）。
-    /// Slideは旧実装のまま: 開始時刻に自動追従開始、離れて0.2秒でブレイク、縦連判定の対象外。
+    /// 続けて item5/7/16 を実装: 連続座標(cellF/layerF)による Slide/Flick の包含判定（§0.2）、
+    /// Slide 始点を Tap と同じ Contact 駆動・連続座標包含に統一（§0.2/§2.1）、
+    /// Slide のコンボ点を時間対称窓で独立判定し HOLD BREAK を廃止（§2.4）。
+    ///
+    /// **今回まだ未実装（次の増分）**: Flick の移動量判定本体（item8、現状はTapと同じ接触判定の暫定代用）、
+    /// 入力のバンド分割（item6）。
     /// </summary>
     public class Judge
     {
@@ -30,7 +32,7 @@ namespace Muses.Gameplay
         private int cursor;
 
         /// <summary>note-spec.md §6.2。ノーツごとの実効窓（縦連判定で中点分割した後の [lo, hi] 秒）。
-        /// Tap/ExTap/Flickのみが対象（Slide始点は次の増分でitem16と合わせて対応）。</summary>
+        /// 対象集合 T = Tap/ExTap/Flick/Slide始点（§6.2）。</summary>
         private readonly Dictionary<NoteRuntime, (float lo, float hi)> chainWindows = new();
 
         public Judge(StageConfig cfg, NoteView noteView)
@@ -56,11 +58,12 @@ namespace Muses.Gameplay
             chainWindows.Clear();
             float w = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの半幅=100ms（対象集合T全ノーツ共通）
 
-            // 対象集合 T = Tap / ExTap / Flick（Slide始点は次の増分で追加）。
+            // 対象集合 T = Tap / ExTap / Flick / Slide始点（§6.2）。
             // runtimes は既に開始時刻順ソート済みなので、そのままの相対順序で prev/next の最近傍探索ができる。
             var group = new List<NoteRuntime>();
             foreach (var rt in runtimes)
-                if (rt.note.kind == NoteKind.Tap || rt.note.kind == NoteKind.ExTap || rt.note.kind == NoteKind.Flick)
+                if (rt.note.kind == NoteKind.Tap || rt.note.kind == NoteKind.ExTap ||
+                    rt.note.kind == NoteKind.Flick || rt.note.kind == NoteKind.Slide)
                     group.Add(rt);
 
             for (int i = 0; i < group.Count; i++)
@@ -102,37 +105,35 @@ namespace Muses.Gameplay
 
         private static bool CellOverlap(Waypoint a, Waypoint b) => a.cellF < b.cellF + b.width && b.cellF < a.cellF + a.width;
 
-        private (Layer layer, int lo, int hi) CellRange(NoteRuntime rt, float songTime)
+        /// <summary>note-spec.md §0.2。Slideの現在位置(帯)に接触点が包含されているかを連続座標で判定する。</summary>
+        private bool AnyContactInBand(TouchInputManager input, Note n, float t)
         {
-            var n = rt.note;
-            int max = cfg.cells - 1;
-            if (n.kind == NoteKind.Slide)
+            var (layerF, cellF, width) = ChartMath.At(n, t);
+            foreach (var c in input.Contacts.Values)
             {
-                var (layerF, cellF, width) = ChartMath.At(n, songTime);
-                int lo = (int)MathF.Floor(cellF - width / 2f);
-                int hi = (int)MathF.Ceiling(cellF + width / 2f) - 1;
-                return (
-                    layerF > 0.5f ? Layer.Sky : Layer.Ground,
-                    Math.Max(0, Math.Min(max, lo)),
-                    Math.Max(0, Math.Min(max, Math.Max(lo, hi)))
-                );
+                if (MathF.Abs(c.layerF - layerF) > cfg.layerJudgeRadius) continue;
+                if (c.cellF < cellF - width / 2f || c.cellF > cellF + width / 2f) continue;
+                return true;
             }
-
-            var wp = n.points[0];
-            int cell = (int)MathF.Round(wp.cellF);
-            int w = Math.Max(1, (int)MathF.Round(wp.width));
-            return (
-                wp.layerF > 0.5f ? Layer.Sky : Layer.Ground,
-                Math.Max(0, Math.Min(max, cell)),
-                Math.Max(0, Math.Min(max, cell + w - 1))
-            );
+            return false;
         }
 
-        private bool AnyOccupied(TouchInputManager input, Layer layer, int lo, int hi)
+        /// <summary>
+        /// EnterEvent がノーツ N の包含判定を満たすか。Tap/ExTap/Flick は離散セル(§0.2)、
+        /// Slide 始点は連続座標(cellF/layerF、§0.2)で判定する（駆動は共通してこの枠内更新イベント）。
+        /// </summary>
+        private bool Contains(Note n, Waypoint wp, EnterEvent e)
         {
-            for (int k = lo; k <= hi; k++)
-                if (input.IsOccupied(layer, k)) return true;
-            return false;
+            if (n.kind == NoteKind.Slide)
+            {
+                return MathF.Abs(e.layerF - wp.layerF) <= cfg.layerJudgeRadius &&
+                       e.cellF >= wp.cellF - wp.width / 2f && e.cellF <= wp.cellF + wp.width / 2f;
+            }
+            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            if (layer != e.layer) return false;
+            int cell = (int)MathF.Round(wp.cellF);
+            int w = Math.Max(1, (int)MathF.Round(wp.width));
+            return e.cell >= cell && e.cell < cell + w;
         }
 
         /// <summary>「入力範囲内に新規の接触点が検出された」= ヒット判定のトリガ</summary>
@@ -148,16 +149,11 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > songTime + rawWin) break; // これ以降は誰の実効窓にも入らない
-                if (n.kind == NoteKind.Slide) continue; // Slideは接触トリガではなく追従型（次の増分でitem16対応）
                 if (rt.state != NoteState.Pending) continue;
                 if (!chainWindows.TryGetValue(rt, out var win)) continue;
                 if (songTime < win.lo || songTime > win.hi) continue;
                 var wp = n.points[0];
-                var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                if (layer != e.layer) continue;
-                int cell = (int)MathF.Round(wp.cellF);
-                int w = Math.Max(1, (int)MathF.Round(wp.width));
-                if (e.cell < cell || e.cell >= cell + w) continue;
+                if (!Contains(n, wp, e)) continue;
                 float dt = wp.time - songTime;
                 if (MathF.Abs(dt) < MathF.Abs(bestDt))
                 {
@@ -176,40 +172,45 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > bestTime + 1e-4f) break; // 開始時刻順ソート済みなので同時刻グループを過ぎたら終了
-                if (n.kind == NoteKind.Slide) continue;
                 if (rt.state != NoteState.Pending) continue;
                 var wp = n.points[0];
                 if (MathF.Abs(wp.time - bestTime) > 1e-4f) continue;
-                var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                if (layer != e.layer) continue;
-                int cell = (int)MathF.Round(wp.cellF);
-                int w = Math.Max(1, (int)MathF.Round(wp.width));
-                if (e.cell < cell || e.cell >= cell + w) continue;
+                if (!Contains(n, wp, e)) continue;
 
-                ResolveHit(rt, wp, cell, layer, wp.time - songTime, songTime);
+                float dt = wp.time - songTime;
+                var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+                if (n.kind == NoteKind.Slide) ResolveSlideStart(rt, wp, layer, dt, songTime);
+                else
+                {
+                    int cell = (int)MathF.Round(wp.cellF);
+                    ResolveHit(rt, wp, cell, layer, dt, songTime);
+                }
             }
         }
 
-        /// <summary>note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決め、スコア/コンボ/演出を反映する。</summary>
-        private void ResolveHit(NoteRuntime rt, Waypoint wp, int cell, Layer layer, float dt, float songTime)
+        /// <summary>
+        /// note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決め、スコア/コンボ/演出を反映する。
+        /// 有効なティアが無い場合（chainWindow の外＝理論上到達しない）は null を返し、呼び出し側は状態を変えない。
+        /// </summary>
+        private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, int cell, float width, float songTime)
         {
-            var traits = NoteKindTraits.Of(rt.note.kind);
+            var traits = NoteKindTraits.Of(kind);
             float ms = -dt * 1000f; // 正 = 早押し
             float absMs = MathF.Abs(ms);
 
-            JudgeKind kind;
+            JudgeKind judged;
             if (traits.judgeProfile == JudgeProfile.AllPerfect)
             {
-                kind = JudgeKind.PerfectPlus; // 窓内(呼び出し元でchainWindow済み)は常にPERFECT+
+                judged = JudgeKind.PerfectPlus; // 窓内(呼び出し元でchainWindow済み)は常にPERFECT+
             }
             else
             {
                 var tier = JudgeTiers.TierFor(absMs);
-                if (tier == null) return; // 理論上ここには来ない（chainWindowで既に窓内保証済み）が安全側に
-                kind = tier.Value.kind;
+                if (tier == null) return null; // 理論上ここには来ない（chainWindowで既に窓内保証済み）が安全側に
+                judged = tier.Value.kind;
             }
 
-            switch (kind)
+            switch (judged)
             {
                 case JudgeKind.PerfectPlus: Score.perfectPlus++; break;
                 case JudgeKind.Perfect: Score.perfect++; break;
@@ -217,7 +218,7 @@ namespace Muses.Gameplay
             }
             Score.combo++;
             Score.maxCombo = Math.Max(Score.maxCombo, Score.combo);
-            Score.lastJudge = kind switch
+            Score.lastJudge = judged switch
             {
                 JudgeKind.PerfectPlus => "PERFECT+",
                 JudgeKind.Perfect => "PERFECT",
@@ -226,13 +227,33 @@ namespace Muses.Gameplay
             };
             Score.lastMs = ms;
 
-            rt.state = NoteState.Hit;
-            noteView.SetNoteAlpha(rt, 0f);
-
-            Flashes.Add(new HitFlash { layer = layer, cell = cell, width = wp.width, born = songTime, kind = kind });
+            Flashes.Add(new HitFlash { layer = layer, cell = cell, width = width, born = songTime, kind = judged });
+            return judged;
         }
 
-        /// <summary>毎フレーム: 見逃し判定と、Slide の追従型判定</summary>
+        /// <summary>Tap/ExTap/Flick: 接触即ヒット確定。</summary>
+        private void ResolveHit(NoteRuntime rt, Waypoint wp, int cell, Layer layer, float dt, float songTime)
+        {
+            var judged = ApplyJudgement(rt.note.kind, dt, layer, cell, wp.width, songTime);
+            if (judged == null) return;
+            rt.state = NoteState.Hit;
+            noteView.SetNoteAlpha(rt, 0f);
+        }
+
+        /// <summary>
+        /// note-spec.md §0.2/§2.1。Slide 始点は Tap と同じ枠内更新で駆動されるが、
+        /// ヒット確定はせず Active へ遷移する（以降のコンボ点は Update() で独立判定、item7）。
+        /// </summary>
+        private void ResolveSlideStart(NoteRuntime rt, Waypoint wp, Layer layer, float dt, float songTime)
+        {
+            int cell = (int)MathF.Round(wp.cellF);
+            var judged = ApplyJudgement(NoteKind.Slide, dt, layer, cell, wp.width, songTime);
+            if (judged == null) return;
+            rt.state = NoteState.Active;
+            rt.nextComboIndex = 0;
+        }
+
+        /// <summary>毎フレーム: 見逃し判定と、Slide のコンボ点独立判定（item7）</summary>
         public void Update(float songTime, TouchInputManager input)
         {
             var rts = noteView.Runtimes;
@@ -247,83 +268,109 @@ namespace Muses.Gameplay
                 var n = rt.note;
                 float start = ChartMath.NoteStart(n);
                 if (start > songTime) break; // 開始時刻順にソート済みなので以降は未開始
-                float end = ChartMath.NoteEnd(n);
 
                 if (rt.state == NoteState.Pending)
                 {
-                    if (n.kind == NoteKind.Slide)
+                    // note-spec.md §6.2/§0.2: Tap/ExTap/Flick/Slide始点は同じ実効窓
+                    // （縦連判定で中点分割された窓）の上限を超えた時点でMISSが確定する。
+                    float hi = chainWindows.TryGetValue(rt, out var win)
+                        ? win.hi
+                        : start + JudgeTiers.All[^1].halfWidthMs / 1000f;
+                    if (songTime > hi)
                     {
-                        // Slideは開始時刻に到達したら追従判定を開始する（接触が要らない）
-                        rt.state = NoteState.Active;
-                        rt.lastHeld = songTime;
-                    }
-                    else
-                    {
-                        // note-spec.md §6.2: MISSは実効窓（縦連判定で中点分割された窓）の上限を超えた時点で確定
-                        float hi = chainWindows.TryGetValue(rt, out var win)
-                            ? win.hi
-                            : start + JudgeTiers.All[^1].halfWidthMs / 1000f;
-                        if (songTime > hi)
+                        Score.miss++;
+                        Score.combo = 0;
+                        Score.lastJudge = "MISS";
+                        var wp = n.points[0];
+                        var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+                        int cell = (int)MathF.Round(wp.cellF);
+                        Flashes.Add(new HitFlash
+                        {
+                            layer = layer, cell = cell, width = wp.width, born = songTime, kind = JudgeKind.Miss,
+                        });
+
+                        if (n.kind == NoteKind.Slide)
+                        {
+                            // note-spec.md §2.1: 始点を逃してMISSになっても、残りのコンボ点は
+                            // 押し直せば独立に成立しうる。以降の判定を続けるためActiveへ遷移する
+                            // （Hit/Missedにすると Update() の巡回対象から外れてしまう）。
+                            rt.state = NoteState.Active;
+                            rt.nextComboIndex = 0;
+                            noteView.SetNoteAlpha(rt, 0.45f);
+                        }
+                        else
                         {
                             rt.state = NoteState.Missed;
                             noteView.SetNoteAlpha(rt, 0.12f);
-                            Score.miss++;
-                            Score.combo = 0;
-                            Score.lastJudge = "MISS";
-                            var wp = n.points[0];
-                            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                            int cell = (int)MathF.Round(wp.cellF);
-                            Flashes.Add(new HitFlash
-                            {
-                                layer = layer, cell = cell, width = wp.width, born = songTime, kind = JudgeKind.Miss,
-                            });
                         }
                     }
                     continue;
                 }
 
-                if (rt.state != NoteState.Active) continue;
-
-                var (layer2, lo, hi2) = CellRange(rt, songTime);
-                bool held = AnyOccupied(input, layer2, lo, hi2);
-                if (held) rt.lastHeld = songTime;
-
-                // 保持が0.2秒以上外れたら失敗
-                if (!held && songTime - rt.lastHeld > 0.2f)
-                {
-                    BreakNote(rt);
-                    continue;
-                }
-
-                noteView.SetNoteAlpha(rt, held ? 1f : 0.45f);
-
-                if (songTime > end)
-                {
-                    // Slideの終点は離す必要なし。フレーム落ちで丸ごと飛んだ場合に誤って
-                    // 成立しないよう、「最後に保持できていた時刻」が終端に十分近いことを条件にする
-                    if (end - rt.lastHeld <= 0.2f)
-                    {
-                        rt.state = NoteState.Hit;
-                        noteView.SetNoteAlpha(rt, 0f);
-                        Score.perfect++;
-                        Score.combo++;
-                        Score.maxCombo = Math.Max(Score.maxCombo, Score.combo);
-                    }
-                    else
-                    {
-                        BreakNote(rt);
-                    }
-                }
+                if (n.kind != NoteKind.Slide || rt.state != NoteState.Active) continue;
+                UpdateSlide(rt, n, songTime, input);
             }
         }
 
-        private void BreakNote(NoteRuntime rt)
+        /// <summary>
+        /// note-spec.md §2.1/§2.4。コンボ点を独立に判定する。旧 HOLD BREAK（0.2秒離れたら丸ごと失敗）は廃止:
+        /// 一度逃しても、以降のコンボ点は押し直せば成立しうる。
+        /// </summary>
+        private void UpdateSlide(NoteRuntime rt, Note n, float songTime, TouchInputManager input)
         {
-            rt.state = NoteState.Missed;
-            noteView.SetNoteAlpha(rt, 0.12f);
-            Score.miss++;
-            Score.combo = 0;
-            Score.lastJudge = "HOLD BREAK";
+            bool occ = AnyContactInBand(input, n, songTime);
+            rt.slideSamples.Add((songTime, occ));
+            noteView.SetNoteAlpha(rt, occ ? 1f : 0.45f);
+
+            var comboTimes = n.comboTimes;
+            while (rt.nextComboIndex < comboTimes.Count && songTime >= comboTimes[rt.nextComboIndex] + 0.1f)
+            {
+                ResolveSlideComboPoint(rt, n, comboTimes[rt.nextComboIndex], songTime);
+                rt.nextComboIndex++;
+            }
+
+            // 次の未確定コンボ点の判定窓より前のサンプルはもう不要
+            float horizon = (rt.nextComboIndex < comboTimes.Count ? comboTimes[rt.nextComboIndex] : songTime) - 0.15f;
+            rt.slideSamples.RemoveAll(s => s.time < horizon);
+
+            if (rt.nextComboIndex >= comboTimes.Count)
+            {
+                rt.state = NoteState.Hit;
+                noteView.SetNoteAlpha(rt, 0f);
+            }
+        }
+
+        /// <summary>
+        /// note-spec.md §2.4。コンボ点 t_p について、[t_p-100ms, t_p+100ms] 内で帯を占有していた
+        /// サンプルのうち最も近いものとの dt でティアを決める。占有サンプルが無ければ MISS。
+        /// </summary>
+        private void ResolveSlideComboPoint(NoteRuntime rt, Note n, float tp, float songTime)
+        {
+            float lo = tp - 0.1f, hi = tp + 0.1f;
+            bool found = false;
+            float bestDiff = 0f; // s.time - tp（符号付き、|bestDiff| が最小のもの）
+            foreach (var s in rt.slideSamples)
+            {
+                if (!s.occupied || s.time < lo || s.time > hi) continue;
+                float diff = s.time - tp;
+                if (!found || MathF.Abs(diff) < MathF.Abs(bestDiff)) { bestDiff = diff; found = true; }
+            }
+
+            var (layerF, cellF, width) = ChartMath.At(n, tp);
+            var layer = layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            int cell = (int)MathF.Round(cellF);
+
+            if (!found)
+            {
+                Score.miss++;
+                Score.combo = 0;
+                Score.lastJudge = "MISS";
+                Flashes.Add(new HitFlash { layer = layer, cell = cell, width = width, born = songTime, kind = JudgeKind.Miss });
+                return;
+            }
+
+            // dt = ノーツ時刻 - 入力時刻（ResolveHit/ResolveSlideStart と同じ符号規則）
+            ApplyJudgement(NoteKind.Slide, -bestDiff, layer, cell, width, songTime);
         }
     }
 }

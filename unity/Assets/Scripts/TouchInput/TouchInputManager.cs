@@ -67,6 +67,23 @@ namespace Muses.TouchInput
             return Mathf.Clamp(c, 0, n - 1);
         }
 
+        /// <summary>note-spec.md §0.2。連続座標 cellF（u の線形写像、クランプなし）</summary>
+        private float CellFOf(float u)
+        {
+            var cfg = stageController.Config;
+            return (u + cfg.U) * cfg.cells / (2f * cfg.U);
+        }
+
+        /// <summary>
+        /// note-spec.md §0.2。連続座標 layerF。判定線の画面位置(vGroundJudge/vSkyJudge)を
+        /// 0/1 とする線形逆変換。離散判定(LayerOf、vSplit基準)とは別の量で、Slide/Flickの包含判定専用。
+        /// </summary>
+        private float LayerFOf(float v)
+        {
+            var cfg = stageController.Config;
+            return (v - cfg.vGroundJudge) / (cfg.vSkyJudge - cfg.vGroundJudge);
+        }
+
         private Layer LayerOf(float v, Layer? prev)
         {
             var cfg = stageController.Config;
@@ -113,16 +130,20 @@ namespace Muses.TouchInput
         {
             var (u, v) = Ndc(screenPos);
             eventTimes.Add(Time.realtimeSinceStartup);
+            // note-spec.md §0.2: 連続座標は離散セル/層の変化の有無に関わらず毎フレーム更新する
+            // （Slide/Flick の連続包含判定は境界またぎイベントに依存しないため）。
+            float cellF = CellFOf(u);
+            float layerF = LayerFOf(v);
 
             if (!Contacts.TryGetValue(id, out var c))
             {
                 var layer = LayerOf(v, null);
                 var cell = CellOf(u);
                 float at = nowSec();
-                c = new Contact { id = id, u = u, v = v, layer = layer, cell = cell, since = at };
+                c = new Contact { id = id, u = u, v = v, layer = layer, cell = cell, cellF = cellF, layerF = layerF, since = at };
                 Contacts[id] = c;
                 Occupied.Add(Key(layer, cell));
-                Emit(layer, cell, true, at);
+                Emit(layer, cell, true, at, cellF, layerF);
                 return;
             }
 
@@ -130,13 +151,15 @@ namespace Muses.TouchInput
             var newCell = CellOf(u);
             c.u = u;
             c.v = v;
+            c.cellF = cellF;
+            c.layerF = layerF;
             if (newLayer != c.layer || newCell != c.cell)
             {
                 ReleaseCell(c.layer, c.cell, id);
                 c.layer = newLayer;
                 c.cell = newCell;
                 Occupied.Add(Key(newLayer, newCell));
-                Emit(newLayer, newCell, false, nowSec());
+                Emit(newLayer, newCell, false, nowSec(), cellF, layerF);
             }
         }
 
@@ -147,10 +170,10 @@ namespace Muses.TouchInput
             Occupied.Remove(Key(layer, cell));
         }
 
-        private void Emit(Layer layer, int cell, bool fresh, float at)
+        private void Emit(Layer layer, int cell, bool fresh, float at, float cellF, float layerF)
         {
             Ripples.Add((layer, cell, at));
-            OnEnter?.Invoke(new EnterEvent { layer = layer, cell = cell, fresh = fresh, at = at });
+            OnEnter?.Invoke(new EnterEvent { layer = layer, cell = cell, fresh = fresh, at = at, cellF = cellF, layerF = layerF });
         }
 
         public bool IsOccupied(Layer layer, int cell) => Occupied.Contains(Key(layer, cell));

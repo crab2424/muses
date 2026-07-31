@@ -116,7 +116,6 @@ namespace Muses.Notes
                     vStart = vStart,
                     vCount = st.Count - vStart,
                     alpha = 1f,
-                    lastHeld = float.NegativeInfinity,
                 });
             }
 

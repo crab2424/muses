@@ -113,6 +113,13 @@ namespace Muses.Chart
         /// <summary>ノーツ単位（Waypoint単位ではない）。既定 0。note-spec.md §5.5。</summary>
         public int scrollGroup;
         public List<Waypoint> points;
+
+        /// <summary>
+        /// note-spec.md §2.2。Slide のコンボ点時刻（秒、ロード時に <see cref="ChartFormat.ResolveSlideComboPoints"/>
+        /// が生成）。始点(points[0])はContact駆動でJudge.OnEnterが別途解決するため含まない。
+        /// Slide以外のkindでは空リストのまま未使用。
+        /// </summary>
+        public List<float> comboTimes = new();
     }
 
     public static class ChartMath

@@ -54,6 +54,12 @@ namespace Muses.Stage
         /// <summary>押下中ポインタの層切り替えヒステリシス (NDC v)</summary>
         public float splitHysteresis;
         /// <summary>
+        /// note-spec.md §0.2。Slide/Flick の連続座標包含判定における layerF 方向の許容半径。
+        /// 0.5 なら「地上(0)/空中(1)それぞれの半分」に相当し、旧来の離散な層判定と近い挙動になる。
+        /// 実値は未確定（flickWindowMs と同様、実機で調整する想定の仮値）。
+        /// </summary>
+        public float layerJudgeRadius;
+        /// <summary>
         /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
         /// （実機の出力レイテンシ分、判定を「音が実際に鳴った後」にずらす想定）。
         /// 実機キャリブレーション用の値なので <see cref="OffsetSettings"/> でPlayerPrefsに永続化する。
@@ -115,6 +121,7 @@ namespace Muses.Stage
             readAheadSec = 1.2f,
             bpm = 150f,
             splitHysteresis = 0.05f,
+            layerJudgeRadius = 0.5f,
             judgeOffsetMs = 0f,
             visualOffsetMs = 0f,
 

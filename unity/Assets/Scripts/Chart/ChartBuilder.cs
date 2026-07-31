@@ -110,6 +110,7 @@ namespace Muses.Chart
 
             chart.notes.Sort((a, c2) => a.points[0].tick.CompareTo(c2.points[0].tick));
             ChartFormat.ResolveTimes(chart);
+            ChartFormat.ResolveSlideComboPoints(chart);
             return chart;
         }
     }
