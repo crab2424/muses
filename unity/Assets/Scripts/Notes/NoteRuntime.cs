@@ -18,7 +18,7 @@ namespace Muses.Notes
         public int vCount;
         /// <summary>現在の表示アルファ。値が変わらないときは頂点更新をスキップする</summary>
         public float alpha = 1f;
-        /// <summary>hold / arc: 最後に保持できていた時刻</summary>
+        /// <summary>Slide: 最後に保持できていた時刻</summary>
         public float lastHeld = float.NegativeInfinity;
     }
 }

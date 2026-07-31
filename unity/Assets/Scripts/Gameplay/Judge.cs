@@ -11,8 +11,11 @@ namespace Muses.Gameplay
     /// 判定。移植元: web-prototype/src/judge.ts。判定ウィンドウ・スコアリングは
     /// 未設計項目のため暫定実装のまま移植している（TS版のコメント参照）。
     ///
-    /// 走査コスト: 譜面は開始時刻順にソートされているので、毎フレーム全ノーツを見ずに
-    /// 「まだ解決していない最初のノーツ」から「開始時刻が現在時刻を超えるノーツ」までだけを見る。
+    /// note-spec.md rev.4 のデータモデル（Waypoint[] + kind プリセット）に合わせて再構成したが、
+    /// トレイト駆動の判定（judgeProfile/chainExempt/縦連判定/スコア式など、note-spec.md §8 item4〜16）
+    /// はまだ未実装。挙動は旧実装のまま: Tap/ExTap は接触即判定、Slide（旧Hold+旧Arc統合）は
+    /// 開始時刻に自動追従開始、離れて0.2秒でブレイク。Flick は本来 Presence 駆動＋移動量判定だが
+    /// item8 未着手のため、暫定的に Tap と同じ接触判定で代用している（TODO: item8で置き換え）。
     /// </summary>
     public class Judge
     {
@@ -41,21 +44,25 @@ namespace Muses.Gameplay
         {
             var n = rt.note;
             int max = cfg.cells - 1;
-            if (n.kind == NoteKind.Arc)
+            if (n.kind == NoteKind.Slide)
             {
-                var (layerF, cellF) = ChartMath.ArcAt(n, songTime);
-                int lo = (int)MathF.Floor(cellF - n.width / 2f);
-                int hi = (int)MathF.Ceiling(cellF + n.width / 2f) - 1;
+                var (layerF, cellF, width) = ChartMath.At(n, songTime);
+                int lo = (int)MathF.Floor(cellF - width / 2f);
+                int hi = (int)MathF.Ceiling(cellF + width / 2f) - 1;
                 return (
                     layerF > 0.5f ? Layer.Sky : Layer.Ground,
                     Math.Max(0, Math.Min(max, lo)),
                     Math.Max(0, Math.Min(max, Math.Max(lo, hi)))
                 );
             }
+
+            var wp = n.points[0];
+            int cell = (int)MathF.Round(wp.cellF);
+            int w = Math.Max(1, (int)MathF.Round(wp.width));
             return (
-                n.layer,
-                Math.Max(0, Math.Min(max, n.cell)),
-                Math.Max(0, Math.Min(max, n.cell + (int)n.width - 1))
+                wp.layerF > 0.5f ? Layer.Sky : Layer.Ground,
+                Math.Max(0, Math.Min(max, cell)),
+                Math.Max(0, Math.Min(max, cell + w - 1))
             );
         }
 
@@ -79,10 +86,14 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > songTime + win) break; // これ以降は窓の外
-                if (rt.state != NoteState.Pending || n.kind == NoteKind.Arc) continue; // アークは接触トリガではなく追従型
-                if (n.layer != e.layer) continue;
-                if (e.cell < n.cell || e.cell >= n.cell + n.width) continue;
-                float dt = n.time - songTime;
+                if (rt.state != NoteState.Pending || n.kind == NoteKind.Slide) continue; // Slideは接触トリガではなく追従型
+                var wp = n.points[0];
+                var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+                if (layer != e.layer) continue;
+                int cell = (int)MathF.Round(wp.cellF);
+                int w = Math.Max(1, (int)MathF.Round(wp.width));
+                if (e.cell < cell || e.cell >= cell + w) continue;
+                float dt = wp.time - songTime;
                 if (MathF.Abs(dt) > win) continue;
                 if (MathF.Abs(dt) < MathF.Abs(bestDt))
                 {
@@ -92,7 +103,9 @@ namespace Muses.Gameplay
             }
 
             if (best == null) return;
-            var bn = best.note;
+            var bwp = best.note.points[0];
+            var bLayer = bwp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            int bCell = (int)MathF.Round(bwp.cellF);
 
             float ms = -bestDt * 1000f; // 正 = 早押し
             bool perfect = MathF.Abs(ms) <= cfg.windowPerfect;
@@ -102,29 +115,20 @@ namespace Muses.Gameplay
             Score.lastJudge = perfect ? "PERFECT" : "GOOD";
             Score.lastMs = ms;
 
-            if (bn.kind == NoteKind.Hold)
-            {
-                best.state = NoteState.Active;
-                best.lastHeld = songTime;
-                noteView.SetNoteAlpha(best, 0.75f);
-            }
-            else
-            {
-                best.state = NoteState.Hit;
-                noteView.SetNoteAlpha(best, 0f);
-            }
+            best.state = NoteState.Hit;
+            noteView.SetNoteAlpha(best, 0f);
 
             Flashes.Add(new HitFlash
             {
-                layer = bn.layer,
-                cell = bn.cell,
-                width = bn.width,
+                layer = bLayer,
+                cell = bCell,
+                width = bwp.width,
                 born = songTime,
                 kind = perfect ? JudgeKind.Perfect : JudgeKind.Good,
             });
         }
 
-        /// <summary>毎フレーム: 見逃し判定と、ホールド／アークの追従型判定</summary>
+        /// <summary>毎フレーム: 見逃し判定と、Slide の追従型判定</summary>
         public void Update(float songTime, TouchInputManager input)
         {
             float win = cfg.windowGood / 1000f;
@@ -144,9 +148,9 @@ namespace Muses.Gameplay
 
                 if (rt.state == NoteState.Pending)
                 {
-                    if (n.kind == NoteKind.Arc)
+                    if (n.kind == NoteKind.Slide)
                     {
-                        // アークは開始時刻に到達したら追従判定を開始する（接触が要らない）
+                        // Slideは開始時刻に到達したら追従判定を開始する（接触が要らない）
                         rt.state = NoteState.Active;
                         rt.lastHeld = songTime;
                     }
@@ -157,9 +161,12 @@ namespace Muses.Gameplay
                         Score.miss++;
                         Score.combo = 0;
                         Score.lastJudge = "MISS";
+                        var wp = n.points[0];
+                        var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+                        int cell = (int)MathF.Round(wp.cellF);
                         Flashes.Add(new HitFlash
                         {
-                            layer = n.layer, cell = n.cell, width = n.width, born = songTime, kind = JudgeKind.Miss,
+                            layer = layer, cell = cell, width = wp.width, born = songTime, kind = JudgeKind.Miss,
                         });
                     }
                     continue;
@@ -167,8 +174,8 @@ namespace Muses.Gameplay
 
                 if (rt.state != NoteState.Active) continue;
 
-                var (layer, lo, hi) = CellRange(rt, songTime);
-                bool held = AnyOccupied(input, layer, lo, hi);
+                var (layer2, lo, hi) = CellRange(rt, songTime);
+                bool held = AnyOccupied(input, layer2, lo, hi);
                 if (held) rt.lastHeld = songTime;
 
                 // 保持が0.2秒以上外れたら失敗
@@ -182,7 +189,7 @@ namespace Muses.Gameplay
 
                 if (songTime > end)
                 {
-                    // ロングノーツの終点は離す必要なし。フレーム落ちで丸ごと飛んだ場合に誤って
+                    // Slideの終点は離す必要なし。フレーム落ちで丸ごと飛んだ場合に誤って
                     // 成立しないよう、「最後に保持できていた時刻」が終端に十分近いことを条件にする
                     if (end - rt.lastHeld <= 0.2f)
                     {

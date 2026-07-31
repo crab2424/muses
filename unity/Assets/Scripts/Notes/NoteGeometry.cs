@@ -13,7 +13,7 @@ namespace Muses.Notes
         public float[] state;
         public float[] near;
         public float[] layerF;
-        /// <summary>タップ/ホールド始点の厚み方向の頂点符号（-1=近い側 / +1=遠い側 / 0=無関係）。
+        /// <summary>タップ系ノーツの厚み方向の頂点符号（-1=近い側 / +1=遠い側 / 0=無関係）。
         /// シェーダ側で現在の奥行きに比例した厚みを付けるために使う（<see cref="NoteGeometry"/>のコメント参照）。</summary>
         public float[] side;
         public List<NoteRuntime> runtimes;
@@ -27,6 +27,10 @@ namespace Muses.Notes
     /// ノーツの頂点データ生成。移植元: web-prototype/src/notes.ts の NoteField.build()（THREE依存を除く）。
     /// x はワールド座標を焼き込まず (u, y, 時刻) を持たせ、頂点シェーダ（Note.shader）で毎フレーム配置する
     /// （stage.ts と同じ理由: laneConverge変更への追従、長時間譜面でのfloat精度劣化回避）。
+    ///
+    /// note-spec.md rev.4 のデータモデルに合わせ、Tap/ExTap/Flick は単一Waypointの薄い板、
+    /// Slide（旧Hold+旧Arcの統合）は Waypoint 列を通した1本の帯として描く（§2.1）。
+    /// 中継点(marker)の個別描画・幅のスナップ表示は Phase 1 後続項目（§8 item11）で未実装。
     /// </summary>
     public static class NoteGeometry
     {
@@ -59,9 +63,9 @@ namespace Muses.Notes
                 sideArr.Add(0f);
             }
 
-            // タップ/ホールド始点用: 奥行き方向に薄い板を、頂点シェーダ側で「現在の奥行きに
-            // 比例した厚み」に広げてもらうための頂点を積む（このメソッドでは全頂点を同じ中心時刻
-            // centerTimeで積み、near/far側の判定を side (-1/+1) に持たせる。理由は下のコメント参照）。
+            // タップ系ノーツ用: 奥行き方向に薄い板を、頂点シェーダ側で「現在の奥行きに
+            // 比例した厚み」に広げてもらうための頂点を積む（全頂点を同じ中心時刻centerTimeで積み、
+            // near/far側の判定を side (-1/+1) に持たせる）。
             void QuadThin(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD)
             {
                 float[] uu = { u0, u1, u1, u0 };
@@ -78,52 +82,31 @@ namespace Muses.Notes
                 }
             }
 
-            void Quad(Vector3[] p, float layerF, Color c, float nearD)
-            {
-                int[] idx = { 0, 1, 2, 0, 2, 3 };
-                foreach (var i in idx) Push(p[i].x, p[i].y, p[i].z, layerF, c, nearD);
-            }
-
             var cG = StageGeometry.ColorFromHex(StageColors.Ground);
             var cS = StageGeometry.ColorFromHex(StageColors.Sky);
+            var cEx = new Color(0xff / 255f, 0xd5 / 255f, 0x4a / 255f); // Ex Tap: 通常Tapと区別する専用色
+            var cFlick = new Color(0xff / 255f, 0x4a / 255f, 0xc8 / 255f); // Flick: 仮の専用色（判定はPhase 1後続項目）
+            var cSlide = new Color(0x35 / 255f, 0xe8 / 255f, 0xff / 255f);
 
             foreach (var n in notes)
             {
                 int vStart = st.Count;
 
-                if (n.kind == NoteKind.Tap)
+                if (n.kind == NoteKind.Tap || n.kind == NoteKind.ExTap || n.kind == NoteKind.Flick)
                 {
-                    float layerF = n.layer == Layer.Sky ? 1f : 0f;
+                    var wp = n.points[0];
+                    float layerF = wp.layerF > 0.5f ? 1f : 0f;
                     float y = YAt(layerF, dCopy.skyHeight) + dCopy.zJudge * 0.002f;
-                    float u0 = UAt(n.cell + 0.04f);
-                    float u1 = UAt(n.cell + n.width - 0.04f);
-                    QuadThin(u0, u1, y, n.time, layerF, n.layer == Layer.Sky ? cS : cG, NearOf(layerF));
+                    float u0 = UAt(wp.cellF + 0.04f);
+                    float u1 = UAt(wp.cellF + wp.width - 0.04f);
+                    var c = n.kind == NoteKind.ExTap ? cEx
+                        : n.kind == NoteKind.Flick ? cFlick
+                        : (layerF > 0.5f ? cS : cG);
+                    QuadThin(u0, u1, y, wp.time, layerF, c, NearOf(layerF));
                 }
-                else if (n.kind == NoteKind.Hold)
+                else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
-                    float layerF = n.layer == Layer.Sky ? 1f : 0f;
-                    float y = YAt(layerF, dCopy.skyHeight) + dCopy.zJudge * 0.002f;
-                    var c = n.layer == Layer.Sky ? cS : cG;
-                    float nr = NearOf(layerF);
-
-                    float u0 = UAt(n.cell + 0.16f);
-                    float u1 = UAt(n.cell + n.width - 0.16f);
-                    Quad(new[]
-                    {
-                        new Vector3(u0, y, n.time),
-                        new Vector3(u1, y, n.time),
-                        new Vector3(u1, y, n.endTime),
-                        new Vector3(u0, y, n.endTime),
-                    }, layerF, Dim(c, 0.6f), nr);
-
-                    float hu0 = UAt(n.cell + 0.04f);
-                    float hu1 = UAt(n.cell + n.width - 0.04f);
-                    float hy = y + dCopy.zJudge * 0.001f;
-                    QuadThin(hu0, hu1, hy, n.time, layerF, c, nr);
-                }
-                else
-                {
-                    PushArc(n, dCopy, Push, NearOf, UAt, YAt);
+                    PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, cSlide);
                 }
 
                 runtimes.Add(new NoteRuntime
@@ -168,30 +151,28 @@ namespace Muses.Notes
             };
         }
 
-        private static Color Dim(Color c, float k) => new(c.r * k, c.g * k, c.b * k, c.a);
-
         /// <summary>
-        /// アークは層をまたぐため、頂点ごとに自分の layerF に応じた手前端を持たせる。
+        /// Slide は層をまたぐため、頂点ごとに自分の layerF に応じた手前端を持たせる。
         /// 幅もセル分数（cellF ± width/2）をuに変換して持たせ、ワールド単位に焼き込まない。
+        /// points.Length==2 の直線区間（旧Holdに相当）も同じコードパスで描ける。
         /// </summary>
-        private static void PushArc(
-            Note arc, Derived d,
+        private static void PushSlideBand(
+            Note slide, Derived d,
             PushFn push, Func<float, float> nearOf,
-            Func<float, float> uAt, Func<float, float, float> yAt)
+            Func<float, float> uAt, Func<float, float, float> yAt, Color c)
         {
-            float t0 = ChartMath.NoteStart(arc);
-            float t1 = ChartMath.NoteEnd(arc);
+            float t0 = ChartMath.NoteStart(slide);
+            float t1 = ChartMath.NoteEnd(slide);
             int steps = Math.Max(8, (int)MathF.Ceiling((t1 - t0) / 0.03f));
-            var c = new Color(0x35 / 255f, 0xe8 / 255f, 0xff / 255f);
 
-            (float cellF, float y, float t, float layerF) At(float time)
+            (float cellF, float y, float t, float layerF, float width) At(float time)
             {
-                var (layerF, cellF) = ChartMath.ArcAt(arc, time);
-                return (cellF, yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, time, layerF);
+                var (layerF, cellF, width) = ChartMath.At(slide, time);
+                return (cellF, yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, time, layerF, width);
             }
 
-            void Emit((float cellF, float y, float t, float layerF) p, float side) =>
-                push(uAt(p.cellF + side * arc.width / 2f), p.y, p.t, p.layerF, c, nearOf(p.layerF));
+            void Emit((float cellF, float y, float t, float layerF, float width) p, float side) =>
+                push(uAt(p.cellF + side * p.width / 2f), p.y, p.t, p.layerF, c, nearOf(p.layerF));
 
             var prev = At(t0);
             for (int i = 1; i <= steps; i++)

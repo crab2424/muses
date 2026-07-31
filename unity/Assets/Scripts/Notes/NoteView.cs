@@ -56,6 +56,11 @@ namespace Muses.Notes
 
             EnsureNotesObject();
             notesMesh.Clear();
+            // 既定の16bitインデックス（上限65535頂点）では長時間譜面で頂点数が溢れ、
+            // インデックスが 65536 で巻き戻って「あるノーツの最終頂点＋次のノーツの先頭2頂点」を
+            // 結ぶ三角形が大量に生まれる（65536 mod 3 = 1 なので巻き戻り後は3頂点境界からずれる）。
+            // 600秒・BPM150のデモ譜面で既に約8万頂点あるため必須。
+            notesMesh.indexFormat = IndexFormat.UInt32;
             notesMesh.SetVertices(data.positions);
             notesMesh.SetColors(data.colors);
             notesUv0 = Pack(data.state, data.near);
@@ -69,6 +74,7 @@ namespace Muses.Notes
 
             EnsureBeatObject();
             beatMesh.Clear();
+            beatMesh.indexFormat = IndexFormat.UInt32; // 現状は数百頂点だが、長尺譜面での溢れを防ぐため合わせておく
             beatMesh.SetVertices(data.beatPositions);
             beatMesh.SetUVs(0, Pack(null, data.beatNear));
             beatMesh.SetUVs(1, Pack(data.beatLayerF, null));

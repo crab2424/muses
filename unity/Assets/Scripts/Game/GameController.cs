@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using UnityEngine;
 using Muses.Audio;
 using Muses.Chart;
@@ -30,7 +29,7 @@ namespace Muses.Game
 
         private SongClock clock;
         private Judge judge;
-        private List<Chart.Note> chart = new();
+        private Chart.ChartData chart = new();
         private float fps = 60f;
 
         private void Awake()
@@ -70,7 +69,7 @@ namespace Muses.Game
         private void Rechart()
         {
             chart = ChartBuilder.BuildDemoChart(stageController.Config.bpm, chartSeconds, stageController.Config.cells);
-            noteView.Build(stageController.Config, stageController.Derived, chart);
+            noteView.Build(stageController.Config, stageController.Derived, chart.notes);
             judge.SetConfig(stageController.Config);
             judge.Reset();
         }
