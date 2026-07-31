@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace Muses.Audio
@@ -15,6 +16,8 @@ namespace Muses.Audio
     {
         private double t0;
         private double nextBeat;
+        /// <summary>Pause() 時点の SongTime を保持する（Running=false の間、SongTime はここで凍結する）</summary>
+        private double pausedAt;
         public bool Running { get; private set; }
 
         private readonly AudioSource source;
@@ -32,10 +35,42 @@ namespace Muses.Audio
         {
             t0 = AudioSettings.dspTime;
             nextBeat = 0;
+            pausedAt = 0;
             Running = true;
         }
 
-        public float SongTime => Running ? (float)(AudioSettings.dspTime - t0) : 0f;
+        /// <summary>
+        /// implementation-roadmap.md 項目F。曲時刻を止める（開発中の判定確認・エディタでの一時停止用）。
+        /// SongTime は Pause() 時点の値のまま凍結される。
+        /// </summary>
+        public void Pause()
+        {
+            if (!Running) return;
+            pausedAt = AudioSettings.dspTime - t0;
+            Running = false;
+        }
+
+        /// <summary>Pause() で止めた地点から再開する。</summary>
+        public void Resume()
+        {
+            if (Running) return;
+            t0 = AudioSettings.dspTime - pausedAt;
+            Running = true;
+        }
+
+        /// <summary>
+        /// implementation-roadmap.md 項目D。任意時刻へジャンプする（実行中・一時停止中どちらでも呼べる）。
+        /// メトロノームの次拍もこの時刻基準で組み直す。
+        /// </summary>
+        public void Seek(double songTime)
+        {
+            songTime = Math.Max(0, songTime);
+            if (Running) t0 = AudioSettings.dspTime - songTime;
+            else pausedAt = songTime;
+            nextBeat = songTime;
+        }
+
+        public float SongTime => Running ? (float)(AudioSettings.dspTime - t0) : (float)pausedAt;
 
         public void TickMetronome(float bpm, bool enabled)
         {

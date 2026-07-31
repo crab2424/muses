@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 using Muses.Audio;
 using Muses.Chart;
 using Muses.Gameplay;
@@ -41,7 +42,7 @@ namespace Muses.Game
         {
             OffsetSettings.Load(stageController.Config);
 
-            judge = new Judge(stageController.Config, noteView);
+            judge = new Judge(stageController.Config, noteView.SetNoteAlpha);
             if (overlay != null) overlay.Judge = judge;
 
             input.Init(() => clock.SongTime);
@@ -59,11 +60,64 @@ namespace Muses.Game
         /// <summary>visualOffsetMs を適用した、ノーツ描画位置にだけ使う時刻。音と描画のズレ補正用</summary>
         private float VisualTime() => clock.SongTime + stageController.Config.visualOffsetMs / 1000f;
 
-        /// <summary>main.ts の restart() 相当</summary>
+        /// <summary>main.ts の restart() 相当。譜面を作り直して頭から再生する（implementation-roadmap.md 項目F）。</summary>
         public void StartGame()
         {
+            paused = false;
             Rechart();
             clock.Start();
+        }
+
+        public bool Paused => paused;
+        private bool paused;
+
+        public void Pause()
+        {
+            if (paused) return;
+            paused = true;
+            clock.Pause();
+        }
+
+        public void Resume()
+        {
+            if (!paused) return;
+            paused = false;
+            clock.Resume();
+        }
+
+        public void TogglePause()
+        {
+            if (paused) Resume(); else Pause();
+        }
+
+        /// <summary>即座リスタート（implementation-roadmap.md 項目F）。譜面を作り直して頭から再生する。</summary>
+        public void Retry() => StartGame();
+
+        /// <summary>
+        /// implementation-roadmap.md 項目D。任意の曲時刻へジャンプする。エディタのスクラブ操作の想定口。
+        /// Clock と Judge の両方を同じ時刻に揃える必要があるため、必ずこのメソッド経由で行うこと。
+        /// </summary>
+        public void SeekTo(float songTime)
+        {
+            songTime = Mathf.Max(0f, songTime);
+            clock.Seek(songTime);
+            judge.Seek(songTime);
+        }
+
+        public void SeekBy(float deltaSeconds) => SeekTo(clock.SongTime + deltaSeconds);
+
+        /// <summary>
+        /// 開発用のキーボードショートカット（Space=一時停止、R=リトライ、←/→=5秒シーク）。
+        /// エディタUIができるまでの暫定確認手段。Editor確認用にマウスを拾うTouchInputManagerと同じ位置づけ。
+        /// </summary>
+        private void HandleDevInput()
+        {
+            var kb = Keyboard.current;
+            if (kb == null) return;
+            if (kb.spaceKey.wasPressedThisFrame) TogglePause();
+            if (kb.rKey.wasPressedThisFrame) Retry();
+            if (kb.leftArrowKey.wasPressedThisFrame) SeekBy(-5f);
+            if (kb.rightArrowKey.wasPressedThisFrame) SeekBy(5f);
         }
 
         private void Rechart()
@@ -78,13 +132,15 @@ namespace Muses.Game
 
         private void Update()
         {
+            HandleDevInput();
+
             float t = clock.SongTime;
             float dt = Time.deltaTime;
             fps += (1f / Mathf.Max(dt, 1e-4f) - fps) * 0.08f;
 
             clock.TickMetronome(stageController.Config.bpm, stageController.Config.metronome);
             noteView.UpdateScroll(VisualTime(), stageController.Config.hiSpeed);
-            if (clock.Running) judge.Update(JudgeTime(), input);
+            if (clock.Running) judge.Update(JudgeTime(), input.Contacts.Values);
 
             if (overlay != null) overlay.SetHudTime(t, fps);
         }

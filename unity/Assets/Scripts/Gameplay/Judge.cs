@@ -21,10 +21,15 @@ namespace Muses.Gameplay
     ///
     /// 続けて item8 を実装: Flick を「枠内の移動量」で判定する本実装に置き換えた
     /// （Presence駆動・早い側繰り上げの非対称窓・移動なしのフォールバック、§4）。
-    /// item6（入力のバンド分割）は<see cref="TouchInputManager"/>側、item11（Visible中継点描画）は
-    /// <see cref="NoteGeometry"/>側で対応済み。
+    /// item6（入力のバンド分割）は TouchInputManager 側、item11（Visible中継点描画）は
+    /// NoteGeometry 側で対応済み。item14（ソフラン）は ScrollTimeline/NoteView 側で対応済み
+    /// （判定は songTime をそのまま使い続けるため無変更）。
     ///
-    /// **今回まだ未実装（次の増分）**: item14（ソフラン、X(t)積分・頂点シェーダ側の変更が必要）。
+    /// implementation-roadmap.md 項目D/H対応: MonoBehaviour（NoteView/TouchInputManager）に
+    /// 直接依存せず、ノーツ列(List&lt;NoteRuntime&gt;)・接触点列(IEnumerable&lt;Contact&gt;)・
+    /// アルファ設定コールバックだけを外から注入する形にしてある。時刻と入力を注入すれば
+    /// 動く純粋なC#クラスなので、Unityのシーン無しでユニットテストできる（項目H）。
+    /// シーク(<see cref="Seek"/>)にも対応済み: 任意のsongTimeへ全ノーツの状態を組み直せる。
     /// </summary>
     public class Judge
     {
@@ -32,33 +37,79 @@ namespace Muses.Gameplay
         public List<HitFlash> Flashes { get; } = new();
 
         private StageConfig cfg;
-        private readonly NoteView noteView;
+        private readonly Action<NoteRuntime, float> setAlpha;
+        private List<NoteRuntime> runtimes = new();
         private int cursor;
 
         /// <summary>note-spec.md §6.2。ノーツごとの実効窓（縦連判定で中点分割した後の [lo, hi] 秒）。
         /// 対象集合 T = Tap/ExTap/Flick/Slide始点（§6.2）。</summary>
         private readonly Dictionary<NoteRuntime, (float lo, float hi)> chainWindows = new();
 
-        public Judge(StageConfig cfg, NoteView noteView)
+        /// <param name="setAlpha">ノーツの表示アルファを設定するコールバック（通常は NoteView.SetNoteAlpha）</param>
+        public Judge(StageConfig cfg, Action<NoteRuntime, float> setAlpha)
         {
             this.cfg = cfg;
-            this.noteView = noteView;
+            this.setAlpha = setAlpha;
         }
 
         public void SetConfig(StageConfig cfg) => this.cfg = cfg;
 
-        public void Reset()
+        /// <summary>譜面の頭からやり直す。Seek(0) と同じ。</summary>
+        public void Reset() => Seek(0f);
+
+        /// <summary>
+        /// implementation-roadmap.md 項目D。任意の songTime へジャンプし、全ノーツの状態を
+        /// 「実際にそこまでプレイした」結果ではなく「その時刻から素直に見た状態」として組み直す。
+        /// エディタでのシーク・ゲーム側のリトライ/巻き戻しの両方から呼ばれる想定。
+        ///
+        /// 過去に完全に終わったノーツは判定を課さず（スコア/コンボへの加算はしない）Hit扱いで隠すだけ。
+        /// Slide の途中に着地した場合は Active に戻し、songTime より前のコンボ点だけ読み飛ばす
+        /// （読み飛ばした分もスコアには入れない。飛ばした地点から素直に続きを判定する）。
+        /// </summary>
+        public void Seek(float songTime)
         {
             Score = new Score();
+
+            foreach (var rt in runtimes)
+            {
+                var n = rt.note;
+                rt.slideSamples.Clear();
+                rt.nextComboIndex = 0;
+                rt.flickEnterSeen = false;
+
+                if (ChartMath.NoteEnd(n) < songTime)
+                {
+                    rt.state = NoteState.Hit; // 過去に飛ばした分。スコアには反映しない
+                    setAlpha(rt, 0f);
+                }
+                else if (n.kind == NoteKind.Slide && ChartMath.NoteStart(n) < songTime)
+                {
+                    rt.state = NoteState.Active;
+                    while (rt.nextComboIndex < n.comboTimes.Count && n.comboTimes[rt.nextComboIndex] < songTime)
+                        rt.nextComboIndex++;
+                    setAlpha(rt, 0.45f);
+                }
+                else
+                {
+                    rt.state = NoteState.Pending;
+                    setAlpha(rt, 1f);
+                }
+            }
+
             cursor = 0;
+            while (cursor < runtimes.Count &&
+                   (runtimes[cursor].state == NoteState.Hit || runtimes[cursor].state == NoteState.Missed))
+                cursor++;
         }
 
         /// <summary>
         /// note-spec.md §6.2 の縦連判定（中点分割）をロード時に1回だけprecomputeする。
-        /// NoteView.Build() の直後に呼ぶこと。
+        /// 以後の Judge はこの呼び出しで渡されたノーツ列を保持し続ける（NoteView.Build() の直後に呼ぶこと）。
         /// </summary>
         public void Prepare(List<NoteRuntime> runtimes)
         {
+            this.runtimes = runtimes;
+
             chainWindows.Clear();
             float w = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの半幅=100ms（対象集合T全ノーツ共通）
 
@@ -110,10 +161,10 @@ namespace Muses.Gameplay
         private static bool CellOverlap(Waypoint a, Waypoint b) => a.cellF < b.cellF + b.width && b.cellF < a.cellF + a.width;
 
         /// <summary>note-spec.md §0.2。Slideの現在位置(帯)に接触点が包含されているかを連続座標で判定する。</summary>
-        private bool AnyContactInBand(TouchInputManager input, Note n, float t)
+        private bool AnyContactInBand(IEnumerable<Contact> contacts, Note n, float t)
         {
             var (layerF, cellF, width) = ChartMath.At(n, t);
-            foreach (var c in input.Contacts.Values)
+            foreach (var c in contacts)
                 if (InBand(c, layerF, cellF, width))
                     return true;
             return false;
@@ -145,7 +196,7 @@ namespace Muses.Gameplay
         /// <summary>「入力範囲内に新規の接触点が検出された」= ヒット判定のトリガ（Tap/ExTap/Slide始点）</summary>
         public void OnEnter(EnterEvent e, float songTime)
         {
-            var rts = noteView.Runtimes;
+            var rts = runtimes;
             NoteRuntime best = null;
             float bestDt = float.PositiveInfinity;
             float rawWin = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの素の半幅。中点分割は窓を狭めるだけなのでこれを打ち切り境界に使える
@@ -253,7 +304,7 @@ namespace Muses.Gameplay
             var judged = ApplyJudgement(rt.note.kind, dt, layer, cell, wp.width, songTime);
             if (judged == null) return;
             rt.state = NoteState.Hit;
-            noteView.SetNoteAlpha(rt, 0f);
+            setAlpha(rt, 0f);
         }
 
         /// <summary>
@@ -270,9 +321,9 @@ namespace Muses.Gameplay
         }
 
         /// <summary>毎フレーム: 見逃し判定、Slide のコンボ点独立判定（item7）、Flick の移動量判定（item8）</summary>
-        public void Update(float songTime, TouchInputManager input)
+        public void Update(float songTime, IEnumerable<Contact> contacts)
         {
-            var rts = noteView.Runtimes;
+            var rts = runtimes;
             float rawWin = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの素の半幅(=100ms)。Flickは早い側もこの分だけ窓が開く
 
             while (cursor < rts.Count &&
@@ -292,7 +343,7 @@ namespace Muses.Gameplay
                 {
                     if (n.kind == NoteKind.Flick)
                     {
-                        UpdateFlickPending(rt, n, songTime, input);
+                        UpdateFlickPending(rt, n, songTime, contacts);
                         continue;
                     }
                     if (start > songTime) continue; // Flick以外はまだ開始前なら何もしない
@@ -314,19 +365,19 @@ namespace Muses.Gameplay
                             // （Hit/Missedにすると Update() の巡回対象から外れてしまう）。
                             rt.state = NoteState.Active;
                             rt.nextComboIndex = 0;
-                            noteView.SetNoteAlpha(rt, 0.45f);
+                            setAlpha(rt, 0.45f);
                         }
                         else
                         {
                             rt.state = NoteState.Missed;
-                            noteView.SetNoteAlpha(rt, 0.12f);
+                            setAlpha(rt, 0.12f);
                         }
                     }
                     continue;
                 }
 
                 if (n.kind != NoteKind.Slide || rt.state != NoteState.Active) continue;
-                UpdateSlide(rt, n, songTime, input);
+                UpdateSlide(rt, n, songTime, contacts);
             }
         }
 
@@ -334,11 +385,11 @@ namespace Muses.Gameplay
         /// note-spec.md §2.1/§2.4。コンボ点を独立に判定する。旧 HOLD BREAK（0.2秒離れたら丸ごと失敗）は廃止:
         /// 一度逃しても、以降のコンボ点は押し直せば成立しうる。
         /// </summary>
-        private void UpdateSlide(NoteRuntime rt, Note n, float songTime, TouchInputManager input)
+        private void UpdateSlide(NoteRuntime rt, Note n, float songTime, IEnumerable<Contact> contacts)
         {
-            bool occ = AnyContactInBand(input, n, songTime);
+            bool occ = AnyContactInBand(contacts, n, songTime);
             rt.slideSamples.Add((songTime, occ));
-            noteView.SetNoteAlpha(rt, occ ? 1f : 0.45f);
+            setAlpha(rt, occ ? 1f : 0.45f);
 
             var comboTimes = n.comboTimes;
             while (rt.nextComboIndex < comboTimes.Count && songTime >= comboTimes[rt.nextComboIndex] + 0.1f)
@@ -354,7 +405,7 @@ namespace Muses.Gameplay
             if (rt.nextComboIndex >= comboTimes.Count)
             {
                 rt.state = NoteState.Hit;
-                noteView.SetNoteAlpha(rt, 0f);
+                setAlpha(rt, 0f);
             }
         }
 
@@ -393,7 +444,7 @@ namespace Muses.Gameplay
         /// 移動量が flickDistance 以上になった瞬間に成立する。窓を過ぎても移動が無ければ §4.4 のフォールバック
         /// （枠内更新があれば GOOD、無ければ MISS）で確定する。
         /// </summary>
-        private void UpdateFlickPending(NoteRuntime rt, Note n, float songTime, TouchInputManager input)
+        private void UpdateFlickPending(NoteRuntime rt, Note n, float songTime, IEnumerable<Contact> contacts)
         {
             if (!chainWindows.TryGetValue(rt, out var win)) return;
             var wp = n.points[0];
@@ -403,7 +454,7 @@ namespace Muses.Gameplay
 
             if (songTime <= win.hi)
             {
-                foreach (var c in input.Contacts.Values)
+                foreach (var c in contacts)
                 {
                     if (!InBand(c, wp.layerF, wp.cellF, wp.width)) continue;
                     rt.flickEnterSeen = true; // §4.4フォールバック用: 枠内に接触があったことを記録
@@ -422,13 +473,13 @@ namespace Muses.Gameplay
                     {
                         CommitMiss(layer, cell, wp.width, songTime);
                         rt.state = NoteState.Missed;
-                        noteView.SetNoteAlpha(rt, 0.12f);
+                        setAlpha(rt, 0.12f);
                     }
                     else
                     {
                         CommitJudgement(judged, layer, cell, wp.width, songTime, ms);
                         rt.state = NoteState.Hit;
-                        noteView.SetNoteAlpha(rt, 0f);
+                        setAlpha(rt, 0f);
                     }
                     c.history.Clear(); // note-spec.md §4.1: 成立後はこの接触のリングバッファをリセットする
                     return;
@@ -441,13 +492,13 @@ namespace Muses.Gameplay
             {
                 CommitJudgement(JudgeKind.Good, layer, cell, wp.width, songTime, (songTime - wp.time) * 1000f);
                 rt.state = NoteState.Hit;
-                noteView.SetNoteAlpha(rt, 0f);
+                setAlpha(rt, 0f);
             }
             else
             {
                 CommitMiss(layer, cell, wp.width, songTime);
                 rt.state = NoteState.Missed;
-                noteView.SetNoteAlpha(rt, 0.12f);
+                setAlpha(rt, 0.12f);
             }
         }
     }
