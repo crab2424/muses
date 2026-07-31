@@ -16,10 +16,12 @@ namespace Muses.ChartTool
     /// 方式に書き直した）。空のGameObjectにアタッチしたシーンを作り、そのシーンだけをビルドする
     /// ことでゲーム本体とは別の実行ファイルになる。
     ///
-    /// 3Dプレビュー・波形+イベントレーン・検証結果リスト・Undo/自動保存は未実装（§5,4,6で別途着手）。
+    /// §5（プレビュー: 音源同期再生・オートプレイ・RenderTexture 3Dプレビュー）は
+    /// <see cref="PreviewSystem"/> に実装済み。波形+イベントレーン・検証結果リスト・Undo/自動保存は
+    /// まだ未実装（§4,6で別途着手）。
     /// 現時点でのスコープ: ファイルの読み書き（OSネイティブのファイル選択ダイアログは無く、
     /// パスを直接テキスト入力する簡易UI）、ノーツの配置/選択/平行移動/削除、Slideの中継点追加、
-    /// インスペクタでの数値編集。矩形選択・コピペ・一括変換・端のドラッグでの幅変更はまだ無い。
+    /// インスペクタでの数値編集、プレビュー再生。矩形選択・コピペ・一括変換・端のドラッグでの幅変更はまだ無い。
     /// </summary>
     public class ChartEditorApp : MonoBehaviour
     {
@@ -27,6 +29,14 @@ namespace Muses.ChartTool
 
         private const int Cells = 12;
         private static readonly int[] SnapDenominators = { 4, 8, 12, 16, 24, 32, 48, 64 };
+
+        [Header("§5 プレビュー用（ゲーム本体シーンと同じシェーダ資産を割り当てる）")]
+        [SerializeField] private Shader stageShader;
+        [SerializeField] private Shader noteShader;
+        [SerializeField] private Shader beatLineShader;
+
+        private PreviewSystem preview;
+        private float lastPreviewRebuildRealtime = -999f;
 
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
@@ -58,6 +68,29 @@ namespace Muses.ChartTool
         private GUIStyle panelStyle;
         private readonly Dictionary<string, string> textBuffers = new();
 
+        private void Awake()
+        {
+            preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader);
+        }
+
+        private void Update()
+        {
+            preview.Tick();
+
+            // 編集中は毎フレーム再構築しない。ドラッグ終了後・一定間隔をおいて反映する
+            // （chart.notes を直接ドラッグしている最中にtick→秒の再解決やNoteView再構築を挟むと重い上、無駄）。
+            if (dirty && !draggingNote && Time.unscaledTime - lastPreviewRebuildRealtime > 0.3f)
+            {
+                preview.Rebuild(song, chart, Path.GetDirectoryName(songPath));
+                lastPreviewRebuildRealtime = Time.unscaledTime;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            preview?.Dispose();
+        }
+
         private void EnsureStyles()
         {
             if (whiteTex != null) return;
@@ -84,15 +117,19 @@ namespace Muses.ChartTool
             const float toolbarH = 44f;
             const float paletteW = 130f;
             const float inspectorW = 280f;
+            const float previewH = 260f; // editor-spec.md §2: 右側は上に3Dプレビュー、下にインスペクタ
 
             var toolbarRect = new Rect(0, 0, Screen.width, toolbarH);
             var paletteRect = new Rect(0, toolbarH, paletteW, Screen.height - toolbarH);
-            var inspectorRect = new Rect(Screen.width - inspectorW, toolbarH, inspectorW, Screen.height - toolbarH);
+            var rightColRect = new Rect(Screen.width - inspectorW, toolbarH, inspectorW, Screen.height - toolbarH);
+            var previewRect = new Rect(rightColRect.x, rightColRect.y, rightColRect.width, Mathf.Min(previewH, rightColRect.height));
+            var inspectorRect = new Rect(rightColRect.x, previewRect.yMax, rightColRect.width, Mathf.Max(0, rightColRect.height - previewRect.height));
             var sheetRect = new Rect(paletteW, toolbarH, Mathf.Max(0, Screen.width - paletteW - inspectorW), Screen.height - toolbarH);
 
             DrawToolbar(toolbarRect);
             DrawPalette(paletteRect);
             DrawNotesSheet(sheetRect);
+            preview.Draw(previewRect);
             DrawInspector(inspectorRect);
         }
 
@@ -170,6 +207,8 @@ namespace Muses.ChartTool
                 draggingNote = false;
                 dirty = false;
                 statusMessage = "読み込み完了";
+                preview.Rebuild(song, chart, dir);
+                lastPreviewRebuildRealtime = Time.unscaledTime;
             }
             catch (Exception ex)
             {

@@ -15,6 +15,14 @@ namespace Muses.Notes
         [SerializeField] private Shader noteShader;
         [SerializeField] private Shader beatLineShader;
 
+        /// <summary>editor-spec.md §2.2。3Dプレビューのオフスクリーン rig をコードから組み立てる際に、
+        /// Inspector 配線なしでシェーダを渡すための口。</summary>
+        public void ConfigureShaders(Shader note, Shader beatLine)
+        {
+            noteShader = note;
+            beatLineShader = beatLine;
+        }
+
         [Header("タップ/ホールド始点の奥行き厚み（詳細は NotePlacement.hlsl のコメント）")]
         [Tooltip("ワールド固定の厚み。judge線の奥行きに対する割合（半幅）。遠近感を出す本来の厚み")]
         [SerializeField] private float thicknessFrac = 0.025f;

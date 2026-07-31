@@ -27,6 +27,18 @@ namespace Muses.Stage
             view = GetComponent<StageView>();
         }
 
+        /// <summary>
+        /// editor-spec.md §2.2。3Dプレビュー用のオフスクリーン rig をコードから組み立てるための
+        /// プログラム的な配線口（Inspector 経由のシーン配線を前提にしない）。
+        /// </summary>
+        public void Configure(Camera camera, StageView stageView, StageConfig config)
+        {
+            cam = camera;
+            view = stageView;
+            cfg = config;
+            dirty = true;
+        }
+
         private void OnValidate()
         {
             dirty = true;

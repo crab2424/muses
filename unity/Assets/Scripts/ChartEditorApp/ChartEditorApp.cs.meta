@@ -1,2 +1,14 @@
 fileFormatVersion: 2
 guid: 68f100ba80fcb43fd961c74b4b667dc6
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - stageShader: {fileID: 4800000, guid: 5bc7e29b10e2c447db074b16e15ad6eb, type: 3}
+  - noteShader: {fileID: 4800000, guid: a928f7554e8154e6fb940bf955de19b6, type: 3}
+  - beatLineShader: {fileID: 4800000, guid: 2ab1cb8a45ab74fee95f050a821fab96, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

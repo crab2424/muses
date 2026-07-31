@@ -14,6 +14,10 @@ namespace Muses.Stage
     {
         [SerializeField] private Shader stageShader;
 
+        /// <summary>editor-spec.md §2.2。3Dプレビューのオフスクリーン rig をコードから組み立てる際に、
+        /// Inspector 配線なしでシェーダを渡すための口。</summary>
+        public void ConfigureShader(Shader shader) => stageShader = shader;
+
         private const int RenderQueueBase = 3000;
 
         private LayerView groundPlane;

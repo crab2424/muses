@@ -97,6 +97,20 @@ namespace Muses.Chart
             return sorted;
         }
 
+        /// <summary>editor-spec.md §5.1。プレビューのメトロノーム用: 秒(songTime)時点のBPMを引く。</summary>
+        public static float BpmAtTime(List<BpmEvent> bpmEvents, float songTime)
+        {
+            var sorted = SortedBpmEvents(bpmEvents);
+            var toSeconds = BuildTickToSeconds(bpmEvents);
+            float bpm = sorted[0].bpm;
+            foreach (var e in sorted)
+            {
+                if (toSeconds(e.tick) > songTime) break;
+                bpm = e.bpm;
+            }
+            return bpm;
+        }
+
         private static float BpmAt(List<BpmEvent> sortedBpmEvents, int tick)
         {
             float bpm = sortedBpmEvents[0].bpm;
