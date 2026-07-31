@@ -1,4 +1,4 @@
-# muses 譜面エディタ仕様（Phase 4 / 2026-07-31 rev.1）
+# muses 譜面エディタ仕様（Phase 4 / 2026-07-31 rev.2）
 
 対象: 譜面エディタのファイル形式・UI・操作・検証・プレビュー・保存。
 関連: `note-spec.md`（ノーツ仕様。本書はその §9.5「エディタ要件」の展開でもある）、
@@ -10,11 +10,24 @@
 
 - **デプロイ不要**。PC（Mac / Windows）で動けばよく、タブレット実機で動く必要はない。
 - **ゲームとエディタは別物として考える**。プレイ画面にエディタ UI を重ねる「エディタモード」は作らない。
-- **実装基盤は Unity Editor 拡張**（`unity/Assets/Editor/` の `EditorWindow`）。
-  **Why**: `Chart/ChartNote.cs`・`ChartFormat.cs`・`ChartMath` など既存の C# ロジック
-  （tick→秒変換、コンボ点生成、判定トレイト表、easing）を**そのまま参照できる**ため、
-  二重実装と仕様のズレが構造的に起きない。Mac / Windows 対応は Unity Editor 自体が担保する。
-  「ゲームとは別」は**実行時の分離**（Play モードのゲームと編集用ウィンドウが混ざらない）で満たす。
+- **実装基盤は Unity 製の単独ビルド（スタンドアロン実行ファイル）**（rev.2 で変更、旧rev.1は
+  Unity Editor拡張だった）。`unity/Assets/Scripts/ChartEditorApp/` の `MonoBehaviour` + `OnGUI`。
+  専用シーン（例: `Assets/Scenes/ChartEditor.unity`）を作り、そのシーンだけをビルドすることで
+  ゲーム本体とは別の実行ファイル（.app/.exe）になる。ダブルクリックで起動でき、Unity Editorを
+  開く必要がない。
+  **Why変更**: ユーザーは当初「ゲーム本体と同じようにUnity製のツールとしてビルドして実行する」
+  ものと想定していたが、rev.1では実際には「Unity Editorを起動する」ことが前提のEditor拡張
+  だったため、方針転換した（2026-07-31）。
+  **Why Editor拡張ではなくMonoBehaviourでも成立する**: `Chart/ChartNote.cs`・`ChartFormat.cs`・
+  `ChartSerializer.cs`など既存のC#ロジックは`UnityEditor`に依存しない通常のランタイムコードで、
+  Editor拡張でなくても**そのまま参照できる**ため、二重実装の問題は生じない
+  （rev.1の「二重実装を避けられる」というEditor拡張選択の理由は、実はスタンドアロンビルドでも
+  同様に成立していた）。
+  **代償**: `UnityEditor.EditorGUILayout`/`EditorUtility.OpenFilePanel`等のEditor専用APIが
+  使えないため、数値入力・enum選択・ファイル選択はすべて`UnityEngine.GUILayout`のみで
+  自前実装する必要がある。特にOSネイティブのファイル選択ダイアログは無いため、
+  当面はファイルパスを直接テキスト入力する簡易UIで代替している（§9未決事項）。
+  「ゲームとは別」は**実行時の分離**（別シーン・別ビルド）で満たす。
 
 ---
 
@@ -377,7 +390,7 @@ Unity 標準の `Undo.RecordObject` は `UnityEngine.Object` 前提で、`ChartD
 | `Chart/SongMeta.cs` | ランタイム | `song.muses` の内容（タイトル / 音源 / ジャケット / オフセット / `[METER]` / BPM）と tick↔`bar:beat:tick` 変換 |
 | `Chart/ChartSerializer.cs` | ランタイム | §1 の読み書き。**ゲーム本体も譜面を読むので Editor 専用にしない。** 読み書きを対称に同居させると往復検証ができる |
 | `Chart/ChartValidator.cs` | ランタイム | §4 の検証（`UnityEngine` 非依存） |
-| `Editor/ChartEditorWindow.cs` ほか | Editor | ウィンドウ本体、ノーツシート描画・入力、インスペクタ、3D プレビュー、Undo、自動保存 |
+| `Scripts/ChartEditorApp/ChartEditorApp.cs` ほか | ランタイム（rev.2で変更） | `MonoBehaviour`+`OnGUI`本体。ノーツシート描画・入力、インスペクタ、3D プレビュー、Undo、自動保存。専用シーンにアタッチしてスタンドアロンビルドする |
 
 `ChartBuilder.cs` のデモ譜面は、ファイルからのロードに置き換わるまで当面そのまま残す。
 
@@ -394,6 +407,10 @@ Unity 標準の `Undo.RecordObject` は `UnityEngine.Object` 前提で、`ChartD
    重ければ別ウィンドウ方式か、プレビュー自体の省略に切り替える。
 3. note-spec.md §9 の未決事項（`flickWindowMs` 実値、バンド境界の実値、層間の共有帯、
    判定表示の演出仕様）は**エディタ側の設計を揺らさない**ので、本書はそれらの確定を待たない。
+4. **OSネイティブのファイル選択ダイアログが無い**（rev.2、スタンドアロンビルド化に伴う新規課題）。
+   `EditorUtility.OpenFilePanel`相当がUnityランタイムには存在しないため、現状はファイルパスを
+   直接テキスト入力する簡易UIで代替している。ネイティブプラグイン導入や自前のフォルダ一覧UIを
+   作る選択肢があるが、どちらも採用していない。
 
 **解決済み（rev.1 で確定）**: 難易度名は §1.7（`LINE`/`SQUARE`/`CUBE`、上位に `TESSERACT`）、
 音源は ogg 固定（§1.2）、3D プレビューは `RenderTexture` 埋め込みを採用（§2.2、負荷条件つき）、

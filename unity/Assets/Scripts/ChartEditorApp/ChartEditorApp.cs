@@ -1,41 +1,42 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using UnityEditor;
 using UnityEngine;
 using Muses.Chart;
 
-namespace Muses.Editor
+namespace Muses.ChartTool
 {
     /// <summary>
     /// editor-spec.md §2,3。譜面エディタのノーツシート（主キャンバス）・ツールパレット・インスペクタ。
+    ///
+    /// **Unity Editor拡張ではなく、単独ビルドとして動くランタイムツール**として実装している
+    /// （2026-07-31、ユーザーとの相談で方針転換。旧実装は Assets/Editor/ChartEditorWindow.cs
+    /// だったが、Editorフォルダはプレイヤービルドから除外されるため、この MonoBehaviour + OnGUI
+    /// 方式に書き直した）。空のGameObjectにアタッチしたシーンを作り、そのシーンだけをビルドする
+    /// ことでゲーム本体とは別の実行ファイルになる。
+    ///
     /// 3Dプレビュー・波形+イベントレーン・検証結果リスト・Undo/自動保存は未実装（§5,4,6で別途着手）。
-    /// 現時点でのスコープ: ファイルの読み書き、ノーツの配置/選択/平行移動/削除、
-    /// Slideの中継点追加、インスペクタでの数値編集。矩形選択・コピペ・一括変換・端のドラッグでの
-    /// 幅変更はまだ無い。
+    /// 現時点でのスコープ: ファイルの読み書き（OSネイティブのファイル選択ダイアログは無く、
+    /// パスを直接テキスト入力する簡易UI）、ノーツの配置/選択/平行移動/削除、Slideの中継点追加、
+    /// インスペクタでの数値編集。矩形選択・コピペ・一括変換・端のドラッグでの幅変更はまだ無い。
     /// </summary>
-    public class ChartEditorWindow : EditorWindow
+    public class ChartEditorApp : MonoBehaviour
     {
-        [MenuItem("Window/muses/Chart Editor")]
-        public static void Open()
-        {
-            var win = GetWindow<ChartEditorWindow>("Chart Editor");
-            win.Show();
-        }
-
         private enum EditorTool { Select, Tap, ExTap, Slide, Flick, AddWaypoint, Delete }
 
         private const int Cells = 12;
         private static readonly int[] SnapDenominators = { 4, 8, 12, 16, 24, 32, 48, 64 };
 
         // ---- ファイル状態 ----
+        private string chartFilePathBuffer = "";
         private string chartPath;
         private string songPath;
         private SongMeta song = new();
         private ChartData chart = new();
         private ChartFileHeader header = new() { difficulty = "CUBE", level = 1, charter = "", songFile = "song.muses" };
         private bool dirty;
+        private string statusMessage = "";
 
         // ---- 表示/編集状態 ----
         private int snapIndex = 3; // 1/16 既定
@@ -51,16 +52,43 @@ namespace Muses.Editor
         private float dragOriginRawCell;
         private List<Waypoint> dragOriginPoints;
 
+        // ---- ランタイムGUI用の下地 ----
+        private Texture2D whiteTex;
+        private GUIStyle boldStyle;
+        private GUIStyle panelStyle;
+        private readonly Dictionary<string, string> textBuffers = new();
+
+        private void EnsureStyles()
+        {
+            if (whiteTex != null) return;
+            whiteTex = new Texture2D(1, 1);
+            whiteTex.SetPixel(0, 0, Color.white);
+            whiteTex.Apply();
+
+            boldStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+            panelStyle = new GUIStyle(GUI.skin.box);
+        }
+
+        private void DrawRect(Rect r, Color c)
+        {
+            var old = GUI.color;
+            GUI.color = c;
+            GUI.DrawTexture(r, whiteTex);
+            GUI.color = old;
+        }
+
         private void OnGUI()
         {
-            const float toolbarH = 22f;
-            const float paletteW = 130f;
-            const float inspectorW = 260f;
+            EnsureStyles();
 
-            var toolbarRect = new Rect(0, 0, position.width, toolbarH);
-            var paletteRect = new Rect(0, toolbarH, paletteW, position.height - toolbarH);
-            var inspectorRect = new Rect(position.width - inspectorW, toolbarH, inspectorW, position.height - toolbarH);
-            var sheetRect = new Rect(paletteW, toolbarH, Mathf.Max(0, position.width - paletteW - inspectorW), position.height - toolbarH);
+            const float toolbarH = 44f;
+            const float paletteW = 130f;
+            const float inspectorW = 280f;
+
+            var toolbarRect = new Rect(0, 0, Screen.width, toolbarH);
+            var paletteRect = new Rect(0, toolbarH, paletteW, Screen.height - toolbarH);
+            var inspectorRect = new Rect(Screen.width - inspectorW, toolbarH, inspectorW, Screen.height - toolbarH);
+            var sheetRect = new Rect(paletteW, toolbarH, Mathf.Max(0, Screen.width - paletteW - inspectorW), Screen.height - toolbarH);
 
             DrawToolbar(toolbarRect);
             DrawPalette(paletteRect);
@@ -72,24 +100,25 @@ namespace Muses.Editor
 
         private void DrawToolbar(Rect rect)
         {
+            DrawRect(rect, new Color(0.22f, 0.22f, 0.22f));
             GUILayout.BeginArea(rect);
-            GUILayout.BeginHorizontal(EditorStyles.toolbar);
+            GUILayout.BeginHorizontal();
 
-            if (GUILayout.Button("開く", EditorStyles.toolbarButton, GUILayout.Width(50))) OpenChartDialog();
-            if (GUILayout.Button("保存", EditorStyles.toolbarButton, GUILayout.Width(50))) SaveChart();
-            if (GUILayout.Button("名前を付けて保存", EditorStyles.toolbarButton, GUILayout.Width(110))) SaveChartAs();
+            GUILayout.Label("ファイル", GUILayout.Width(45));
+            chartFilePathBuffer = BufferedTextFieldFixedWidth("chartPathField", chartFilePathBuffer, 320);
+
+            if (GUILayout.Button("読み込む", GUILayout.Width(70))) OpenChartFromPath();
+            if (GUILayout.Button("保存", GUILayout.Width(50))) SaveChartToPath();
 
             GUILayout.Space(10);
             GUILayout.Label("snap", GUILayout.Width(30));
-            snapIndex = EditorGUILayout.Popup(snapIndex, SnapDenominators.Select(d => $"1/{d}").ToArray(), EditorStyles.toolbarPopup, GUILayout.Width(60));
-
-            GUILayout.Space(10);
-            GUILayout.Label("幅", GUILayout.Width(16));
-            defaultWidthCells = Mathf.Max(0.5f, EditorGUILayout.FloatField(defaultWidthCells, GUILayout.Width(40)));
+            var snapLabels = new string[SnapDenominators.Length];
+            for (int i = 0; i < SnapDenominators.Length; i++) snapLabels[i] = $"1/{SnapDenominators[i]}";
+            snapIndex = GUILayout.SelectionGrid(snapIndex, snapLabels, snapLabels.Length, GUILayout.Width(320));
 
             GUILayout.Space(10);
             GUILayout.Label("倍率", GUILayout.Width(26));
-            pxPerBeat = EditorGUILayout.Slider(pxPerBeat, 8f, 240f, GUILayout.Width(100));
+            pxPerBeat = GUILayout.HorizontalSlider(pxPerBeat, 8f, 240f, GUILayout.Width(100));
 
             GUILayout.FlexibleSpace();
 
@@ -97,27 +126,33 @@ namespace Muses.Editor
                 ? SongAddr.FormatAddr(SongAddr.ToAddr(song.meters, selectedNote.points[0].tick))
                 : "-";
             GUILayout.Label($"位置 {posLabel}", GUILayout.Width(140));
-
-            GUI.enabled = false;
-            GUILayout.Button("[検証]", EditorStyles.toolbarButton, GUILayout.Width(60)); // §4で実装予定
-            GUI.enabled = true;
-
             GUILayout.Label(dirty ? "● 未保存" : "保存済み", GUILayout.Width(70));
 
             GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("幅", GUILayout.Width(16));
+            defaultWidthCells = Mathf.Max(0.5f, ParseFloatField("defaultWidth", defaultWidthCells, 60));
+            GUILayout.Label(statusMessage);
+            GUILayout.EndHorizontal();
+
             GUILayout.EndArea();
         }
 
-        private void OpenChartDialog()
+        private void OpenChartFromPath()
         {
-            string path = EditorUtility.OpenFilePanel("譜面ファイルを開く (line/square/cube/tesseract.muses)", "", "muses");
-            if (string.IsNullOrEmpty(path)) return;
+            string path = chartFilePathBuffer;
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                statusMessage = $"ファイルが見つかりません: {path}";
+                return;
+            }
 
             string dir = Path.GetDirectoryName(path);
-            string songFilePath = Path.Combine(dir!, "song.muses");
+            string songFilePath = Path.Combine(dir ?? "", "song.muses");
             if (!File.Exists(songFilePath))
             {
-                EditorUtility.DisplayDialog("エラー", $"同じフォルダに song.muses が見つかりません:\n{songFilePath}", "OK");
+                statusMessage = $"同じフォルダに song.muses がありません: {songFilePath}";
                 return;
             }
 
@@ -134,43 +169,42 @@ namespace Muses.Editor
                 pendingSlideStart = null;
                 draggingNote = false;
                 dirty = false;
+                statusMessage = "読み込み完了";
             }
             catch (Exception ex)
             {
-                EditorUtility.DisplayDialog("読み込みエラー", ex.Message, "OK");
+                statusMessage = "読み込みエラー: " + ex.Message;
             }
         }
 
-        private void SaveChart()
+        private void SaveChartToPath()
         {
-            if (string.IsNullOrEmpty(chartPath)) { SaveChartAs(); return; }
+            string path = chartFilePathBuffer;
+            if (string.IsNullOrEmpty(path))
+            {
+                statusMessage = "保存先パスを入力してください";
+                return;
+            }
             try
             {
-                ChartSerializer.WriteChart(chartPath, header, chart, song);
+                ChartSerializer.WriteChart(path, header, chart, song);
+                chartPath = path;
                 dirty = false;
+                statusMessage = "保存完了";
             }
             catch (Exception ex)
             {
-                EditorUtility.DisplayDialog("保存エラー", ex.Message, "OK");
+                statusMessage = "保存エラー: " + ex.Message;
             }
-        }
-
-        private void SaveChartAs()
-        {
-            string defaultName = string.IsNullOrEmpty(header.difficulty) ? "chart" : header.difficulty.ToLowerInvariant();
-            string defaultDir = string.IsNullOrEmpty(chartPath) ? "" : Path.GetDirectoryName(chartPath);
-            string path = EditorUtility.SaveFilePanel("譜面ファイルを保存", defaultDir, defaultName, "muses");
-            if (string.IsNullOrEmpty(path)) return;
-            chartPath = path;
-            SaveChart();
         }
 
         // ---------- ツールパレット ----------
 
         private void DrawPalette(Rect rect)
         {
-            GUILayout.BeginArea(rect, EditorStyles.helpBox);
-            EditorGUILayout.LabelField("ツール", EditorStyles.boldLabel);
+            DrawRect(rect, new Color(0.18f, 0.18f, 0.18f));
+            GUILayout.BeginArea(rect);
+            GUILayout.Label("ツール", boldStyle);
             DrawToolButton(EditorTool.Select, "選択");
             DrawToolButton(EditorTool.Tap, "Tap");
             DrawToolButton(EditorTool.ExTap, "Ex Tap");
@@ -179,11 +213,14 @@ namespace Muses.Editor
             DrawToolButton(EditorTool.AddWaypoint, "Waypoint追加");
             DrawToolButton(EditorTool.Delete, "削除");
 
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("譜面情報", EditorStyles.boldLabel);
-            header.difficulty = EditorGUILayout.TextField(header.difficulty ?? "");
-            header.level = EditorGUILayout.IntField(header.level);
-            header.charter = EditorGUILayout.TextField(header.charter ?? "");
+            GUILayout.Space(12);
+            GUILayout.Label("譜面情報", boldStyle);
+            GUILayout.Label("難易度");
+            header.difficulty = GUILayout.TextField(header.difficulty ?? "");
+            GUILayout.Label("レベル");
+            header.level = Mathf.RoundToInt(ParseFloatField("headerLevel", header.level, 100));
+            GUILayout.Label("譜面制作者");
+            header.charter = GUILayout.TextField(header.charter ?? "");
 
             GUILayout.EndArea();
         }
@@ -191,33 +228,34 @@ namespace Muses.Editor
         private void DrawToolButton(EditorTool tool, string label)
         {
             bool selected = currentTool == tool;
+            var old = GUI.backgroundColor;
             GUI.backgroundColor = selected ? new Color(0.5f, 0.7f, 1f) : Color.white;
             if (GUILayout.Button(label))
             {
                 currentTool = tool;
                 pendingSlideStart = null;
             }
-            GUI.backgroundColor = Color.white;
+            GUI.backgroundColor = old;
         }
 
         // ---------- インスペクタ ----------
 
         private void DrawInspector(Rect rect)
         {
-            GUILayout.BeginArea(rect, EditorStyles.helpBox);
-            EditorGUILayout.LabelField("インスペクタ", EditorStyles.boldLabel);
+            DrawRect(rect, new Color(0.18f, 0.18f, 0.18f));
+            GUILayout.BeginArea(rect);
+            GUILayout.Label("インスペクタ", boldStyle);
 
             if (selectedNote == null)
             {
-                EditorGUILayout.HelpBox("ノーツを選択してください", MessageType.Info);
+                GUILayout.Label("ノーツを選択してください");
                 GUILayout.EndArea();
                 return;
             }
 
-            EditorGUI.BeginChangeCheck();
-            EditorGUILayout.LabelField("kind", selectedNote.kind.ToString());
-            int newGroup = EditorGUILayout.IntField("scrollGroup", selectedNote.scrollGroup);
-            if (EditorGUI.EndChangeCheck())
+            GUILayout.Label($"kind: {selectedNote.kind}");
+            int newGroup = Mathf.RoundToInt(ParseFloatField("scrollGroup", selectedNote.scrollGroup, 200));
+            if (newGroup != selectedNote.scrollGroup)
             {
                 selectedNote.scrollGroup = Mathf.Max(0, newGroup);
                 dirty = true;
@@ -225,40 +263,65 @@ namespace Muses.Editor
 
             for (int i = 0; i < selectedNote.points.Count; i++)
             {
-                EditorGUILayout.Space();
+                GUILayout.Space(6);
                 string role = i == 0 ? " (始点)" : i == selectedNote.points.Count - 1 ? " (終点)" : "";
-                EditorGUILayout.LabelField($"Waypoint {i}{role}", EditorStyles.boldLabel);
+                GUILayout.Label($"Waypoint {i}{role}", boldStyle);
 
                 var wp = selectedNote.points[i];
-                EditorGUI.BeginChangeCheck();
-                var addr = SongAddr.ToAddr(song.meters, wp.tick);
-                string addrStr = EditorGUILayout.TextField("addr", SongAddr.FormatAddr(addr));
-                float layerF = EditorGUILayout.Slider("layerF", wp.layerF, 0f, 1f);
-                float cellF = EditorGUILayout.FloatField("cellF", wp.cellF);
-                float width = EditorGUILayout.FloatField("width", wp.width);
-                var easing = (Easing)EditorGUILayout.EnumPopup("easing", wp.easing);
-                var marker = (WaypointMarker)EditorGUILayout.EnumPopup("marker", wp.marker);
-                bool hasCombo = EditorGUILayout.Toggle("comboStep上書き", wp.comboStep.HasValue);
-                int comboVal = wp.comboStep ?? 0;
-                if (hasCombo) comboVal = EditorGUILayout.IntField("comboStep(tick)", comboVal);
+                string idPrefix = $"wp{i}_";
 
-                if (EditorGUI.EndChangeCheck())
+                var addr = SongAddr.ToAddr(song.meters, wp.tick);
+                string addrText = BufferedTextField(idPrefix + "addr", SongAddr.FormatAddr(addr));
+
+                GUILayout.Label("layerF");
+                float layerF = GUILayout.HorizontalSlider(wp.layerF, 0f, 1f);
+
+                GUILayout.Label("cellF");
+                float cellF = ParseFloatField(idPrefix + "cellF", wp.cellF, 200);
+                GUILayout.Label("width");
+                float width = ParseFloatField(idPrefix + "width", wp.width, 200);
+
+                var easing = EnumCycleButton("easing", wp.easing);
+                var marker = EnumCycleButton("marker", wp.marker);
+
+                bool hasCombo = GUILayout.Toggle(wp.comboStep.HasValue, "comboStep上書き");
+                int comboVal = wp.comboStep ?? 0;
+                if (hasCombo)
                 {
+                    GUILayout.Label("comboStep(tick)");
+                    comboVal = Mathf.RoundToInt(ParseFloatField(idPrefix + "combo", comboVal, 200));
+                }
+
+                bool changed = !Mathf.Approximately(layerF, wp.layerF)
+                               || !Mathf.Approximately(cellF, wp.cellF)
+                               || !Mathf.Approximately(width, wp.width)
+                               || easing != wp.easing
+                               || marker != wp.marker
+                               || hasCombo != wp.comboStep.HasValue
+                               || (hasCombo && comboVal != (wp.comboStep ?? int.MinValue));
+
+                int newTick = wp.tick;
+                bool addrValid = true;
+                try
+                {
+                    var parsed = SongAddr.ParseAddr(addrText);
+                    newTick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
+                }
+                catch (FormatException)
+                {
+                    addrValid = false; // 無効なaddr文字列はtickの変更を無視する
+                }
+                if (addrValid && newTick != wp.tick) changed = true;
+
+                if (changed)
+                {
+                    wp.tick = addrValid ? newTick : wp.tick;
                     wp.layerF = Mathf.Clamp01(layerF);
                     wp.cellF = cellF;
                     wp.width = Mathf.Max(0.1f, width);
                     wp.easing = easing;
                     wp.marker = marker;
                     wp.comboStep = hasCombo ? comboVal : null;
-                    try
-                    {
-                        var parsed = SongAddr.ParseAddr(addrStr);
-                        wp.tick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
-                    }
-                    catch (FormatException)
-                    {
-                        // 無効なaddr文字列はtickの変更を無視する（他フィールドの編集は反映する）
-                    }
                     selectedNote.points[i] = wp;
                     dirty = true;
                 }
@@ -269,28 +332,68 @@ namespace Muses.Editor
                     {
                         selectedNote.points.RemoveAt(i);
                         dirty = true;
-                        GUIUtility.ExitGUI();
+                        break;
                     }
                 }
             }
 
-            EditorGUILayout.Space();
+            GUILayout.Space(8);
             if (GUILayout.Button("このノーツを削除"))
             {
                 chart.notes.Remove(selectedNote);
                 selectedNote = null;
                 dirty = true;
-                GUIUtility.ExitGUI();
             }
 
             GUILayout.EndArea();
+        }
+
+        /// <summary>フォーカス中は上書きせず、フォーカスが外れているときだけ model の値で同期するテキストフィールド。</summary>
+        private string BufferedTextField(string controlName, string modelValue)
+        {
+            bool focused = GUI.GetNameOfFocusedControl() == controlName;
+            if (!focused) textBuffers[controlName] = modelValue;
+            else if (!textBuffers.ContainsKey(controlName)) textBuffers[controlName] = modelValue;
+
+            GUI.SetNextControlName(controlName);
+            textBuffers[controlName] = GUILayout.TextField(textBuffers[controlName], GUILayout.Width(140));
+            return textBuffers[controlName];
+        }
+
+        private float ParseFloatField(string controlName, float modelValue, float width)
+        {
+            string text = BufferedTextFieldFixedWidth(controlName, modelValue.ToString("0.###", CultureInfo.InvariantCulture), width);
+            return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : modelValue;
+        }
+
+        private string BufferedTextFieldFixedWidth(string controlName, string modelValue, float width)
+        {
+            bool focused = GUI.GetNameOfFocusedControl() == controlName;
+            if (!focused) textBuffers[controlName] = modelValue;
+            else if (!textBuffers.ContainsKey(controlName)) textBuffers[controlName] = modelValue;
+
+            GUI.SetNextControlName(controlName);
+            textBuffers[controlName] = GUILayout.TextField(textBuffers[controlName], GUILayout.Width(width));
+            return textBuffers[controlName];
+        }
+
+        private static T EnumCycleButton<T>(string label, T current) where T : struct, Enum
+        {
+            var values = (T[])Enum.GetValues(typeof(T));
+            int idx = Array.IndexOf(values, current);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, GUILayout.Width(70));
+            if (GUILayout.Button(current.ToString(), GUILayout.Width(100)))
+                idx = (idx + 1) % values.Length;
+            GUILayout.EndHorizontal();
+            return values[idx];
         }
 
         // ---------- ノーツシート（主キャンバス） ----------
 
         private void DrawNotesSheet(Rect rect)
         {
-            EditorGUI.DrawRect(rect, new Color(0.16f, 0.16f, 0.16f));
+            DrawRect(rect, new Color(0.16f, 0.16f, 0.16f));
             if (rect.width <= 1f || rect.height <= 1f) return;
 
             const float gutterW = 26f;
@@ -299,9 +402,9 @@ namespace Muses.Editor
             var gutterRect = new Rect(groundRect.xMax, rect.y, gutterW, rect.height);
             var skyRect = new Rect(gutterRect.xMax, rect.y, paneW, rect.height);
 
-            EditorGUI.DrawRect(gutterRect, new Color(0.1f, 0.1f, 0.1f));
-            GUI.Label(new Rect(groundRect.x, rect.y, groundRect.width, 16), "Ground", EditorStyles.centeredGreyMiniLabel);
-            GUI.Label(new Rect(skyRect.x, rect.y, skyRect.width, 16), "Sky", EditorStyles.centeredGreyMiniLabel);
+            DrawRect(gutterRect, new Color(0.1f, 0.1f, 0.1f));
+            GUI.Label(new Rect(groundRect.x, rect.y, groundRect.width, 16), "Ground");
+            GUI.Label(new Rect(skyRect.x, rect.y, skyRect.width, 16), "Sky");
 
             float pxPerTick = pxPerBeat / ChartData.TicksPerBeat;
             int visibleTicks = Mathf.CeilToInt(rect.height / pxPerTick);
@@ -314,13 +417,13 @@ namespace Muses.Editor
             // セル境界線
             for (int c = 0; c <= Cells; c++)
             {
-                EditorGUI.DrawRect(new Rect(CellX(groundRect, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
-                EditorGUI.DrawRect(new Rect(CellX(skyRect, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                DrawRect(new Rect(CellX(groundRect, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                DrawRect(new Rect(CellX(skyRect, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
             }
 
             // 小節/拍/スナップ線
             int snapTicks = Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
-            int lineStart = ((Mathf.Max(0, scrollTick - snapTicks)) / snapTicks) * snapTicks;
+            int lineStart = Mathf.Max(0, scrollTick - snapTicks) / snapTicks * snapTicks;
             int lineEnd = scrollTick + visibleTicks + snapTicks;
             int guard = 0;
             for (int t = lineStart; t <= lineEnd && guard < 20000; t += snapTicks, guard++)
@@ -335,9 +438,9 @@ namespace Muses.Editor
                 else if (addr.tick == 0) { c = new Color(1, 1, 1, 0.28f); thickness = 1f; }
                 else { c = new Color(1, 1, 1, 0.12f); thickness = 1f; }
 
-                EditorGUI.DrawRect(new Rect(rect.x, y, rect.width, thickness), c);
+                DrawRect(new Rect(rect.x, y, rect.width, thickness), c);
                 if (addr.beat == 1 && addr.tick == 0)
-                    GUI.Label(new Rect(rect.x + 2, y - 14, 60, 14), addr.bar.ToString(), EditorStyles.whiteMiniLabel);
+                    GUI.Label(new Rect(rect.x + 2, y - 14, 60, 14), addr.bar.ToString());
             }
 
             // ノーツ描画
@@ -354,7 +457,7 @@ namespace Muses.Editor
                     float y = TickToY(wp.tick);
                     float x0 = CombinedX(wp.layerF, wp.cellF);
                     float x1 = CombinedX(wp.layerF, wp.cellF + wp.width);
-                    EditorGUI.DrawRect(Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4, Mathf.Max(x0, x1), y + 4), col);
+                    DrawRect(Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4, Mathf.Max(x0, x1), y + 4), col);
                 }
                 else
                 {
@@ -363,12 +466,12 @@ namespace Muses.Editor
                     {
                         int t2 = Mathf.Min(t + stepTicks, nEnd);
                         float ya = TickToY(t), yb = TickToY(t2);
-                        if (yb > rect.yMax + 8 || ya < rect.y - 8) { continue; }
+                        if (yb > rect.yMax + 8 || ya < rect.y - 8) continue;
 
                         var a = InterpAtTick(note, t);
                         float xa0 = CombinedX(a.layerF, a.cellF);
                         float xa1 = CombinedX(a.layerF, a.cellF + a.width);
-                        EditorGUI.DrawRect(
+                        DrawRect(
                             Rect.MinMaxRect(Mathf.Min(xa0, xa1), Mathf.Min(ya, yb) - 1, Mathf.Max(xa0, xa1), Mathf.Max(ya, yb) + 1),
                             new Color(col.r, col.g, col.b, 0.55f));
                     }
@@ -378,7 +481,7 @@ namespace Muses.Editor
                         if (wp.marker != WaypointMarker.Visible) continue;
                         float y = TickToY(wp.tick);
                         float x = CombinedX(wp.layerF, wp.cellF);
-                        EditorGUI.DrawRect(new Rect(x - 3, y - 3, 6, 6), Color.white);
+                        DrawRect(new Rect(x - 3, y - 3, 6, 6), Color.white);
                     }
                 }
 
@@ -394,11 +497,11 @@ namespace Muses.Editor
                 }
             }
 
-            HandleSheetInput(rect, groundRect, skyRect, pxPerTick, TickToY, YToTick, CombinedX, snapTicks);
+            HandleSheetInput(rect, groundRect, skyRect, TickToY, YToTick, CombinedX, snapTicks);
         }
 
         private void HandleSheetInput(
-            Rect rect, Rect groundRect, Rect skyRect, float pxPerTick,
+            Rect rect, Rect groundRect, Rect skyRect,
             Func<int, float> tickToY, Func<float, int> yToTick, Func<float, float, float> combinedX, int snapTicks)
         {
             var e = Event.current;
@@ -415,7 +518,6 @@ namespace Muses.Editor
                     scrollTick = Mathf.Max(0, scrollTick + Mathf.RoundToInt(e.delta.y) * snapTicks);
                 }
                 e.Use();
-                Repaint();
                 return;
             }
 
@@ -525,7 +627,6 @@ namespace Muses.Editor
                     }
                 }
                 e.Use();
-                Repaint();
             }
             else if (e.type == EventType.MouseDrag && e.button == 0 && draggingNote && selectedNote != null)
             {
@@ -541,12 +642,11 @@ namespace Muses.Editor
                 {
                     var wp = dragOriginPoints[i];
                     wp.tick = Mathf.Max(0, wp.tick + deltaTick);
-                    wp.cellF = wp.cellF + deltaCell;
+                    wp.cellF += deltaCell;
                     selectedNote.points[i] = wp;
                 }
                 dirty = true;
                 e.Use();
-                Repaint();
             }
             else if (e.type == EventType.MouseUp && e.button == 0)
             {
@@ -558,7 +658,6 @@ namespace Muses.Editor
                 selectedNote = null;
                 dirty = true;
                 e.Use();
-                Repaint();
             }
         }
 
@@ -637,12 +736,12 @@ namespace Muses.Editor
             _ => Color.white,
         };
 
-        private static void DrawRectOutline(Rect r, Color c)
+        private void DrawRectOutline(Rect r, Color c)
         {
-            EditorGUI.DrawRect(new Rect(r.x, r.y, r.width, 2), c);
-            EditorGUI.DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), c);
-            EditorGUI.DrawRect(new Rect(r.x, r.y, 2, r.height), c);
-            EditorGUI.DrawRect(new Rect(r.xMax - 2, r.y, 2, r.height), c);
+            DrawRect(new Rect(r.x, r.y, r.width, 2), c);
+            DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), c);
+            DrawRect(new Rect(r.x, r.y, 2, r.height), c);
+            DrawRect(new Rect(r.xMax - 2, r.y, 2, r.height), c);
         }
     }
 }
