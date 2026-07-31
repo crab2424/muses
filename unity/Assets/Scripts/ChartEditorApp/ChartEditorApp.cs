@@ -38,6 +38,12 @@ namespace Muses.ChartTool
         private PreviewSystem preview;
         private float lastPreviewRebuildRealtime = -999f;
 
+        // ---- §4 検証 ----
+        private List<ValidationIssue> validationIssues = new();
+        private bool validationPanelOpen;
+        private bool validateOnSave = true;
+        private Vector2 validationScroll;
+
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
         private string chartPath;
@@ -118,19 +124,26 @@ namespace Muses.ChartTool
             const float paletteW = 130f;
             const float inspectorW = 280f;
             const float previewH = 260f; // editor-spec.md §2: 右側は上に3Dプレビュー、下にインスペクタ
+            const float validationHeaderH = 24f;
+            const float validationOpenH = 160f;
+
+            float validationH = validationPanelOpen ? validationOpenH : validationHeaderH;
+            float bodyH = Mathf.Max(0, Screen.height - toolbarH - validationH);
 
             var toolbarRect = new Rect(0, 0, Screen.width, toolbarH);
-            var paletteRect = new Rect(0, toolbarH, paletteW, Screen.height - toolbarH);
-            var rightColRect = new Rect(Screen.width - inspectorW, toolbarH, inspectorW, Screen.height - toolbarH);
+            var paletteRect = new Rect(0, toolbarH, paletteW, bodyH);
+            var rightColRect = new Rect(Screen.width - inspectorW, toolbarH, inspectorW, bodyH);
             var previewRect = new Rect(rightColRect.x, rightColRect.y, rightColRect.width, Mathf.Min(previewH, rightColRect.height));
             var inspectorRect = new Rect(rightColRect.x, previewRect.yMax, rightColRect.width, Mathf.Max(0, rightColRect.height - previewRect.height));
-            var sheetRect = new Rect(paletteW, toolbarH, Mathf.Max(0, Screen.width - paletteW - inspectorW), Screen.height - toolbarH);
+            var sheetRect = new Rect(paletteW, toolbarH, Mathf.Max(0, Screen.width - paletteW - inspectorW), bodyH);
+            var validationRect = new Rect(0, toolbarH + bodyH, Screen.width, validationH);
 
             DrawToolbar(toolbarRect);
             DrawPalette(paletteRect);
             DrawNotesSheet(sheetRect);
             preview.Draw(previewRect);
             DrawInspector(inspectorRect);
+            DrawValidationPanel(validationRect);
         }
 
         // ---------- ツールバー ----------
@@ -146,6 +159,7 @@ namespace Muses.ChartTool
 
             if (GUILayout.Button("読み込む", GUILayout.Width(70))) OpenChartFromPath();
             if (GUILayout.Button("保存", GUILayout.Width(50))) SaveChartToPath();
+            if (GUILayout.Button("検証", GUILayout.Width(50))) RunValidation();
 
             GUILayout.Space(10);
             GUILayout.Label("snap", GUILayout.Width(30));
@@ -230,11 +244,78 @@ namespace Muses.ChartTool
                 chartPath = path;
                 dirty = false;
                 statusMessage = "保存完了";
+                if (validateOnSave) RunValidation();
             }
             catch (Exception ex)
             {
                 statusMessage = "保存エラー: " + ex.Message;
             }
+        }
+
+        // ---------- §4 検証 ----------
+
+        /// <summary>editor-spec.md §4。常時実行はしない。[検証]ボタン・保存時にのみ呼ぶ。</summary>
+        private void RunValidation()
+        {
+            // ChartValidator は chart.bpmEvents(V1) と Waypoint.time/Note.comboTimes を読むため、
+            // 検証前に必ず再解決する（エディタでの編集はtickのみを直接書き換え、
+            // timeの再計算はプレビューの再構築時にしか走らないため）。
+            // ChartSerializer.ReadChart / PreviewSystem.Rebuild と同じ規則: BPMは曲の属性なので
+            // 都度 song 側からコピーする（元に戻さず、以後も song と同期した状態を維持する）。
+            chart.bpmEvents = new List<BpmEvent>(song.bpmEvents);
+            ChartFormat.ResolveTimes(chart);
+            ChartFormat.ResolveSlideComboPoints(chart);
+
+            validationIssues = ChartValidator.Validate(chart, Cells, preview.AudioLengthSec);
+            validationPanelOpen = true;
+        }
+
+        private void DrawValidationPanel(Rect rect)
+        {
+            DrawRect(rect, new Color(0.14f, 0.14f, 0.14f));
+            var header = new Rect(rect.x, rect.y, rect.width, 24);
+            GUI.Box(header, "");
+            if (GUI.Button(new Rect(header.x + 2, header.y + 1, 20, 22), validationPanelOpen ? "▼" : "▶"))
+                validationPanelOpen = !validationPanelOpen;
+
+            int errors = 0, warnings = 0, infos = 0;
+            foreach (var iss in validationIssues)
+            {
+                if (iss.severity == ValidationSeverity.Error) errors++;
+                else if (iss.severity == ValidationSeverity.Warning) warnings++;
+                else infos++;
+            }
+            GUI.Label(new Rect(header.x + 26, header.y + 3, 300, 20),
+                $"検証結果: エラー{errors} 警告{warnings} 情報{infos}");
+
+            if (!validationPanelOpen) return;
+
+            var bodyRect = new Rect(rect.x, header.yMax, rect.width, rect.height - header.height);
+            GUILayout.BeginArea(bodyRect);
+            GUILayout.BeginHorizontal();
+            bool newValidateOnSave = GUILayout.Toggle(validateOnSave, "保存時に自動実行", GUILayout.Width(120));
+            if (newValidateOnSave != validateOnSave) validateOnSave = newValidateOnSave;
+            GUILayout.EndHorizontal();
+
+            validationScroll = GUILayout.BeginScrollView(validationScroll);
+            foreach (var iss in validationIssues)
+            {
+                var color = iss.severity switch
+                {
+                    ValidationSeverity.Error => new Color(1f, 0.5f, 0.5f),
+                    ValidationSeverity.Warning => new Color(1f, 0.85f, 0.4f),
+                    _ => Color.white,
+                };
+                var old = GUI.color;
+                GUI.color = color;
+                if (GUILayout.Button($"[{iss.id}] {iss.message}", GUI.skin.label))
+                {
+                    scrollTick = Mathf.Max(0, iss.tick - 2000);
+                }
+                GUI.color = old;
+            }
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
         }
 
         // ---------- ツールパレット ----------

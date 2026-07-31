@@ -183,6 +183,9 @@ namespace Muses.ChartTool
 
         public void MarkDirty() => sceneDirty = true;
 
+        /// <summary>editor-spec.md §4 V10。読み込み済み音源の長さ(秒)。未読み込みなら-1。</summary>
+        public float AudioLengthSec => musicSource.clip != null ? musicSource.clip.length : -1f;
+
         // ---------- 毎フレーム駆動 ----------
 
         public void Tick()
