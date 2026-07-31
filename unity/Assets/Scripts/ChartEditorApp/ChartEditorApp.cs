@@ -17,11 +17,12 @@ namespace Muses.ChartTool
     /// ことでゲーム本体とは別の実行ファイルになる。
     ///
     /// §5（プレビュー: 音源同期再生・オートプレイ・RenderTexture 3Dプレビュー）は
-    /// <see cref="PreviewSystem"/> に実装済み。波形+イベントレーン・検証結果リスト・Undo/自動保存は
-    /// まだ未実装（§4,6で別途着手）。
+    /// <see cref="PreviewSystem"/> に、§4（検証）は <see cref="Muses.Chart.ChartValidator"/> に、
+    /// §6（Undo/Redo・自動保存）はこのクラス内に実装済み。波形+イベントレーンはまだ未実装。
     /// 現時点でのスコープ: ファイルの読み書き（OSネイティブのファイル選択ダイアログは無く、
     /// パスを直接テキスト入力する簡易UI）、ノーツの配置/選択/平行移動/削除、Slideの中継点追加、
-    /// インスペクタでの数値編集、プレビュー再生。矩形選択・コピペ・一括変換・端のドラッグでの幅変更はまだ無い。
+    /// インスペクタでの数値編集、プレビュー再生、検証、Undo/Redo、自動保存。
+    /// 矩形選択・コピペ・一括変換・端のドラッグでの幅変更はまだ無い。
     /// </summary>
     public class ChartEditorApp : MonoBehaviour
     {
@@ -43,6 +44,24 @@ namespace Muses.ChartTool
         private bool validationPanelOpen;
         private bool validateOnSave = true;
         private Vector2 validationScroll;
+
+        // ---- §6 Undo/Redo ----
+        private struct UndoSnapshot
+        {
+            public ChartData chart;
+            public ChartFileHeader header;
+        }
+        private readonly List<UndoSnapshot> undoStack = new();
+        private readonly List<UndoSnapshot> redoStack = new();
+        private const int UndoLimit = 80;
+        private const float UndoCoalesceSec = 0.5f; // この秒数以内の連続編集は1手にまとめる（スライダー操作等）
+        private float lastUndoPushRealtime = -999f;
+
+        // ---- §6 自動保存 ----
+        private const float AutosaveIntervalSec = 5f * 60f;
+        private float lastAutosaveRealtime = -999f;
+        private bool showRestorePrompt;
+        private string restoreAutosavePath;
 
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
@@ -89,6 +108,27 @@ namespace Muses.ChartTool
             {
                 preview.Rebuild(song, chart, Path.GetDirectoryName(songPath));
                 lastPreviewRebuildRealtime = Time.unscaledTime;
+            }
+
+            HandleUndoRedoShortcuts();
+            TickAutosave();
+        }
+
+        private void HandleUndoRedoShortcuts()
+        {
+            var kb = UnityEngine.InputSystem.Keyboard.current;
+            if (kb == null) return;
+            bool cmdOrCtrl = kb.leftCommandKey.isPressed || kb.rightCommandKey.isPressed
+                              || kb.leftCtrlKey.isPressed || kb.rightCtrlKey.isPressed;
+            if (!cmdOrCtrl) return;
+            bool shift = kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed;
+            if (kb.zKey.wasPressedThisFrame)
+            {
+                if (shift) Redo(); else Undo();
+            }
+            else if (kb.yKey.wasPressedThisFrame)
+            {
+                Redo();
             }
         }
 
@@ -144,6 +184,7 @@ namespace Muses.ChartTool
             preview.Draw(previewRect);
             DrawInspector(inspectorRect);
             DrawValidationPanel(validationRect);
+            DrawRestorePrompt();
         }
 
         // ---------- ツールバー ----------
@@ -160,6 +201,13 @@ namespace Muses.ChartTool
             if (GUILayout.Button("読み込む", GUILayout.Width(70))) OpenChartFromPath();
             if (GUILayout.Button("保存", GUILayout.Width(50))) SaveChartToPath();
             if (GUILayout.Button("検証", GUILayout.Width(50))) RunValidation();
+
+            GUILayout.Space(6);
+            GUI.enabled = undoStack.Count > 0;
+            if (GUILayout.Button("元に戻す", GUILayout.Width(60))) Undo();
+            GUI.enabled = redoStack.Count > 0;
+            if (GUILayout.Button("やり直す", GUILayout.Width(60))) Redo();
+            GUI.enabled = true;
 
             GUILayout.Space(10);
             GUILayout.Label("snap", GUILayout.Width(30));
@@ -220,9 +268,13 @@ namespace Muses.ChartTool
                 pendingSlideStart = null;
                 draggingNote = false;
                 dirty = false;
+                undoStack.Clear();
+                redoStack.Clear();
+                lastAutosaveRealtime = Time.unscaledTime;
                 statusMessage = "読み込み完了";
                 preview.Rebuild(song, chart, dir);
                 lastPreviewRebuildRealtime = Time.unscaledTime;
+                CheckAutosaveRestore(path);
             }
             catch (Exception ex)
             {
@@ -250,6 +302,140 @@ namespace Muses.ChartTool
             {
                 statusMessage = "保存エラー: " + ex.Message;
             }
+        }
+
+        // ---------- §6 Undo/Redo ----------
+
+        /// <summary>
+        /// editor-spec.md §6.1はテキストシリアライザでのスナップショットを提案しているが、
+        /// ChartData はList&lt;Note&gt;+List&lt;Waypoint&gt;(構造体)という単純なグラフなので、
+        /// ファイルI/Oを挟まないインメモリのディープコピーの方が高速かつ往復精度の
+        /// 心配（tick↔bar:beat:tick変換等）が無く優れている。二重実装は数行で済むため許容。
+        /// </summary>
+        private static ChartData CloneChart(ChartData src)
+        {
+            var c = new ChartData
+            {
+                bpmEvents = new List<BpmEvent>(src.bpmEvents),
+                scrollEvents = new List<ScrollEvent>(src.scrollEvents),
+            };
+            foreach (var n in src.notes)
+                c.notes.Add(new Note
+                {
+                    kind = n.kind,
+                    scrollGroup = n.scrollGroup,
+                    points = new List<Waypoint>(n.points),
+                    comboTimes = new List<float>(n.comboTimes),
+                });
+            return c;
+        }
+
+        private UndoSnapshot CaptureSnapshot() => new() { chart = CloneChart(chart), header = header };
+
+        /// <summary>変更を適用する直前に呼ぶ。coalesce=trueは「直前の記録から一定時間内なら1手にまとめる」
+        /// （スライダー操作など、フレームごとに変更が飛んでくる編集向け）。</summary>
+        private void PushUndo(bool coalesce)
+        {
+            float now = Time.unscaledTime;
+            if (coalesce && undoStack.Count > 0 && now - lastUndoPushRealtime < UndoCoalesceSec)
+            {
+                lastUndoPushRealtime = now;
+                return; // 直前の変更前スナップショットをそのまま使う(既に積んである)
+            }
+            undoStack.Add(CaptureSnapshot());
+            if (undoStack.Count > UndoLimit) undoStack.RemoveAt(0);
+            redoStack.Clear();
+            lastUndoPushRealtime = now;
+        }
+
+        private void Undo()
+        {
+            if (undoStack.Count == 0) return;
+            redoStack.Add(CaptureSnapshot());
+            var snap = undoStack[^1];
+            undoStack.RemoveAt(undoStack.Count - 1);
+            ApplySnapshot(snap);
+        }
+
+        private void Redo()
+        {
+            if (redoStack.Count == 0) return;
+            undoStack.Add(CaptureSnapshot());
+            var snap = redoStack[^1];
+            redoStack.RemoveAt(redoStack.Count - 1);
+            ApplySnapshot(snap);
+        }
+
+        private void ApplySnapshot(UndoSnapshot snap)
+        {
+            chart = snap.chart;
+            header = snap.header;
+            selectedNote = null; // 復元後は参照が切れるため選択解除
+            pendingSlideStart = null;
+            draggingNote = false;
+            dirty = true;
+        }
+
+        // ---------- §6 自動保存 ----------
+
+        private void TickAutosave()
+        {
+            if (!dirty || string.IsNullOrEmpty(chartPath)) return;
+            if (Time.unscaledTime - lastAutosaveRealtime < AutosaveIntervalSec) return;
+            try
+            {
+                ChartSerializer.WriteChart(chartPath + ".autosave", header, chart, song);
+                lastAutosaveRealtime = Time.unscaledTime;
+            }
+            catch (Exception ex)
+            {
+                statusMessage = "自動保存エラー: " + ex.Message;
+            }
+        }
+
+        /// <summary>読み込み直後に呼ぶ。autosaveの方が正規ファイルより新しければ復元を提案する。</summary>
+        private void CheckAutosaveRestore(string path)
+        {
+            string autosavePath = path + ".autosave";
+            if (!File.Exists(autosavePath)) return;
+            if (File.GetLastWriteTimeUtc(autosavePath) <= File.GetLastWriteTimeUtc(path)) return;
+            showRestorePrompt = true;
+            restoreAutosavePath = autosavePath;
+        }
+
+        private void DrawRestorePrompt()
+        {
+            if (!showRestorePrompt) return;
+            const float w = 480f, h = 60f;
+            var rect = new Rect((Screen.width - w) / 2f, 60f, w, h);
+            DrawRect(rect, new Color(0.05f, 0.05f, 0.05f, 0.95f));
+            GUILayout.BeginArea(rect);
+            GUILayout.Label("自動保存ファイルの方が新しいです。復元しますか？", boldStyle);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("復元する", GUILayout.Width(100)))
+            {
+                try
+                {
+                    var (loadedHeader, loadedChart) = ChartSerializer.ReadChart(restoreAutosavePath, song);
+                    header = loadedHeader;
+                    chart = loadedChart;
+                    undoStack.Clear();
+                    redoStack.Clear();
+                    selectedNote = null;
+                    pendingSlideStart = null;
+                    dirty = true;
+                    statusMessage = "自動保存ファイルから復元しました";
+                    preview.Rebuild(song, chart, Path.GetDirectoryName(chartPath));
+                }
+                catch (Exception ex)
+                {
+                    statusMessage = "復元エラー: " + ex.Message;
+                }
+                showRestorePrompt = false;
+            }
+            if (GUILayout.Button("無視する", GUILayout.Width(100))) showRestorePrompt = false;
+            GUILayout.EndHorizontal();
+            GUILayout.EndArea();
         }
 
         // ---------- §4 検証 ----------
@@ -377,6 +563,7 @@ namespace Muses.ChartTool
             int newGroup = Mathf.RoundToInt(ParseFloatField("scrollGroup", selectedNote.scrollGroup, 200));
             if (newGroup != selectedNote.scrollGroup)
             {
+                PushUndo(coalesce: true);
                 selectedNote.scrollGroup = Mathf.Max(0, newGroup);
                 dirty = true;
             }
@@ -435,6 +622,7 @@ namespace Muses.ChartTool
 
                 if (changed)
                 {
+                    PushUndo(coalesce: true); // スライダー/テキスト編集はフレームごとに来るので一定時間内はまとめる
                     wp.tick = addrValid ? newTick : wp.tick;
                     wp.layerF = Mathf.Clamp01(layerF);
                     wp.cellF = cellF;
@@ -450,6 +638,7 @@ namespace Muses.ChartTool
                 {
                     if (GUILayout.Button("この中継点を削除"))
                     {
+                        PushUndo(coalesce: false);
                         selectedNote.points.RemoveAt(i);
                         dirty = true;
                         break;
@@ -460,6 +649,7 @@ namespace Muses.ChartTool
             GUILayout.Space(8);
             if (GUILayout.Button("このノーツを削除"))
             {
+                PushUndo(coalesce: false);
                 chart.notes.Remove(selectedNote);
                 selectedNote = null;
                 dirty = true;
@@ -674,6 +864,7 @@ namespace Muses.ChartTool
                             kind = kind,
                             points = new List<Waypoint> { NewWaypoint(tick, layerF, cellF, defaultWidthCells) },
                         };
+                        PushUndo(coalesce: false);
                         chart.notes.Add(note);
                         selectedNote = note;
                         dirty = true;
@@ -696,6 +887,7 @@ namespace Muses.ChartTool
                             if (tick > startTick)
                             {
                                 pendingSlideStart.points.Add(NewWaypoint(tick, layerF, cellF, defaultWidthCells));
+                                PushUndo(coalesce: false);
                                 chart.notes.Add(pendingSlideStart);
                                 selectedNote = pendingSlideStart;
                                 dirty = true;
@@ -714,6 +906,7 @@ namespace Muses.ChartTool
                             if (insertAt > 0 && insertAt < selectedNote.points.Count)
                             {
                                 float width = InterpAtTick(selectedNote, tick).width;
+                                PushUndo(coalesce: false);
                                 selectedNote.points.Insert(insertAt, NewWaypoint(tick, layerF, cellF, width));
                                 dirty = true;
                             }
@@ -725,6 +918,7 @@ namespace Muses.ChartTool
                         var hit = HitTestNote(e.mousePosition, tickToY, yToTick, combinedX);
                         if (hit != null)
                         {
+                            PushUndo(coalesce: false);
                             chart.notes.Remove(hit);
                             if (ReferenceEquals(selectedNote, hit)) selectedNote = null;
                             dirty = true;
@@ -738,6 +932,7 @@ namespace Muses.ChartTool
                         selectedNote = hit;
                         if (hit != null)
                         {
+                            PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
                             draggingNote = true;
                             dragOriginRawTick = rawTick;
                             dragOriginRawCell = rawCell;
@@ -774,6 +969,7 @@ namespace Muses.ChartTool
             }
             else if (e.type == EventType.KeyDown && (e.keyCode == KeyCode.Delete || e.keyCode == KeyCode.Backspace) && selectedNote != null)
             {
+                PushUndo(coalesce: false);
                 chart.notes.Remove(selectedNote);
                 selectedNote = null;
                 dirty = true;
