@@ -271,6 +271,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Muses.Overlay.StageOverlay
   stageController: {fileID: 548285724}
   input: {fileID: 406964926}
+  showHud: 1
 --- !u!1 &406964925
 GameObject:
   m_ObjectHideFlags: 0
@@ -500,26 +501,31 @@ MonoBehaviour:
     vGroundBot: -1
     vGroundJudge: -0.75
     farFrac: 0.9
+    vBandGround: -0.55
+    vBandSky: 0.45
     U: 0.87
     cells: 12
     readAheadSec: 1.2
+    hiSpeed: 1
     bpm: 150
-    windowPerfect: 40
-    windowGood: 100
     splitHysteresis: 0.05
+    layerJudgeRadius: 0.5
+    flickWindowMs: 120
+    judgeOffsetMs: 0
+    visualOffsetMs: 0
     hardFarEdge: 1
     laneConverge: 1
     laneLineStepGround: 3
     laneLineStepSky: 12
     skyFloorFromJudge: 1
     groundFillAlpha: 1
-    skyFillAlpha: 0.05
+    skyFillAlpha: 0.2
     bgColor: '#a0b298'
-    showBand: 1
+    showBand: 0
     showJudgeLine: 1
     showSplitLine: 0
     showLaneFloor: 1
-    showHorizon: 1
+    showHorizon: 0
     showCellIndex: 0
     showTouchDebug: 1
     metronome: 0
@@ -548,6 +554,7 @@ GameObject:
   m_Component:
   - component: {fileID: 584883302}
   - component: {fileID: 584883301}
+  - component: {fileID: 584883303}
   m_Layer: 0
   m_Name: SmokeTest
   m_TagString: Untagged
@@ -582,6 +589,18 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &584883303
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 584883300}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f470b59d8e964a0e81662d4a39295875, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Muses.Gameplay.JudgeSmokeTest
 --- !u!1 &795065427
 GameObject:
   m_ObjectHideFlags: 0
@@ -761,6 +780,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Muses.Notes.NoteView
   noteShader: {fileID: 4800000, guid: a928f7554e8154e6fb940bf955de19b6, type: 3}
   beatLineShader: {fileID: 4800000, guid: 2ab1cb8a45ab74fee95f050a821fab96, type: 3}
+  thicknessFrac: 0.06
+  thicknessMinFrac: 0.004
 --- !u!4 &827646713
 Transform:
   m_ObjectHideFlags: 0
