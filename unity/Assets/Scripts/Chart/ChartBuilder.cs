@@ -28,20 +28,27 @@ namespace Muses.Chart
             float F(float c) => c * S;
             int T(float beats) => (int)MathF.Round(beats * ChartData.TicksPerBeat);
 
-            Waypoint WP(float beats, float layerF, float cellF, float width, Easing easing = Easing.Linear) => new()
+            Waypoint WP(float beats, float layerF, float cellF, float width, Easing easing = Easing.Linear,
+                WaypointMarker marker = WaypointMarker.None) => new()
             {
                 tick = T(beats),
                 layerF = layerF,
                 cellF = cellF,
                 width = width,
                 easing = easing,
-                marker = WaypointMarker.None,
+                marker = marker,
                 comboStep = null,
             };
 
             Note Tap1(float beats, Layer layer, float cell, float width, bool ex = false) => new()
             {
                 kind = ex ? NoteKind.ExTap : NoteKind.Tap,
+                points = new List<Waypoint> { WP(beats, layer == Layer.Sky ? 1f : 0f, cell, width) },
+            };
+
+            Note Flick1(float beats, Layer layer, float cell, float width) => new()
+            {
+                kind = NoteKind.Flick,
                 points = new List<Waypoint> { WP(beats, layer == Layer.Sky ? 1f : 0f, cell, width) },
             };
 
@@ -86,9 +93,10 @@ namespace Muses.Chart
                     points = new List<Waypoint>
                     {
                         WP(t0Beat + 20, 0f, F(1.5f), 1.2f * S, Easing.Smooth),
-                        WP(t0Beat + 22, 0f, F(4.5f), 1.2f * S, Easing.Smooth),
+                        // item11確認用: Visible中継点(白いマーカーで見た目確認)
+                        WP(t0Beat + 22, 0f, F(4.5f), 1.2f * S, Easing.Smooth, WaypointMarker.Visible),
                         WP(t0Beat + 24, 1f, F(7.5f), 1.2f * S, Easing.Smooth),
-                        WP(t0Beat + 26, 1f, F(9.5f), 1.2f * S, Easing.Smooth),
+                        WP(t0Beat + 26, 1f, F(9.5f), 1.2f * S, Easing.Smooth, WaypointMarker.Visible),
                         WP(t0Beat + 28, 0f, F(6.5f), 1.2f * S, Easing.Smooth),
                     },
                 });
@@ -106,6 +114,10 @@ namespace Muses.Chart
                 // 28-31拍: 地上の16分の詰め
                 for (int i = 0; i < 16; i++)
                     chart.notes.Add(Tap1(t0Beat + 28 + i * 0.25f, Layer.Ground, C((i % 6) * 2), W(2)));
+
+                // 31拍のウラ: Flick確認用（item8実装の見た目確認、地上/空中1本ずつ）
+                chart.notes.Add(Flick1(t0Beat + 31.5f, Layer.Ground, C(6), W(2)));
+                chart.notes.Add(Flick1(t0Beat + 31.75f, Layer.Sky, C(9), W(2)));
             }
 
             chart.notes.Sort((a, c2) => a.points[0].tick.CompareTo(c2.points[0].tick));

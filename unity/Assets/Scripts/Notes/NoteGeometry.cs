@@ -30,7 +30,8 @@ namespace Muses.Notes
     ///
     /// note-spec.md rev.4 のデータモデルに合わせ、Tap/ExTap/Flick は単一Waypointの薄い板、
     /// Slide（旧Hold+旧Arcの統合）は Waypoint 列を通した1本の帯として描く（§2.1）。
-    /// 中継点(marker)の個別描画・幅のスナップ表示は Phase 1 後続項目（§8 item11）で未実装。
+    /// §8 item11: Visible中継点はTapと同じ形・白色のマーカーを帯の上に重ねて描く。
+    /// 幅/easingの区間補間は既にPushSlideBand（ChartMath.At経由）で対応済み。
     /// </summary>
     public static class NoteGeometry
     {
@@ -87,6 +88,7 @@ namespace Muses.Notes
             var cEx = new Color(0xff / 255f, 0xd5 / 255f, 0x4a / 255f); // Ex Tap: 通常Tapと区別する専用色
             var cFlick = new Color(0xff / 255f, 0x4a / 255f, 0xc8 / 255f); // Flick: 仮の専用色（判定はPhase 1後続項目）
             var cSlide = new Color(0x35 / 255f, 0xe8 / 255f, 0xff / 255f);
+            var cSlideMarker = Color.white; // note-spec.md §3: Visible中継点。帯(シアン)と区別できる色
 
             foreach (var n in notes)
             {
@@ -107,6 +109,17 @@ namespace Muses.Notes
                 else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
                     PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, cSlide);
+
+                    // note-spec.md §3: Visible中継点はTapと同じ形・別色で描く（コンボ点として扱われる、item11）。
+                    // Slideのcellは中心基準（PushSlideBandと同じ、Tapの左端基準とは異なる）。
+                    foreach (var wp in n.points)
+                    {
+                        if (wp.marker != WaypointMarker.Visible) continue;
+                        float y = YAt(wp.layerF, dCopy.skyHeight) + dCopy.zJudge * 0.012f; // 帯(0.01)より上にして隠れないようにする
+                        float u0 = UAt(wp.cellF - wp.width / 2f + 0.04f);
+                        float u1 = UAt(wp.cellF + wp.width / 2f - 0.04f);
+                        QuadThin(u0, u1, y, wp.time, wp.layerF, cSlideMarker, NearOf(wp.layerF));
+                    }
                 }
 
                 runtimes.Add(new NoteRuntime

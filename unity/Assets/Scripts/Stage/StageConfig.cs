@@ -39,6 +39,12 @@ namespace Muses.Stage
         /// 1 とした比率で指定する。両層で共有する単一のワールド奥行き z_far に変換される。
         /// </summary>
         public float farFrac;
+        /// <summary>
+        /// note-spec.md §0.1。入力パネル内部のvバンド境界（bandsPerLayer=2確定）。
+        /// この値より奥(v大)がband=1、手前がband=0。既定は各層パネルの等分。実値は未確定。
+        /// </summary>
+        public float vBandGround;
+        public float vBandSky;
 
         // ---- 横方向 ----
         /// <summary>判定帯の半幅 (NDC u)。0.87 = 画面幅の 87%</summary>
@@ -59,6 +65,8 @@ namespace Muses.Stage
         /// 実値は未確定（flickWindowMs と同様、実機で調整する想定の仮値）。
         /// </summary>
         public float layerJudgeRadius;
+        /// <summary>note-spec.md §4.5。Flickの移動量を測る時間窓 (ms)。実値未確定（仮120ms）。</summary>
+        public float flickWindowMs;
         /// <summary>
         /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
         /// （実機の出力レイテンシ分、判定を「音が実際に鳴った後」にずらす想定）。
@@ -114,6 +122,9 @@ namespace Muses.Stage
             vGroundJudge = -0.75f,
             vGroundBot = -1f,
             farFrac = 0.9f,
+            // note-spec.md §0.1: 既定は各層パネルの等分（判定線基準ではなく）
+            vBandGround = -0.55f,
+            vBandSky = 0.45f,
 
             U = 0.87f,
             cells = 12,
@@ -122,6 +133,7 @@ namespace Muses.Stage
             bpm = 150f,
             splitHysteresis = 0.05f,
             layerJudgeRadius = 0.5f,
+            flickWindowMs = 120f,
             judgeOffsetMs = 0f,
             visualOffsetMs = 0f,
 

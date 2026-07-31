@@ -94,6 +94,18 @@ namespace Muses.TouchInput
             return v > s + h ? Layer.Sky : Layer.Ground;
         }
 
+        /// <summary>
+        /// note-spec.md §0.1。層内の v 方向バンド分割（bandsPerLayer=2 確定）。
+        /// 判定側はbandを無視するが、バンド境界をまたいだだけで同じセルへの枠内更新を発生させる
+        /// （擦りで縦連を処理するため）。
+        /// </summary>
+        private int BandOf(Layer layer, float v)
+        {
+            var cfg = stageController.Config;
+            float boundary = layer == Layer.Sky ? cfg.vBandSky : cfg.vBandGround;
+            return v > boundary ? 1 : 0;
+        }
+
         private void Update()
         {
             if (stageController == null) return;
@@ -134,33 +146,58 @@ namespace Muses.TouchInput
             // （Slide/Flick の連続包含判定は境界またぎイベントに依存しないため）。
             float cellF = CellFOf(u);
             float layerF = LayerFOf(v);
+            float at = nowSec();
 
             if (!Contacts.TryGetValue(id, out var c))
             {
                 var layer = LayerOf(v, null);
                 var cell = CellOf(u);
-                float at = nowSec();
-                c = new Contact { id = id, u = u, v = v, layer = layer, cell = cell, cellF = cellF, layerF = layerF, since = at };
+                var band = BandOf(layer, v);
+                c = new Contact
+                {
+                    id = id, u = u, v = v, layer = layer, cell = cell, band = band,
+                    cellF = cellF, layerF = layerF, since = at,
+                };
                 Contacts[id] = c;
                 Occupied.Add(Key(layer, cell));
+                PushHistory(c, at);
                 Emit(layer, cell, true, at, cellF, layerF);
                 return;
             }
 
             var newLayer = LayerOf(v, c.layer);
             var newCell = CellOf(u);
+            var newBand = BandOf(newLayer, v);
+            bool cellOrLayerChanged = newLayer != c.layer || newCell != c.cell;
+            bool bandChanged = newBand != c.band;
             c.u = u;
             c.v = v;
             c.cellF = cellF;
             c.layerF = layerF;
-            if (newLayer != c.layer || newCell != c.cell)
+            PushHistory(c, at); // note-spec.md §4.1: Flickの移動履歴は境界またぎに関わらず毎フレーム積む
+
+            if (cellOrLayerChanged)
             {
                 ReleaseCell(c.layer, c.cell, id);
                 c.layer = newLayer;
                 c.cell = newCell;
-                Occupied.Add(Key(newLayer, newCell));
-                Emit(newLayer, newCell, false, nowSec(), cellF, layerF);
             }
+            if (cellOrLayerChanged || bandChanged)
+            {
+                c.band = newBand;
+                if (cellOrLayerChanged) Occupied.Add(Key(newLayer, newCell));
+                // バンド境界のみをまたいだ場合も同じセルへの枠内更新として発行する（§0.1の擦り対応）。
+                Emit(newLayer, newCell, false, at, cellF, layerF);
+            }
+        }
+
+        /// <summary>note-spec.md §4.1。Flick用の移動履歴リングバッファ。flickWindowMsより古い分は間引く。</summary>
+        private void PushHistory(Contact c, float at)
+        {
+            c.history.Add((c.u, c.v, at));
+            float horizon = at - stageController.Config.flickWindowMs / 1000f;
+            while (c.history.Count > 0 && c.history[0].t < horizon)
+                c.history.RemoveAt(0);
         }
 
         private void ReleaseCell(Layer layer, int cell, int exceptId)

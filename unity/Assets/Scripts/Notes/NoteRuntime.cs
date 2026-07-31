@@ -32,5 +32,11 @@ namespace Muses.Notes
         /// 未確定コンボ点の判定窓([t_p-100ms, t_p+100ms])より古いものは間引く。
         /// </summary>
         public List<(float time, bool occupied)> slideSamples = new();
+
+        /// <summary>
+        /// note-spec.md §4.4。Flick専用: 判定窓内に枠内へ接触があったか（移動が閾値未満で
+        /// 不成立に終わった場合のフォールバック判定に使う。移動なし・枠内更新ありならGOOD）。
+        /// </summary>
+        public bool flickEnterSeen;
     }
 }

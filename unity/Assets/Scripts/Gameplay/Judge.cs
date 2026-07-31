@@ -19,8 +19,12 @@ namespace Muses.Gameplay
     /// Slide 始点を Tap と同じ Contact 駆動・連続座標包含に統一（§0.2/§2.1）、
     /// Slide のコンボ点を時間対称窓で独立判定し HOLD BREAK を廃止（§2.4）。
     ///
-    /// **今回まだ未実装（次の増分）**: Flick の移動量判定本体（item8、現状はTapと同じ接触判定の暫定代用）、
-    /// 入力のバンド分割（item6）。
+    /// 続けて item8 を実装: Flick を「枠内の移動量」で判定する本実装に置き換えた
+    /// （Presence駆動・早い側繰り上げの非対称窓・移動なしのフォールバック、§4）。
+    /// item6（入力のバンド分割）は<see cref="TouchInputManager"/>側、item11（Visible中継点描画）は
+    /// <see cref="NoteGeometry"/>側で対応済み。
+    ///
+    /// **今回まだ未実装（次の増分）**: item14（ソフラン、X(t)積分・頂点シェーダ側の変更が必要）。
     /// </summary>
     public class Judge
     {
@@ -110,17 +114,19 @@ namespace Muses.Gameplay
         {
             var (layerF, cellF, width) = ChartMath.At(n, t);
             foreach (var c in input.Contacts.Values)
-            {
-                if (MathF.Abs(c.layerF - layerF) > cfg.layerJudgeRadius) continue;
-                if (c.cellF < cellF - width / 2f || c.cellF > cellF + width / 2f) continue;
-                return true;
-            }
+                if (InBand(c, layerF, cellF, width))
+                    return true;
             return false;
         }
 
+        private bool InBand(Contact c, float layerF, float cellF, float width) =>
+            MathF.Abs(c.layerF - layerF) <= cfg.layerJudgeRadius &&
+            c.cellF >= cellF - width / 2f && c.cellF <= cellF + width / 2f;
+
         /// <summary>
-        /// EnterEvent がノーツ N の包含判定を満たすか。Tap/ExTap/Flick は離散セル(§0.2)、
+        /// EnterEvent がノーツ N の包含判定を満たすか。Tap/ExTap は離散セル(§0.2)、
         /// Slide 始点は連続座標(cellF/layerF、§0.2)で判定する（駆動は共通してこの枠内更新イベント）。
+        /// Flick は Presence 駆動（item8、<see cref="UpdateFlickPending"/>）のためここでは扱わない。
         /// </summary>
         private bool Contains(Note n, Waypoint wp, EnterEvent e)
         {
@@ -136,7 +142,7 @@ namespace Muses.Gameplay
             return e.cell >= cell && e.cell < cell + w;
         }
 
-        /// <summary>「入力範囲内に新規の接触点が検出された」= ヒット判定のトリガ</summary>
+        /// <summary>「入力範囲内に新規の接触点が検出された」= ヒット判定のトリガ（Tap/ExTap/Slide始点）</summary>
         public void OnEnter(EnterEvent e, float songTime)
         {
             var rts = noteView.Runtimes;
@@ -149,6 +155,7 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > songTime + rawWin) break; // これ以降は誰の実効窓にも入らない
+                if (n.kind == NoteKind.Flick) continue; // item8: Flickは移動量駆動でUpdate()側が扱う
                 if (rt.state != NoteState.Pending) continue;
                 if (!chainWindows.TryGetValue(rt, out var win)) continue;
                 if (songTime < win.lo || songTime > win.hi) continue;
@@ -172,6 +179,7 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > bestTime + 1e-4f) break; // 開始時刻順ソート済みなので同時刻グループを過ぎたら終了
+                if (n.kind == NoteKind.Flick) continue;
                 if (rt.state != NoteState.Pending) continue;
                 var wp = n.points[0];
                 if (MathF.Abs(wp.time - bestTime) > 1e-4f) continue;
@@ -188,28 +196,17 @@ namespace Muses.Gameplay
             }
         }
 
-        /// <summary>
-        /// note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決め、スコア/コンボ/演出を反映する。
-        /// 有効なティアが無い場合（chainWindow の外＝理論上到達しない）は null を返し、呼び出し側は状態を変えない。
-        /// </summary>
-        private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, int cell, float width, float songTime)
+        /// <summary>note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決める。理論上ここに来ない場合は null（呼び出し元がchainWindowで既に窓内を保証している）。</summary>
+        private JudgeKind? TierFor(NoteKind kind, float absMs)
         {
             var traits = NoteKindTraits.Of(kind);
-            float ms = -dt * 1000f; // 正 = 早押し
-            float absMs = MathF.Abs(ms);
+            if (traits.judgeProfile == JudgeProfile.AllPerfect) return JudgeKind.PerfectPlus;
+            return JudgeTiers.TierFor(absMs)?.kind;
+        }
 
-            JudgeKind judged;
-            if (traits.judgeProfile == JudgeProfile.AllPerfect)
-            {
-                judged = JudgeKind.PerfectPlus; // 窓内(呼び出し元でchainWindow済み)は常にPERFECT+
-            }
-            else
-            {
-                var tier = JudgeTiers.TierFor(absMs);
-                if (tier == null) return null; // 理論上ここには来ない（chainWindowで既に窓内保証済み）が安全側に
-                judged = tier.Value.kind;
-            }
-
+        /// <summary>判定結果をスコア/コンボ/演出に反映する（MISS以外）。</summary>
+        private void CommitJudgement(JudgeKind judged, Layer layer, int cell, float width, float songTime, float ms)
+        {
             switch (judged)
             {
                 case JudgeKind.PerfectPlus: Score.perfectPlus++; break;
@@ -226,12 +223,31 @@ namespace Muses.Gameplay
                 _ => "",
             };
             Score.lastMs = ms;
-
             Flashes.Add(new HitFlash { layer = layer, cell = cell, width = width, born = songTime, kind = judged });
+        }
+
+        private void CommitMiss(Layer layer, int cell, float width, float songTime)
+        {
+            Score.miss++;
+            Score.combo = 0;
+            Score.lastJudge = "MISS";
+            Flashes.Add(new HitFlash { layer = layer, cell = cell, width = width, born = songTime, kind = JudgeKind.Miss });
+        }
+
+        /// <summary>
+        /// note-spec.md §6.1。トレイト駆動でティアを決め、スコア/コンボ/演出を反映する。
+        /// 有効なティアが無い場合（chainWindow の外＝理論上到達しない）は null を返し、呼び出し側は状態を変えない。
+        /// </summary>
+        private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, int cell, float width, float songTime)
+        {
+            float ms = -dt * 1000f; // 正 = 早押し
+            var judged = TierFor(kind, MathF.Abs(ms));
+            if (judged == null) return null;
+            CommitJudgement(judged.Value, layer, cell, width, songTime, ms);
             return judged;
         }
 
-        /// <summary>Tap/ExTap/Flick: 接触即ヒット確定。</summary>
+        /// <summary>Tap/ExTap: 接触即ヒット確定。</summary>
         private void ResolveHit(NoteRuntime rt, Waypoint wp, int cell, Layer layer, float dt, float songTime)
         {
             var judged = ApplyJudgement(rt.note.kind, dt, layer, cell, wp.width, songTime);
@@ -253,10 +269,11 @@ namespace Muses.Gameplay
             rt.nextComboIndex = 0;
         }
 
-        /// <summary>毎フレーム: 見逃し判定と、Slide のコンボ点独立判定（item7）</summary>
+        /// <summary>毎フレーム: 見逃し判定、Slide のコンボ点独立判定（item7）、Flick の移動量判定（item8）</summary>
         public void Update(float songTime, TouchInputManager input)
         {
             var rts = noteView.Runtimes;
+            float rawWin = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの素の半幅(=100ms)。Flickは早い側もこの分だけ窓が開く
 
             while (cursor < rts.Count &&
                    (rts[cursor].state == NoteState.Hit || rts[cursor].state == NoteState.Missed))
@@ -267,27 +284,28 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 float start = ChartMath.NoteStart(n);
-                if (start > songTime) break; // 開始時刻順にソート済みなので以降は未開始
+                // note-spec.md §4.3: Flickは早い側もPERFECT+まで拾うため、窓は start-rawWin から開く。
+                // 開始時刻順ソート済みなので、これより先の全ノーツも同様に未到達。
+                if (start - rawWin > songTime) break;
 
                 if (rt.state == NoteState.Pending)
                 {
-                    // note-spec.md §6.2/§0.2: Tap/ExTap/Flick/Slide始点は同じ実効窓
+                    if (n.kind == NoteKind.Flick)
+                    {
+                        UpdateFlickPending(rt, n, songTime, input);
+                        continue;
+                    }
+                    if (start > songTime) continue; // Flick以外はまだ開始前なら何もしない
+
+                    // note-spec.md §6.2/§0.2: Tap/ExTap/Slide始点は同じ実効窓
                     // （縦連判定で中点分割された窓）の上限を超えた時点でMISSが確定する。
-                    float hi = chainWindows.TryGetValue(rt, out var win)
-                        ? win.hi
-                        : start + JudgeTiers.All[^1].halfWidthMs / 1000f;
+                    float hi = chainWindows.TryGetValue(rt, out var win) ? win.hi : start + rawWin;
                     if (songTime > hi)
                     {
-                        Score.miss++;
-                        Score.combo = 0;
-                        Score.lastJudge = "MISS";
                         var wp = n.points[0];
                         var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
                         int cell = (int)MathF.Round(wp.cellF);
-                        Flashes.Add(new HitFlash
-                        {
-                            layer = layer, cell = cell, width = wp.width, born = songTime, kind = JudgeKind.Miss,
-                        });
+                        CommitMiss(layer, cell, wp.width, songTime);
 
                         if (n.kind == NoteKind.Slide)
                         {
@@ -362,15 +380,75 @@ namespace Muses.Gameplay
 
             if (!found)
             {
-                Score.miss++;
-                Score.combo = 0;
-                Score.lastJudge = "MISS";
-                Flashes.Add(new HitFlash { layer = layer, cell = cell, width = width, born = songTime, kind = JudgeKind.Miss });
+                CommitMiss(layer, cell, width, songTime);
                 return;
             }
 
             // dt = ノーツ時刻 - 入力時刻（ResolveHit/ResolveSlideStart と同じ符号規則）
             ApplyJudgement(NoteKind.Slide, -bestDiff, layer, cell, width, songTime);
+        }
+
+        /// <summary>
+        /// note-spec.md §4。Flick は Presence 駆動: 枠内に接触点が存在し、直近 flickWindowMs の
+        /// 移動量が flickDistance 以上になった瞬間に成立する。窓を過ぎても移動が無ければ §4.4 のフォールバック
+        /// （枠内更新があれば GOOD、無ければ MISS）で確定する。
+        /// </summary>
+        private void UpdateFlickPending(NoteRuntime rt, Note n, float songTime, TouchInputManager input)
+        {
+            if (!chainWindows.TryGetValue(rt, out var win)) return;
+            var wp = n.points[0];
+            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            int cell = (int)MathF.Round(wp.cellF);
+            float flickDistance = cfg.U / cfg.cells; // note-spec.md §4.2: 0.5セル幅
+
+            if (songTime <= win.hi)
+            {
+                foreach (var c in input.Contacts.Values)
+                {
+                    if (!InBand(c, wp.layerF, wp.cellF, wp.width)) continue;
+                    rt.flickEnterSeen = true; // §4.4フォールバック用: 枠内に接触があったことを記録
+
+                    if (c.history.Count == 0) continue;
+                    var oldest = c.history[0];
+                    float du = c.u - oldest.u, dv = c.v - oldest.v;
+                    if (MathF.Sqrt(du * du + dv * dv) < flickDistance) continue;
+
+                    // note-spec.md §4.3: 早い側(dt<=+33.33ms)はPERFECT+に繰り上げ、以遠は通常ティア表と同じ
+                    float ms = (songTime - wp.time) * 1000f; // 入力時刻 - ノーツ時刻
+                    JudgeKind judged = ms <= 33.33f ? JudgeKind.PerfectPlus
+                        : JudgeTiers.TierFor(MathF.Abs(ms))?.kind ?? JudgeKind.Miss;
+
+                    if (judged == JudgeKind.Miss)
+                    {
+                        CommitMiss(layer, cell, wp.width, songTime);
+                        rt.state = NoteState.Missed;
+                        noteView.SetNoteAlpha(rt, 0.12f);
+                    }
+                    else
+                    {
+                        CommitJudgement(judged, layer, cell, wp.width, songTime, ms);
+                        rt.state = NoteState.Hit;
+                        noteView.SetNoteAlpha(rt, 0f);
+                    }
+                    c.history.Clear(); // note-spec.md §4.1: 成立後はこの接触のリングバッファをリセットする
+                    return;
+                }
+                return;
+            }
+
+            // note-spec.md §4.4: 判定窓を過ぎても移動が確認できなかった場合
+            if (rt.flickEnterSeen)
+            {
+                CommitJudgement(JudgeKind.Good, layer, cell, wp.width, songTime, (songTime - wp.time) * 1000f);
+                rt.state = NoteState.Hit;
+                noteView.SetNoteAlpha(rt, 0f);
+            }
+            else
+            {
+                CommitMiss(layer, cell, wp.width, songTime);
+                rt.state = NoteState.Missed;
+                noteView.SetNoteAlpha(rt, 0.12f);
+            }
         }
     }
 }
