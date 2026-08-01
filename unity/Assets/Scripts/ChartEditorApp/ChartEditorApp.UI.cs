@@ -40,9 +40,10 @@ namespace Muses.ChartTool
         // ---- 要素の参照（BuildUIで一度だけ引く）----
         private VisualElement uiRoot;
         private VisualElement overlayLayer;
-        private TabView mainTabs;
         private VisualElement notesSheet;
         private VisualElement previewSurface;
+        private Button timelineTabButton, previewTabButton;
+        private int selectedTabIndex = TabTimeline;
 
         private const int MaxSheetLabels = 128;
         private readonly List<Label> sheetLabels = new();
@@ -156,9 +157,9 @@ namespace Muses.ChartTool
 
             AddMenu(bar, "表示", menu =>
             {
-                menu.AddItem("タイムライン", mainTabs?.selectedTabIndex == TabTimeline,
+                menu.AddItem("タイムライン", selectedTabIndex == TabTimeline,
                     () => SelectTab(TabTimeline));
-                menu.AddItem("譜面プレビュー", mainTabs?.selectedTabIndex == TabPreview,
+                menu.AddItem("譜面プレビュー", selectedTabIndex == TabPreview,
                     () => SelectTab(TabPreview));
                 menu.AddSeparator("");
                 menu.AddItem("再生に追従", followPlayback, () =>
@@ -278,16 +279,38 @@ namespace Muses.ChartTool
 
         // ================= B: メインキャンバスのタブ(§2.3) =================
 
+        /// <summary>
+        /// 標準の TabView は使わない。中身のcontent-containerが確実に伸びる保証をコードから
+        /// 検証できず(内部USSクラスに依存する作りで、実機で「中身が一切描画されない」不具合の
+        /// 原因になった)、タブ切替という単純な要件に対してリスクが見合わないため、
+        /// ボタン2つ + display切替の自前実装にしている。サイズは全て自分で持つVisualElementの
+        /// flex-growだけで決まるので、挙動が読める。
+        /// </summary>
         private void BuildTabs()
         {
             var host = uiRoot.Q<VisualElement>("tabs-host");
             host.Clear();
+            host.style.flexDirection = FlexDirection.Column;
+
+            var header = new VisualElement();
+            header.AddToClassList("tab-header");
+            timelineTabButton = new Button(() => SelectTab(TabTimeline)) { text = "タイムライン" };
+            previewTabButton = new Button(() => SelectTab(TabPreview)) { text = "譜面プレビュー" };
+            timelineTabButton.AddToClassList("tab-header-btn");
+            previewTabButton.AddToClassList("tab-header-btn");
+            header.Add(timelineTabButton);
+            header.Add(previewTabButton);
+            host.Add(header);
+
+            var content = new VisualElement();
+            content.AddToClassList("canvas-host");
+            host.Add(content);
 
             // ランタイムパネルでは IMGUIContainer が使えない（"IMGUIContainer cannot be used in a
             // runtime panel"）ため、editor-ui-redesign.md §6 が「後から」としていた
             // generateVisualContent + painter2D 方式を最初から採る。
             notesSheet = new VisualElement { focusable = true };
-            notesSheet.AddToClassList("canvas-host");
+            notesSheet.style.flexGrow = 1;
             notesSheet.generateVisualContent += GenerateNotesSheet;
             notesSheet.RegisterCallback<PointerDownEvent>(OnSheetPointerDown);
             notesSheet.RegisterCallback<PointerMoveEvent>(OnSheetPointerMove);
@@ -296,24 +319,21 @@ namespace Muses.ChartTool
             notesSheet.RegisterCallback<KeyDownEvent>(OnSheetKeyDown);
 
             previewSurface = new VisualElement();
-            previewSurface.AddToClassList("canvas-host");
+            previewSurface.style.flexGrow = 1;
             previewSurface.RegisterCallback<GeometryChangedEvent>(_ => UpdatePreviewTexture());
 
-            var timelineTab = new Tab("タイムライン");
-            timelineTab.Add(notesSheet);
-            var previewTab = new Tab("譜面プレビュー");
-            previewTab.Add(previewSurface);
-
-            mainTabs = new TabView();
-            mainTabs.style.flexGrow = 1;
-            mainTabs.Add(timelineTab);
-            mainTabs.Add(previewTab);
-            host.Add(mainTabs);
+            content.Add(notesSheet);
+            content.Add(previewSurface);
+            SelectTab(TabTimeline);
         }
 
         private void SelectTab(int index)
         {
-            if (mainTabs != null) mainTabs.selectedTabIndex = index;
+            selectedTabIndex = index;
+            notesSheet.style.display = index == TabTimeline ? DisplayStyle.Flex : DisplayStyle.None;
+            previewSurface.style.display = index == TabPreview ? DisplayStyle.Flex : DisplayStyle.None;
+            timelineTabButton.EnableInClassList("tab-header-btn--selected", index == TabTimeline);
+            previewTabButton.EnableInClassList("tab-header-btn--selected", index == TabPreview);
         }
 
         /// <summary>
@@ -762,7 +782,7 @@ namespace Muses.ChartTool
             }
 
             // プレビュータブが手前にある間だけ3D描画する（§2.2の負荷対策）
-            bool previewActive = mainTabs.selectedTabIndex == TabPreview;
+            bool previewActive = selectedTabIndex == TabPreview;
             if (previewActive)
             {
                 if (!preview.RenderEnabled)

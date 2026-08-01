@@ -174,20 +174,49 @@
     background-color: var(--bg-canvas);
 }
 
+/*
+    参考画像の「⟨タイムライン⟩⟨譜面プレビュー⟩」タブ見出し。標準のTabViewは内部の
+    content-containerが確実に伸びる保証をコードから検証できなかったため使わず、
+    ボタン2つ + 中身VisualElementのdisplay切替で自前実装している(§2.3)。
+*/
+.tab-header {
+    flex-direction: row;
+    flex-shrink: 0;
+    background-color: var(--bg-panel);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--border);
+    padding: 2px 2px 0 4px;
+}
+
+.tab-header-btn {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 1px 1px 0 1px;
+    border-color: rgba(0, 0, 0, 0);
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+    margin: 0 2px 0 0;
+    padding: 4px 12px 4px 12px;
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+}
+
+.tab-header-btn:hover {
+    color: var(--text);
+}
+
+.tab-header-btn--selected {
+    background-color: var(--bg-canvas);
+    border-color: var(--border);
+    color: var(--text);
+    -unity-font-style: bold;
+}
+
 /* タブ内のキャンバスは常に残り全域を埋める */
 .canvas-host {
     flex-grow: 1;
+    flex-direction: column;
     min-height: 0;
-}
-
-.unity-tab-view__content-container,
-.unity-tab__content-container {
-    flex-grow: 1;
-    min-height: 0;
-}
-
-.unity-tab__header {
-    background-color: var(--bg-panel);
+    background-color: var(--bg-canvas);
 }
 
 /* ---------- D: 右パネル(§2.5) ---------- */
