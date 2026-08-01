@@ -79,6 +79,7 @@ namespace Muses.ChartTool
         private Toggle viewFollow;
         private Slider viewJudgeLine;
         private Slider viewRate;
+        private Toggle viewHeightLane;
         private Label statsText;
         private Foldout foldInspector, foldValidation;
         private VisualElement validationHost;
@@ -197,6 +198,11 @@ namespace Muses.ChartTool
                     followPlayback = !followPlayback;
                     if (viewFollow != null) viewFollow.SetValueWithoutNotify(followPlayback);
                 });
+                menu.AddItem("高さレーン", showHeightLane, () =>
+                {
+                    showHeightLane = !showHeightLane;
+                    if (viewHeightLane != null) viewHeightLane.SetValueWithoutNotify(showHeightLane);
+                });
             });
 
             AddMenu(bar, "再生", menu =>
@@ -227,6 +233,7 @@ namespace Muses.ChartTool
                 menu.AddItem("ショートカット: Cmd/Ctrl+C/X/V = コピー/切り取り/貼り付け", false, null);
                 menu.AddItem("Shift+ドラッグ = 追加選択 / Shift+クリック = 選択トグル", false, null);
                 menu.AddItem("右クリック = コンテキストメニュー", false, null);
+                menu.AddItem("高さレーン = 選択中ノーツの中継点を横ドラッグで層編集", false, null);
                 menu.AddItem("ホイール = スクロール / Ctrl+ホイール = 拡大縮小", false, null);
                 menu.AddSeparator("");
                 menu.AddItem($"muses 譜面エディタ {Application.version}", false, null);
@@ -384,6 +391,10 @@ namespace Muses.ChartTool
 
             PlaceSheetLabel(ref used, "Ground", L.ground.x + 4f, L.rect.y + 2f);
             PlaceSheetLabel(ref used, "Sky", L.sky.x + 4f, L.rect.y + 2f);
+
+            // §7.5 高さレーン（折りたたみ中は幅0なので見出しも出さない）
+            if (L.heightLane.width > 0f)
+                PlaceSheetLabel(ref used, "高さ G→S", L.heightLane.x + 4f, L.rect.y + 2f);
 
             var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
             PlaceSheetLabel(ref used, "BPM", bpmCol.x + 2f, L.rect.y + 2f);
@@ -553,6 +564,11 @@ namespace Muses.ChartTool
             viewFollow = AddToggleRow(viewHost, "再生に追従", v => followPlayback = v);
             viewJudgeLine = AddSliderRow(viewHost, "判定線位置", 0f, 1f, v => judgeLineFrac = v);
             viewRate = AddSliderRow(viewHost, "再生速度", 0.25f, 2f, v => preview.Rate = v);
+            // §7.5 高さレーン。既定は折りたたみ（幅0）で、必要なときだけ開く。
+            viewHeightLane = AddToggleRow(viewHost, "高さレーン", v => showHeightLane = v);
+            var heightNote = new Label("高さレーンには選択中のノーツの中継点だけを表示します（点を横にドラッグで層を編集）。");
+            heightNote.AddToClassList("prop-note");
+            viewHost.Add(heightNote);
 
             statsText = uiRoot.Q<Label>("stats-text");
 
@@ -1120,6 +1136,7 @@ namespace Muses.ChartTool
                 viewFollow.SetValueWithoutNotify(followPlayback);
                 viewJudgeLine.SetValueWithoutNotify(judgeLineFrac);
                 viewRate.SetValueWithoutNotify(preview.Rate);
+                viewHeightLane.SetValueWithoutNotify(showHeightLane);
                 if (snapDropdown.index != snapIndex) snapDropdown.index = snapIndex;
                 zoomSlider.SetValueWithoutNotify(pxPerBeat);
                 zoomLabel.text = $"{pxPerBeat / 28f:0.00}x";

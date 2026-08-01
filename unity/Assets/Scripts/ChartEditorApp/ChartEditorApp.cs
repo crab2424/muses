@@ -121,6 +121,7 @@ namespace Muses.ChartTool
             pendingSlideStart = null;
             draggingNote = false;
             resizingNote = null;
+            heightDragNote = null;
             ClearEventSelection();
         }
 
@@ -132,6 +133,7 @@ namespace Muses.ChartTool
             pendingSlideStart = null;
             draggingNote = false;
             resizingNote = null;
+            heightDragNote = null;
             ClearEventSelection();
         }
 
@@ -147,6 +149,10 @@ namespace Muses.ChartTool
         {
             selection.Clear();
             selectedNote = null;
+            // 高さレーンのドラッグは選択中ノーツにしか掛からない。Undo等でchartごと差し替わったとき、
+            // 消えたNoteへの参照を掴んだままにしないようここでも切る。
+            heightDragNote = null;
+            heightDragPointIndex = -1;
         }
 
         // ---- §7.3 イベントレーン（BPM/拍子/ソフラン）の選択状態 ----
@@ -161,6 +167,7 @@ namespace Muses.ChartTool
             pendingSlideStart = null;
             draggingNote = false;
             resizingNote = null;
+            heightDragNote = null;
             selectedEventKind = kind;
             selectedEventIndex = index;
         }
@@ -192,6 +199,18 @@ namespace Muses.ChartTool
         // ---- §7.4-C コピー/カット/ペースト（内部クリップボード） ----
         private readonly List<Note> clipboard = new();
 
+        // ---- §7.5 高さレーン（Ground/Sky を跨ぐ Slide の layerF を専用軸で編集する） ----
+        // 横軸1本に cellF と layerF が混ざる CombinedX では遷移中の高さが読めないため、
+        // 高さ専用の軸を Sky とイベントレーンの間に立てる。既定は折りたたみ（幅0）で、
+        // 「表示」メニューか右パネルの表示設定からトグルする。
+        private bool showHeightLane;
+        private float heightLaneWidth = 100f;
+        private float HeightLaneW => showHeightLane ? heightLaneWidth : 0f;
+
+        // 高さレーン上での waypoint ドラッグ（layerF の直接編集）
+        private Note heightDragNote;
+        private int heightDragPointIndex = -1;
+
         // ---- 配置ツールのゴースト表示（カーソル追従プレビュー） ----
         // シート内でのポインタ位置。範囲外/未取得時はnull（PointerLeaveEventで確実にクリアする。
         // ドラッグでキャプチャ中もPointerMoveEventは届くので、これ単体でホバー判定に使える）。
@@ -210,7 +229,9 @@ namespace Muses.ChartTool
 
             // 編集中は毎フレーム再構築しない。ドラッグ終了後・一定間隔をおいて反映する
             // （chart.notes を直接ドラッグしている最中にtick→秒の再解決やNoteView再構築を挟むと重い上、無駄）。
-            if (dirty && !draggingNote && Time.unscaledTime - lastPreviewRebuildRealtime > 0.3f)
+            // §7.4の幅変更・§7.5の高さドラッグも同じくchart.notesを直接書き換えるので同列に扱う。
+            bool draggingAnything = draggingNote || resizingNote != null || heightDragNote != null;
+            if (dirty && !draggingAnything && Time.unscaledTime - lastPreviewRebuildRealtime > 0.3f)
             {
                 preview.Rebuild(song, chart, Path.GetDirectoryName(songPath));
                 lastPreviewRebuildRealtime = Time.unscaledTime;
@@ -478,14 +499,19 @@ namespace Muses.ChartTool
         private readonly struct SheetLayout
         {
             // rect: ノーツシート全体（背景塗りつぶし用）。leftMargin/rightMargin: レーン外の余白
-            // （左=小節番号の退避先、右=将来のイベントレーン §7.3 用に確保のみ、当面は空）。
+            // （左=小節番号の退避先、右=イベントレーン §7.3）。heightLane は §7.5 の高さレーンで、
+            // 折りたたみ時は幅0（＝存在しないのと同じ扱いになる）。
             // editor-ui-redesign.md §7.2 どおり、帯の大きさは今後設定画面から変更できるよう
-            // ChartEditorApp側のフィールド(sheetMarginLeft/sheetMarginRight)経由で渡す。
-            public readonly Rect rect, leftMargin, ground, gutter, sky, rightMargin;
+            // ChartEditorApp側のフィールド(sheetMarginLeft/sheetMarginRight/heightLaneWidth)経由で渡す。
+            public readonly Rect rect, leftMargin, ground, gutter, sky, heightLane, rightMargin;
             public readonly float pxPerTick, judgeLineY;
             private readonly int scrollTick;
 
-            public SheetLayout(Rect rect, float pxPerBeat, int scrollTick, float judgeLineFrac, float marginLeft, float marginRight)
+            /// <summary>高さレーンの内側余白。layerF=0/1 の点が帯の縁で欠けないように左右を空ける。</summary>
+            private const float HeightLanePad = 8f;
+
+            public SheetLayout(Rect rect, float pxPerBeat, int scrollTick, float judgeLineFrac,
+                float marginLeft, float marginRight, float heightLaneW)
             {
                 this.rect = rect;
                 this.scrollTick = scrollTick;
@@ -493,9 +519,10 @@ namespace Muses.ChartTool
                 const float gutterW = 26f;
                 leftMargin = new Rect(rect.x, rect.y, marginLeft, rect.height);
                 rightMargin = new Rect(rect.xMax - marginRight, rect.y, marginRight, rect.height);
+                heightLane = new Rect(rightMargin.xMin - heightLaneW, rect.y, heightLaneW, rect.height);
 
                 float lanesX = leftMargin.xMax;
-                float lanesW = Mathf.Max(0f, rightMargin.xMin - lanesX - gutterW);
+                float lanesW = Mathf.Max(0f, heightLane.xMin - lanesX - gutterW);
                 float paneW = lanesW * 0.5f;
                 ground = new Rect(lanesX, rect.y, paneW, rect.height);
                 gutter = new Rect(ground.xMax, rect.y, gutterW, rect.height);
@@ -503,6 +530,17 @@ namespace Muses.ChartTool
 
                 pxPerTick = pxPerBeat / ChartData.TicksPerBeat;
                 judgeLineY = rect.y + rect.height * Mathf.Clamp01(judgeLineFrac);
+            }
+
+            /// <summary>§7.5 高さレーン: layerF(0=Ground, 1=Sky) → x。折りたたみ中は帯の左端を返す。</summary>
+            public float LayerToX(float layerF) =>
+                heightLane.x + HeightLanePad + Mathf.Clamp01(layerF) * Mathf.Max(0f, heightLane.width - HeightLanePad * 2f);
+
+            public float XToLayer(float x)
+            {
+                float inner = Mathf.Max(0f, heightLane.width - HeightLanePad * 2f);
+                if (inner <= 0f) return 0f;
+                return Mathf.Clamp01((x - heightLane.x - HeightLanePad) / inner);
             }
 
             public float TickToY(int tick) => judgeLineY - (tick - scrollTick) * pxPerTick;
@@ -531,7 +569,8 @@ namespace Muses.ChartTool
         private SheetLayout CurrentSheetLayout()
         {
             var r = notesSheet.contentRect;
-            return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac, sheetMarginLeft, sheetMarginRight);
+            return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac,
+                sheetMarginLeft, sheetMarginRight, HeightLaneW);
         }
 
         private int SnapTicks => Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
@@ -571,6 +610,28 @@ namespace Muses.ChartTool
         }
 
         /// <summary>
+        /// 任意角度の線分。他の描画はすべて軸並行なので FillRect で足りていたが、
+        /// §7.5 の高さカーブだけは斜めの折れ線が要る。太さぶん法線方向にオフセットした
+        /// 四角形として塗る（Painter2Dのstroke系APIを使わないのは、このファイルの他の描画と
+        /// 同じ「塗りつぶしパスのみ」に揃えるため）。
+        /// </summary>
+        private static void FillLine(Painter2D p, Vector2 a, Vector2 b, Color c, float thickness)
+        {
+            var d = b - a;
+            float len = d.magnitude;
+            if (len < 0.0001f) return;
+            var n = new Vector2(-d.y, d.x) / len * (thickness * 0.5f);
+            p.fillColor = c;
+            p.BeginPath();
+            p.MoveTo(a + n);
+            p.LineTo(b + n);
+            p.LineTo(b - n);
+            p.LineTo(a - n);
+            p.ClosePath();
+            p.Fill();
+        }
+
+        /// <summary>
         /// ノーツシート本体の描画。UI Toolkitのランタイムパネルでは IMGUIContainer が使えないため
         /// （"IMGUIContainer cannot be used in a runtime panel"）、generateVisualContent から
         /// painter2D で直接描く。文字（Ground/Sky・小節番号）はここでは描けないので、
@@ -593,6 +654,17 @@ namespace Muses.ChartTool
             var (_, meterCol, scrollCol) = EventColumns(L.rightMargin);
             FillRect(p, new Rect(meterCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
             FillRect(p, new Rect(scrollCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+
+            // §7.5 高さレーンの下地（折りたたみ中は幅0なので何も描かれない）
+            if (L.heightLane.width > 0f)
+            {
+                FillRect(p, L.heightLane, new Color(0.13f, 0.13f, 0.16f));
+                FillRect(p, new Rect(L.heightLane.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                // 左端=Ground(0) / 中央(0.5) / 右端=Sky(1) の目盛り
+                FillRect(p, new Rect(L.LayerToX(0f), rect.y, 1, rect.height), new Color(1, 1, 1, 0.16f));
+                FillRect(p, new Rect(L.LayerToX(0.5f), rect.y, 1, rect.height), new Color(1, 1, 1, 0.06f));
+                FillRect(p, new Rect(L.LayerToX(1f), rect.y, 1, rect.height), new Color(1, 1, 1, 0.16f));
+            }
 
             float lanesXMin = L.ground.xMin, lanesXMax = L.sky.xMax;
 
@@ -677,8 +749,12 @@ namespace Muses.ChartTool
                 }
             }
 
+            DrawHeightLane(p, L);
+
             // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（右パネルの「表示設定」）
-            FillRect(p, new Rect(lanesXMin, L.judgeLineY - 1, lanesXMax - lanesXMin, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
+            // 高さレーンも同じ時間軸なので、判定線はそちらまで伸ばす。
+            float judgeXMax = L.heightLane.width > 0f ? L.heightLane.xMax : lanesXMax;
+            FillRect(p, new Rect(lanesXMin, L.judgeLineY - 1, judgeXMax - lanesXMin, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
 
             // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック。マウスがシート外
             // （インスペクタ確認等）でも1点目クリック済みなことが分かるよう、ホバーの有無に関わらず出す。
@@ -700,6 +776,69 @@ namespace Muses.ChartTool
                     Mathf.Max(rectStartPos.x, rectCurrentPos.x), Mathf.Max(rectStartPos.y, rectCurrentPos.y));
                 FillRect(p, box, new Color(0.4f, 0.7f, 1f, 0.15f));
                 FillRectOutline(p, box, new Color(0.4f, 0.7f, 1f, 0.8f), 1f);
+            }
+        }
+
+        // ---------- §7.5 高さレーン ----------
+
+        /// <summary>
+        /// 縦=時間（ノーツシートと共有）、横=layerF（左端0=Ground、右端1=Sky）。
+        /// 3Dステージを正面左から投影して90度回した図に相当する。
+        ///
+        /// 同時押しSlideの高さカーブが重なると1レーンでは編集できないため、**選択追従**で
+        /// 描画対象を絞る（editor-ui-redesign.md §7.5）。選択中のノーツだけを折れ線＋点で描き、
+        /// 非選択のノーツは「どこに他のカーブがあるか」の当たりがつく程度の極薄で背景に描く。
+        /// </summary>
+        private void DrawHeightLane(Painter2D p, SheetLayout L)
+        {
+            if (L.heightLane.width <= 0f) return;
+
+            foreach (var note in chart.notes)
+            {
+                if (note.points.Count < 2 || selection.Contains(note)) continue;
+                DrawHeightCurve(p, L, note, new Color(1f, 1f, 1f, 0.07f), drawPoints: false);
+            }
+
+            foreach (var note in selection)
+                DrawHeightCurve(p, L, note, NoteColor(note.kind), drawPoints: true);
+        }
+
+        private void DrawHeightCurve(Painter2D p, SheetLayout L, Note note, Color col, bool drawPoints)
+        {
+            var pts = note.points;
+
+            for (int i = 0; i < pts.Count - 1; i++)
+            {
+                int tickA = pts[i].tick, tickB = pts[i + 1].tick;
+                float yA = L.TickToY(tickA), yB = L.TickToY(tickB);
+                if (Mathf.Max(yA, yB) < L.rect.y - 8f || Mathf.Min(yA, yB) > L.rect.yMax + 8f) continue;
+
+                // easingによる曲線をそのまま見せたいので、区間を約6px刻みに割って折れ線で近似する
+                // （layerFが両端で同じなら直線なので分割しない）。
+                bool curved = !Mathf.Approximately(pts[i].layerF, pts[i + 1].layerF)
+                              && pts[i].easing != Easing.Linear;
+                int steps = curved ? Mathf.Clamp(Mathf.RoundToInt(Mathf.Abs(yA - yB) / 6f), 1, 64) : 1;
+
+                for (int s = 0; s < steps; s++)
+                {
+                    int t0 = Mathf.RoundToInt(Mathf.Lerp(tickA, tickB, (float)s / steps));
+                    int t1 = Mathf.RoundToInt(Mathf.Lerp(tickA, tickB, (float)(s + 1) / steps));
+                    var a = new Vector2(L.LayerToX(InterpAtTick(note, t0).layerF), L.TickToY(t0));
+                    var b = new Vector2(L.LayerToX(InterpAtTick(note, t1).layerF), L.TickToY(t1));
+                    FillLine(p, a, b, col, 2f);
+                }
+            }
+
+            if (!drawPoints) return;
+
+            for (int i = 0; i < pts.Count; i++)
+            {
+                float y = L.TickToY(pts[i].tick);
+                if (y < L.rect.y - 8f || y > L.rect.yMax + 8f) continue;
+                float x = L.LayerToX(pts[i].layerF);
+                bool grabbed = ReferenceEquals(note, heightDragNote) && i == heightDragPointIndex;
+                FillRect(p, new Rect(x - 4, y - 4, 8, 8), grabbed ? Color.yellow : Color.white);
+                FillRect(p, new Rect(x - 2.5f, y - 2.5f, 5, 5), col);
             }
         }
 
@@ -727,6 +866,9 @@ namespace Muses.ChartTool
                 DrawEventGhost(p, L, pos, tick);
                 return;
             }
+
+            // §7.5 高さレーンは既存waypointの編集専用でノーツを配置しないため、ゴーストは出さない。
+            if (L.heightLane.width > 0f && L.heightLane.Contains(pos)) return;
 
             var (layerF, rawCell) = L.PaneAt(pos.x);
 
@@ -860,6 +1002,15 @@ namespace Muses.ChartTool
             if (L.rightMargin.Contains(pos))
             {
                 HandleEventLaneClick(L, pos, tick);
+                evt.StopPropagation();
+                return;
+            }
+
+            // §7.5 高さレーン: 選択中ノーツの waypoint を掴んで layerF をドラッグ編集する。
+            // ノーツの配置ではなく既存の値の編集なので、どのツールを選んでいても同じ挙動にする。
+            if (L.heightLane.width > 0f && L.heightLane.Contains(pos))
+            {
+                HandleHeightLanePointerDown(L, pos, evt);
                 evt.StopPropagation();
                 return;
             }
@@ -1022,6 +1173,7 @@ namespace Muses.ChartTool
             var L = CurrentSheetLayout();
             var pos = (Vector2)evt.localPosition;
             if (L.rightMargin.Contains(pos)) { evt.StopPropagation(); return; }
+            if (L.heightLane.width > 0f && L.heightLane.Contains(pos)) { evt.StopPropagation(); return; }
 
             var hit = HitTestNote(L, pos);
             if (hit == null) { evt.StopPropagation(); return; }
@@ -1053,6 +1205,43 @@ namespace Muses.ChartTool
             var worldPos = notesSheet.LocalToWorld(pos);
             menu.DropDown(new Rect(worldPos, Vector2.zero), notesSheet, DropdownMenuSizeMode.Auto);
             evt.StopPropagation();
+        }
+
+        /// <summary>
+        /// §7.5 高さレーンのクリック。選択中ノーツの waypoint のうち最も近いものを掴む。
+        /// 非選択のノーツを掴めないのは意図的で、これが「同時押しSlideのカーブが重なって
+        /// 編集できない」問題に対する絞り込み手段そのもの（editor-ui-redesign.md §7.5）。
+        /// </summary>
+        private void HandleHeightLanePointerDown(SheetLayout L, Vector2 pos, PointerDownEvent evt)
+        {
+            Note bestNote = null;
+            int bestIndex = -1;
+            float bestDist = float.MaxValue;
+
+            foreach (var note in selection)
+            {
+                for (int i = 0; i < note.points.Count; i++)
+                {
+                    var wp = note.points[i];
+                    float dist = Vector2.Distance(pos, new Vector2(L.LayerToX(wp.layerF), L.TickToY(wp.tick)));
+                    if (dist >= bestDist) continue;
+                    bestDist = dist;
+                    bestNote = note;
+                    bestIndex = i;
+                }
+            }
+
+            const float grabRadius = 14f;
+            if (bestNote == null || bestDist > grabRadius)
+            {
+                if (selection.Count == 0) statusMessage = "高さレーンで編集するノーツを先に選択してください";
+                return;
+            }
+
+            PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
+            heightDragNote = bestNote;
+            heightDragPointIndex = bestIndex;
+            notesSheet.CapturePointer(evt.pointerId);
         }
 
         private void InsertWaypointInto(Note note, SheetLayout L, Vector2 pos, int tick)
@@ -1120,6 +1309,20 @@ namespace Muses.ChartTool
             if (rectSelecting)
             {
                 rectCurrentPos = pos;
+                evt.StopPropagation();
+                return;
+            }
+
+            // §7.5 高さレーンでの layerF ドラッグ。tickは動かさない（時間軸の編集はシート本体の担当）。
+            if (heightDragNote != null)
+            {
+                var wp = heightDragNote.points[heightDragPointIndex];
+                float layer = L.XToLayer(pos.x);
+                // 単発ノーツ(Tap/Ex Tap/Flick)はGround/Skyのどちらかにしか存在できないため0/1にスナップする。
+                // Slideの中継点は§7.5どおり連続値を許す（層を跨ぐ高さカーブを作るのが本レーンの目的）。
+                wp.layerF = heightDragNote.points.Count == 1 ? Mathf.Round(layer) : layer;
+                heightDragNote.points[heightDragPointIndex] = wp;
+                dirty = true;
                 evt.StopPropagation();
                 return;
             }
@@ -1200,6 +1403,14 @@ namespace Muses.ChartTool
                         SetMultiSelection(hits);
                     }
                 }
+                if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
+                return;
+            }
+
+            if (heightDragNote != null)
+            {
+                heightDragNote = null;
+                heightDragPointIndex = -1;
                 if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
                 return;
             }
