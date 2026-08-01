@@ -81,6 +81,8 @@ namespace Muses.ChartTool
         private Slider viewRate;
         private Toggle viewHeightLane;
         private Label statsText;
+        private VisualElement presetHost;
+        private TextField presetNameField;
         private Foldout foldInspector, foldValidation;
         private VisualElement validationHost;
         private Toggle validateOnSaveToggle;
@@ -161,9 +163,9 @@ namespace Muses.ChartTool
 
             AddMenu(bar, "編集", menu =>
             {
-                if (undoStack.Count > 0) menu.AddItem("元に戻す", false, Undo);
+                if (undoStack.Count > 0) menu.AddItem($"元に戻す: {PeekUndoLabel()}", false, Undo);
                 else menu.AddDisabledItem("元に戻す", false);
-                if (redoStack.Count > 0) menu.AddItem("やり直す", false, Redo);
+                if (redoStack.Count > 0) menu.AddItem($"やり直す: {PeekRedoLabel()}", false, Redo);
                 else menu.AddDisabledItem("やり直す", false);
                 menu.AddSeparator("");
                 if (selection.Count > 0)
@@ -181,9 +183,21 @@ namespace Muses.ChartTool
                     menu.AddDisabledItem("切り取り", false);
                 }
                 if (clipboard.Count > 0)
-                    menu.AddItem("貼り付け", false, PasteClipboard);
+                {
+                    menu.AddItem("貼り付け", false, () => EnterPasteMode());
+                    menu.AddItem("反転して貼り付け", false, () => EnterPasteMode(flip: true));
+                }
                 else
+                {
                     menu.AddDisabledItem("貼り付け", false);
+                    menu.AddDisabledItem("反転して貼り付け", false);
+                }
+                menu.AddSeparator("");
+                // MikuMikuWorld移植候補: 選択の左右反転（Editing.cpp:503-526）。
+                if (selection.Count > 0)
+                    menu.AddItem("選択を反転", false, FlipSelected);
+                else
+                    menu.AddDisabledItem("選択を反転", false);
             });
 
             AddMenu(bar, "表示", menu =>
@@ -562,6 +576,8 @@ namespace Muses.ChartTool
             var viewHost = uiRoot.Q<VisualElement>("view-host");
             viewHost.Clear();
             viewFollow = AddToggleRow(viewHost, "再生に追従", v => followPlayback = v);
+            // MikuMikuWorld移植候補: 再生追従のPage/Smooth切替（EditorWindows.cpp:531-540のScrollMode）。
+            AddToggleRow(viewHost, "ページ送りスクロール", v => scrollFollowMode = v ? ScrollFollowMode.Page : ScrollFollowMode.Smooth);
             viewJudgeLine = AddSliderRow(viewHost, "判定線位置", 0f, 1f, v => judgeLineFrac = v);
             viewRate = AddSliderRow(viewHost, "再生速度", 0.25f, 2f, v => preview.Rate = v);
             // §7.5 高さレーン。既定は折りたたみ（幅0）で、必要なときだけ開く。
@@ -570,7 +586,23 @@ namespace Muses.ChartTool
             heightNote.AddToClassList("prop-note");
             viewHost.Add(heightNote);
 
+            // MikuMikuWorld移植候補: 小節ジャンプ（ScoreEditor.cpp:409-416のgotoMeasure）。
+            var jumpRow = new VisualElement();
+            jumpRow.AddToClassList("prop-row");
+            var jumpLabel = new Label("小節へ移動");
+            jumpLabel.AddToClassList("field-label");
+            var jumpField = new IntegerField { value = 0 };
+            var jumpBtn = new Button(() => GotoMeasure(jumpField.value)) { text = "移動" };
+            jumpBtn.AddToClassList("tb-btn");
+            jumpRow.Add(jumpLabel);
+            jumpRow.Add(jumpField);
+            jumpRow.Add(jumpBtn);
+            viewHost.Add(jumpRow);
+
             statsText = uiRoot.Q<Label>("stats-text");
+
+            presetHost = uiRoot.Q<VisualElement>("preset-host");
+            RebuildPresetList();
 
             foldInspector = uiRoot.Q<Foldout>("fold-inspector");
             inspectorHost = uiRoot.Q<VisualElement>("inspector-host");
@@ -581,6 +613,52 @@ namespace Muses.ChartTool
             validationHost.Clear();
             validateOnSaveToggle = AddToggleRow(validationHost, "保存時に自動実行", v => validateOnSave = v);
             validateOnSaveToggle.SetValueWithoutNotify(validateOnSave);
+        }
+
+        /// <summary>
+        /// MikuMikuWorld移植候補: パターンプリセット（PresetManager.h相当）。今回の実装は
+        /// アプリ実行中のみ保持するメモリ内リスト（ディスク永続化は未実装、次回増分候補）。
+        /// </summary>
+        private void RebuildPresetList()
+        {
+            if (presetHost == null) return;
+            presetHost.Clear();
+
+            var saveRow = new VisualElement();
+            saveRow.AddToClassList("prop-row");
+            presetNameField = new TextField { value = "" };
+            var saveBtn = new Button(() => { SavePreset(presetNameField.value); RebuildPresetList(); }) { text = "選択を保存" };
+            saveBtn.AddToClassList("tb-btn");
+            saveRow.Add(presetNameField);
+            saveRow.Add(saveBtn);
+            presetHost.Add(saveRow);
+
+            if (presets.Count == 0)
+            {
+                var empty = new Label("保存済みプリセットはありません。");
+                empty.AddToClassList("prop-note");
+                presetHost.Add(empty);
+            }
+
+            foreach (var preset in presets)
+            {
+                var row = new VisualElement();
+                row.AddToClassList("prop-row");
+                var label = new Label($"{preset.name} ({preset.notes.Count}件)");
+                label.AddToClassList("field-label");
+                var pasteBtn = new Button(() => PastePreset(preset)) { text = "貼り付け" };
+                pasteBtn.AddToClassList("tb-btn");
+                var deleteBtn = new Button(() => { DeletePreset(preset); RebuildPresetList(); }) { text = "削除" };
+                deleteBtn.AddToClassList("tb-btn");
+                row.Add(label);
+                row.Add(pasteBtn);
+                row.Add(deleteBtn);
+                presetHost.Add(row);
+            }
+
+            var note = new Label("プリセットはアプリを再起動すると消えます（このセッション限定）。");
+            note.AddToClassList("prop-note");
+            presetHost.Add(note);
         }
 
         private VisualElement MakePropRow(VisualElement parent, string label, VisualElement field)
@@ -779,7 +857,7 @@ namespace Muses.ChartTool
             deleteBtn.AddToClassList("tb-btn");
             inspectorHost.Add(deleteBtn);
 
-            bool allSinglePoint = selection.TrueForAll(n => n.points.Count == 1);
+            bool allSinglePoint = selection.TrueForAll(r => r.note.points.Count == 1);
             if (allSinglePoint)
             {
                 var kindDropdown = new DropdownField { choices = new List<string> { "Tap", "Ex Tap", "Flick" }, index = 0 };
@@ -793,7 +871,7 @@ namespace Muses.ChartTool
                         _ => NoteKind.Flick,
                     };
                     PushUndo(coalesce: false);
-                    foreach (var n in selection) n.kind = newKind;
+                    foreach (var r in selection) r.note.kind = newKind;
                     dirty = true;
                 });
                 MakePropRow(inspectorHost, "種別に一括変更", kindDropdown);
@@ -1028,11 +1106,18 @@ namespace Muses.ChartTool
         {
             var transport = uiRoot.Q<VisualElement>("status-transport");
             transport.Clear();
-            transport.Add(MakeTransportButton("|◀", () => preview.Seek(0f)));
-            transport.Add(MakeTransportButton("■", () => { preview.Pause(); preview.Seek(0f); }));
-            playButton = MakeTransportButton("▶", () => preview.TogglePlay());
+            // §3: |◀ は曲頭へ（カーソルも0へ）、■ は停止してカーソル位置へ戻る（0ではない）、
+            // ▶| は末尾へ（カーソルも末尾へ）。▶(再生/一時停止)はTogglePlayFromCursorが
+            // 「停止中は必ずcursorTickから再生を始める」を担う。
+            transport.Add(MakeTransportButton("|◀", () => { cursorTick = 0; preview.Seek(0f); }));
+            transport.Add(MakeTransportButton("■", () => { preview.Pause(); preview.Seek(TickToSeconds(cursorTick)); }));
+            playButton = MakeTransportButton("▶", TogglePlayFromCursor);
             transport.Add(playButton);
-            transport.Add(MakeTransportButton("▶|", () => preview.Seek(preview.ChartEndSec)));
+            transport.Add(MakeTransportButton("▶|", () =>
+            {
+                preview.Seek(preview.ChartEndSec);
+                cursorTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.ChartEndSec));
+            }));
 
             // §2.6 / ユーザー指摘9: スナップは8個のボタン横並びをやめてドロップダウンに畳む
             var snapGroup = uiRoot.Q<VisualElement>("status-snap");
@@ -1070,6 +1155,9 @@ namespace Muses.ChartTool
             {
                 if (suppressUiCallbacks) return;
                 if (Mathf.Abs(evt.newValue - preview.SongTime) > 0.05f) preview.Seek(evt.newValue);
+                // §3: 停止中にスクラブバーで動かした位置も「再生開始位置」として扱う。
+                if (!preview.IsPlaying)
+                    cursorTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, evt.newValue));
             });
             scrubGroup.Add(scrubSlider);
 
@@ -1112,6 +1200,8 @@ namespace Muses.ChartTool
 
                 undoButton.SetEnabled(undoStack.Count > 0);
                 redoButton.SetEnabled(redoStack.Count > 0);
+                undoButton.tooltip = undoStack.Count > 0 ? $"元に戻す: {PeekUndoLabel()}" : "";
+                redoButton.tooltip = redoStack.Count > 0 ? $"やり直す: {PeekRedoLabel()}" : "";
                 bool unsaved = dirty || songMetaDirty;
                 toolbarStatus.text = statusMessage;
                 toolbarDirty.text = unsaved ? "● 未保存" : "保存済み";

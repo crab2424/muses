@@ -539,6 +539,9 @@ editor-spec.md §2.3（波形＋イベントレーンのうち波形部分）。
 
 ## 関連
 
+- **`memory/editor-ui-rework-mmw.md`** — 本書 §7 完了後にユーザーから出た 7 項目の要望に対する設計。
+  はじめて参考元のソースコード（`memory/reference/MikuMikuWorld-master/`）を読める状態で書いたため、
+  各方針の根拠を参照元の該当行に紐づけてある。**§7 の続きはそちら。**
 - `memory/editor-spec.md` — Phase 4 の機能仕様（rev.2）。§2 の画面レイアウト図は
   **本ドキュメントの刷新後は古くなる**ので、実装確定時に rev.3 として更新すること。
 - `memory/note-spec.md` — ノーツ仕様 rev.4。ノーツ種別・色の根拠。

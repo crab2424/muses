@@ -42,6 +42,10 @@ namespace Muses.ChartTool
         private AudioSource musicSource;
         private AudioSource seSource;
         private AudioClip seClip;
+        private const int SePoolSize = 8;
+        private AudioSource[] sePool;
+        private int sePoolIndex;
+        private const float AudioLookAheadSec = 0.1f;
 
         // ---- playback state ----
         private PreviewClock clock;
@@ -120,6 +124,21 @@ namespace Muses.ChartTool
             seSource.playOnAwake = false;
             seSource.spatialBlend = 0f;
             seClip = BuildClickClip(1200f);
+
+            // MikuMikuWorld移植候補: ノーツSEの先読みスケジュール(audioLookAhead方式、
+            // ScoreEditor.cpp:418-485相当)。PlayOneShotは即時再生しかできないため、
+            // AudioSource.PlayScheduledで鳴らせるプールを用意する（dspTime基準なので、
+            // Tick()の呼び出し頻度=フレームレートに再生タイミングが縛られなくなる）。
+            sePool = new AudioSource[SePoolSize];
+            for (int i = 0; i < SePoolSize; i++)
+            {
+                var srcGo = new GameObject($"PreviewSeScheduled{i}") { hideFlags = HideFlags.DontSave };
+                srcGo.transform.SetParent(rigRoot.transform, false);
+                var src = srcGo.AddComponent<AudioSource>();
+                src.playOnAwake = false;
+                src.spatialBlend = 0f;
+                sePool[i] = src;
+            }
 
             clock = new PreviewClock(musicSource);
         }
@@ -278,16 +297,33 @@ namespace Muses.ChartTool
             MaybeRender();
         }
 
+        /// <summary>
+        /// MikuMikuWorld移植候補: ノーツ時刻の <see cref="AudioLookAheadSec"/> 秒前に検出し、
+        /// dspTime基準でスケジュール再生する（参照元ScoreEditor.cpp:418-485のaudioLookAhead方式）。
+        /// 旧実装は「時刻を跨いだフレームでPlayOneShot」だったため最大1フレーム分の遅れ・ジッタが
+        /// あったが、スケジュール方式ならTick()の呼び出し頻度に関わらず狙った時刻ちょうどに鳴る。
+        /// </summary>
         private void PlayNoteSe(float prev, float cur)
         {
+            float prevOffset = prev - AudioLookAheadSec;
+            float curOffset = cur - AudioLookAheadSec;
             foreach (var note in chart.notes)
             {
                 float t = note.points[0].time;
-                if (t > prev && t <= cur) seSource.PlayOneShot(seClip, 0.6f);
+                if (t > prevOffset && t <= curOffset) PlayScheduledSe(0.6f, t - cur);
                 if (note.kind == NoteKind.Slide)
                     foreach (var ct in note.comboTimes)
-                        if (ct > prev && ct <= cur) seSource.PlayOneShot(seClip, 0.25f);
+                        if (ct > prevOffset && ct <= curOffset) PlayScheduledSe(0.25f, ct - cur);
             }
+        }
+
+        private void PlayScheduledSe(float volume, float delaySeconds)
+        {
+            var src = sePool[sePoolIndex];
+            sePoolIndex = (sePoolIndex + 1) % SePoolSize;
+            src.clip = seClip;
+            src.volume = volume;
+            src.PlayScheduled(AudioSettings.dspTime + Mathf.Max(0f, delaySeconds));
         }
 
         private float nextMetronomeBeat;
