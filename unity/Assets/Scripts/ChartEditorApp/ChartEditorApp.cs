@@ -104,6 +104,27 @@ namespace Muses.ChartTool
         private Note selectedNote;
         private Note pendingSlideStart;
 
+        // ---- §7.3 イベントレーン（BPM/拍子/ソフラン）の選択状態 ----
+        // ノーツとイベントは同時に1つしか選択できない（右パネルのインスペクタを共用するため）。
+        private enum EventKind { None, Bpm, Meter, Scroll }
+        private EventKind selectedEventKind = EventKind.None;
+        private int selectedEventIndex = -1;
+
+        private void SelectEvent(EventKind kind, int index)
+        {
+            selectedNote = null;
+            pendingSlideStart = null;
+            draggingNote = false;
+            selectedEventKind = kind;
+            selectedEventIndex = index;
+        }
+
+        private void ClearEventSelection()
+        {
+            selectedEventKind = EventKind.None;
+            selectedEventIndex = -1;
+        }
+
         private bool draggingNote;
         private int dragOriginRawTick;
         private float dragOriginRawCell;
@@ -448,6 +469,19 @@ namespace Muses.ChartTool
 
         private int SnapTicks => Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
 
+        /// <summary>
+        /// §7.3 イベントレーン: 右余白をBPM/拍子/ソフランの3列に分ける。列自体が種別を表すので、
+        /// 参考画像のような「クリック後に種別を選ぶメニュー」は不要（列を選ぶことが種別選択を兼ねる）。
+        /// </summary>
+        private static (Rect bpm, Rect meter, Rect scroll) EventColumns(Rect rightMargin)
+        {
+            float w = rightMargin.width / 3f;
+            var bpm = new Rect(rightMargin.x, rightMargin.y, w, rightMargin.height);
+            var meter = new Rect(bpm.xMax, rightMargin.y, w, rightMargin.height);
+            var scroll = new Rect(meter.xMax, rightMargin.y, w, rightMargin.height);
+            return (bpm, meter, scroll);
+        }
+
         // painter2D は塗りつぶしパスしか使わない。矩形1個 = パス1本。
         private static void FillRect(Painter2D p, Rect r, Color c)
         {
@@ -487,6 +521,11 @@ namespace Muses.ChartTool
             FillRect(p, L.leftMargin, new Color(0.12f, 0.12f, 0.12f));
             FillRect(p, L.rightMargin, new Color(0.12f, 0.12f, 0.12f));
             FillRect(p, L.gutter, new Color(0.1f, 0.1f, 0.1f));
+
+            // §7.3 イベントレーンの3列(BPM/拍子/ソフラン)の区切り線
+            var (_, meterCol, scrollCol) = EventColumns(L.rightMargin);
+            FillRect(p, new Rect(meterCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+            FillRect(p, new Rect(scrollCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
 
             float lanesXMin = L.ground.xMin, lanesXMax = L.sky.xMax;
 
@@ -599,6 +638,16 @@ namespace Muses.ChartTool
 
             int rawTick = Mathf.Max(0, L.YToTick(pos.y));
             int tick = SnapTickTo(rawTick, snapTicks);
+
+            // §7.3 イベントレーン: 空白をクリックしたら新規追加（既存チップのクリックは
+            // UpdateEventChipsが作るLabel要素自体が拾いStopPropagationするので、ここには来ない）。
+            if (L.rightMargin.Contains(pos))
+            {
+                HandleEventLaneClick(L, pos, tick);
+                evt.StopPropagation();
+                return;
+            }
+
             var (layerF, rawCell) = L.PaneAt(pos.x);
 
             switch (currentTool)
@@ -619,6 +668,7 @@ namespace Muses.ChartTool
                     PushUndo(coalesce: false);
                     chart.notes.Add(note);
                     selectedNote = note;
+                    ClearEventSelection();
                     dirty = true;
                     break;
                 }
@@ -642,6 +692,7 @@ namespace Muses.ChartTool
                             PushUndo(coalesce: false);
                             chart.notes.Add(pendingSlideStart);
                             selectedNote = pendingSlideStart;
+                            ClearEventSelection();
                             dirty = true;
                             pendingSlideStart = null;
                             statusMessage = "Slideを配置しました";
@@ -689,6 +740,7 @@ namespace Muses.ChartTool
                 {
                     var hit = HitTestNote(L, pos);
                     selectedNote = hit;
+                    ClearEventSelection();
                     if (hit != null)
                     {
                         PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
@@ -757,12 +809,108 @@ namespace Muses.ChartTool
         private void OnSheetKeyDown(KeyDownEvent evt)
         {
             if (evt.keyCode != KeyCode.Delete && evt.keyCode != KeyCode.Backspace) return;
-            if (selectedNote == null) return;
-            PushUndo(coalesce: false);
-            chart.notes.Remove(selectedNote);
-            selectedNote = null;
-            dirty = true;
-            evt.StopPropagation();
+
+            if (selectedNote != null)
+            {
+                PushUndo(coalesce: false);
+                chart.notes.Remove(selectedNote);
+                selectedNote = null;
+                dirty = true;
+                evt.StopPropagation();
+                return;
+            }
+
+            if (selectedEventKind != EventKind.None)
+            {
+                DeleteSelectedEvent();
+                evt.StopPropagation();
+            }
+        }
+
+        // ---------- §7.3 イベントレーンの追加/削除 ----------
+
+        /// <summary>指定tick時点で有効なBPM（新規追加時の初期値用）。無ければ既定120。</summary>
+        private float CurrentBpmAtTick(int tick)
+        {
+            float bpm = 120f;
+            var sorted = new List<BpmEvent>(song.bpmEvents);
+            sorted.Sort((a, b) => a.tick.CompareTo(b.tick));
+            foreach (var e in sorted)
+            {
+                if (e.tick > tick) break;
+                bpm = e.bpm;
+            }
+            return bpm;
+        }
+
+        private void HandleEventLaneClick(SheetLayout L, Vector2 pos, int snappedTick)
+        {
+            var (bpmCol, meterCol, _) = EventColumns(L.rightMargin);
+
+            if (pos.x < bpmCol.xMax)
+            {
+                // song.bpmEvents は SongMeta 側の値で、Undoスナップショット(chart+headerのみ)の対象外
+                // （既存のタイトル/アーティスト等の編集項目と同じ扱い、PushUndoは呼ばない）。
+                song.bpmEvents.Add(new BpmEvent { tick = snappedTick, bpm = CurrentBpmAtTick(snappedTick) });
+                songMetaDirty = true;
+                MarkPreviewDirty();
+                SelectEvent(EventKind.Bpm, song.bpmEvents.Count - 1);
+                statusMessage = "BPMイベントを追加しました";
+            }
+            else if (pos.x < meterCol.xMax)
+            {
+                var addr = SongAddr.ToAddr(song.meters, Mathf.Max(0, L.YToTick(pos.y)));
+                int bar = addr.bar;
+                int existing = song.meters.FindIndex(m => m.bar == bar);
+                if (existing >= 0)
+                {
+                    SelectEvent(EventKind.Meter, existing);
+                    statusMessage = "既存の拍子イベントを選択しました";
+                }
+                else
+                {
+                    var current = MeterAtBar(bar);
+                    song.meters.Add(new MeterEvent { bar = bar, numerator = current.numerator, denominator = current.denominator });
+                    songMetaDirty = true;
+                    MarkPreviewDirty();
+                    SelectEvent(EventKind.Meter, song.meters.Count - 1);
+                    statusMessage = "拍子イベントを追加しました";
+                }
+            }
+            else
+            {
+                PushUndo(coalesce: false);
+                chart.scrollEvents.Add(new ScrollEvent { tick = snappedTick, group = 0, mul = 1f, easing = Easing.Linear, durationTicks = 0 });
+                dirty = true;
+                SelectEvent(EventKind.Scroll, chart.scrollEvents.Count - 1);
+                statusMessage = "ソフランイベントを追加しました";
+            }
+        }
+
+        private void DeleteSelectedEvent()
+        {
+            switch (selectedEventKind)
+            {
+                case EventKind.Bpm:
+                    if (selectedEventIndex < 0 || selectedEventIndex >= song.bpmEvents.Count) break;
+                    song.bpmEvents.RemoveAt(selectedEventIndex);
+                    songMetaDirty = true;
+                    MarkPreviewDirty();
+                    break;
+                case EventKind.Meter:
+                    if (selectedEventIndex < 0 || selectedEventIndex >= song.meters.Count) break;
+                    song.meters.RemoveAt(selectedEventIndex);
+                    songMetaDirty = true;
+                    MarkPreviewDirty();
+                    break;
+                case EventKind.Scroll:
+                    if (selectedEventIndex < 0 || selectedEventIndex >= chart.scrollEvents.Count) break;
+                    PushUndo(coalesce: false);
+                    chart.scrollEvents.RemoveAt(selectedEventIndex);
+                    dirty = true;
+                    break;
+            }
+            ClearEventSelection();
         }
 
         private static int SnapTickTo(int rawTick, int snapTicks) =>

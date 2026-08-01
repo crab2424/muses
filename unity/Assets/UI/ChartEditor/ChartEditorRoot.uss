@@ -22,6 +22,10 @@
     --note-slide: rgb(102, 230, 153);
     --note-flick: rgb(242, 115, 77);
 
+    --event-bpm: rgb(130, 214, 120);
+    --event-meter: rgb(230, 200, 90);
+    --event-scroll: rgb(190, 140, 230);
+
     --band-h: 30px;
     --font-sm: 11px;
     --font-md: 12px;
@@ -298,6 +302,26 @@
 .sheet-label {
     font-size: 10px;
     color: var(--text-dim);
+}
+
+/* イベントレーン(§7.3)のチップ。BPM/拍子/ソフランをクリックで選択・追加できるよう、
+   文字だけでなくチップ全体をLabel要素にしてポインタイベントを受けられるようにしている。 */
+.event-chip {
+    font-size: 10px;
+    padding: 1px 3px;
+    border-radius: 3px;
+    color: rgb(24, 24, 24);
+    -unity-text-align: middle-center;
+    white-space: nowrap;
+}
+
+.event-chip--bpm { background-color: var(--event-bpm); }
+.event-chip--meter { background-color: var(--event-meter); }
+.event-chip--scroll { background-color: var(--event-scroll); }
+
+.event-chip--selected {
+    border-width: 2px;
+    border-color: rgb(255, 255, 255);
 }
 
 .validation-item {

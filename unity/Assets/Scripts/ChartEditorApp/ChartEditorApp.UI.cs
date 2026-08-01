@@ -48,6 +48,17 @@ namespace Muses.ChartTool
         private const int MaxSheetLabels = 128;
         private readonly List<Label> sheetLabels = new();
 
+        // §7.3 イベントレーン（BPM/拍子/ソフラン）のチップ。クリック選択・追加を受けるので
+        // sheetLabelsと違い pickingMode.Ignore にしない。
+        private const int MaxEventChips = 128;
+        private readonly List<Label> eventChipLabels = new();
+
+        private class EventChipRef
+        {
+            public EventKind kind;
+            public int index;
+        }
+
         private Label toolbarStatus;
         private Label toolbarDirty;
         private readonly Dictionary<EditorTool, Button> toolButtons = new();
@@ -78,6 +89,10 @@ namespace Muses.ChartTool
         private Note inspectorNote;
         private int inspectorPointCount = -1;
         private readonly List<Action> inspectorRefreshers = new();
+
+        // §7.3: イベント選択時もインスペクタを共用するため、直近に組んだ選択状態を別途追跡する
+        private EventKind inspectorEventKind = EventKind.None;
+        private int inspectorEventIndex = -1;
 
         /// <summary>UI側からの書き込み中に同期処理が走って値が往復するのを防ぐ。</summary>
         private bool suppressUiCallbacks;
@@ -351,6 +366,11 @@ namespace Muses.ChartTool
             PlaceSheetLabel(ref used, "Ground", L.ground.x + 4f, L.rect.y + 2f);
             PlaceSheetLabel(ref used, "Sky", L.sky.x + 4f, L.rect.y + 2f);
 
+            var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
+            PlaceSheetLabel(ref used, "BPM", bpmCol.x + 2f, L.rect.y + 2f);
+            PlaceSheetLabel(ref used, "拍子", meterCol.x + 2f, L.rect.y + 2f);
+            PlaceSheetLabel(ref used, "速度", scrollCol.x + 2f, L.rect.y + 2f);
+
             int snapTicks = SnapTicks;
             int barTicks = Mathf.Max(snapTicks, SongAddr.TicksPerBar(MeterAtBar(SongAddr.ToAddr(song.meters, scrollTick).bar)));
             int start = Mathf.Max(0, L.BottomTick - barTicks) / barTicks * barTicks;
@@ -389,6 +409,95 @@ namespace Muses.ChartTool
             if (lbl.text != text) lbl.text = text;
             lbl.style.left = x;
             lbl.style.top = y;
+        }
+
+        /// <summary>
+        /// §7.3 イベントレーン本体。右余白(rightMargin)をBPM/拍子/ソフランの3列に分け、
+        /// 各イベントをクリック可能なチップとして描く。painter2Dでは文字もクリックも扱えないため、
+        /// sheetLabelsと同じプール方式のLabel要素を使うが、こちらは pickingMode を有効にして
+        /// クリック選択を受ける（PointerDownで evt.StopPropagation() し、notesSheet側の
+        /// 「空白クリックで新規追加」処理に流れないようにする）。
+        /// </summary>
+        private void UpdateEventChips()
+        {
+            var L = CurrentSheetLayout();
+            if (L.rect.width < 2f || L.rect.height < 2f) return;
+
+            var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
+            int used = 0;
+
+            for (int i = 0; i < song.bpmEvents.Count; i++)
+            {
+                var ev = song.bpmEvents[i];
+                float y = L.TickToY(ev.tick);
+                if (y < L.rect.y - 8f || y > L.rect.yMax + 8f) continue;
+                PlaceEventChip(ref used, EventKind.Bpm, i, $"{ev.bpm:0.##}", $"{ev.bpm:0.##} BPM", bpmCol, y);
+            }
+
+            for (int i = 0; i < song.meters.Count; i++)
+            {
+                var m = song.meters[i];
+                int tick = SongAddr.ToTick(song.meters, m.bar, 1, 0);
+                float y = L.TickToY(tick);
+                if (y < L.rect.y - 8f || y > L.rect.yMax + 8f) continue;
+                PlaceEventChip(ref used, EventKind.Meter, i, $"{m.numerator}/{m.denominator}", $"{m.numerator}/{m.denominator}（{m.bar}小節目〜）", meterCol, y);
+            }
+
+            for (int i = 0; i < chart.scrollEvents.Count; i++)
+            {
+                var ev = chart.scrollEvents[i];
+                float y = L.TickToY(ev.tick);
+                if (y < L.rect.y - 8f || y > L.rect.yMax + 8f) continue;
+                PlaceEventChip(ref used, EventKind.Scroll, i, $"{ev.mul:0.##}x",
+                    $"群{ev.group} {ev.mul:0.##}x {ev.easing}", scrollCol, y);
+            }
+
+            for (int i = used; i < eventChipLabels.Count; i++)
+                eventChipLabels[i].style.display = DisplayStyle.None;
+        }
+
+        private void PlaceEventChip(ref int used, EventKind kind, int index, string text, string tooltip, Rect col, float y)
+        {
+            if (used >= MaxEventChips) return;
+            while (eventChipLabels.Count <= used)
+            {
+                var created = new Label();
+                created.AddToClassList("event-chip");
+                created.style.position = Position.Absolute;
+                created.userData = new EventChipRef();
+                created.RegisterCallback<PointerDownEvent>(evt =>
+                {
+                    var cr = (EventChipRef)created.userData;
+                    SelectEvent(cr.kind, cr.index);
+                    evt.StopPropagation();
+                });
+                notesSheet.Add(created);
+                eventChipLabels.Add(created);
+            }
+
+            var lbl = eventChipLabels[used++];
+            var chipRef = (EventChipRef)lbl.userData;
+            chipRef.kind = kind;
+            chipRef.index = index;
+
+            lbl.style.display = DisplayStyle.Flex;
+            if (lbl.text != text) lbl.text = text;
+            lbl.tooltip = tooltip;
+            lbl.style.left = col.x + 2f;
+            lbl.style.width = col.width - 4f;
+            lbl.style.top = y - 8f;
+
+            lbl.RemoveFromClassList("event-chip--bpm");
+            lbl.RemoveFromClassList("event-chip--meter");
+            lbl.RemoveFromClassList("event-chip--scroll");
+            lbl.AddToClassList(kind switch
+            {
+                EventKind.Bpm => "event-chip--bpm",
+                EventKind.Meter => "event-chip--meter",
+                _ => "event-chip--scroll",
+            });
+
+            lbl.EnableInClassList("event-chip--selected", selectedEventKind == kind && selectedEventIndex == index);
         }
 
         private void UpdatePreviewTexture()
@@ -503,6 +612,12 @@ namespace Muses.ChartTool
             inspectorHost.Clear();
             inspectorRefreshers.Clear();
 
+            if (selectedEventKind != EventKind.None)
+            {
+                RebuildEventInspector();
+                return;
+            }
+
             if (selectedNote == null)
             {
                 var empty = new Label("ノーツを選択してください");
@@ -607,6 +722,186 @@ namespace Muses.ChartTool
             var deleteBtn = new Button(DeleteSelectedNote) { text = "このノーツを削除" };
             deleteBtn.AddToClassList("tb-btn");
             inspectorHost.Add(deleteBtn);
+        }
+
+        /// <summary>
+        /// §7.3: イベントレーンで選択したBPM/拍子/ソフランイベントの編集UI。ノーツと違い
+        /// song.bpmEvents/song.metersはUndoスナップショット(chart+headerのみ)の対象外なので、
+        /// 既存のタイトル等song.muses系フィールドと同じくPushUndoを呼ばない
+        /// （chart.scrollEventsはchartの一部なので通常どおりPushUndoする）。
+        /// </summary>
+        private void RebuildEventInspector()
+        {
+            switch (selectedEventKind)
+            {
+                case EventKind.Bpm:
+                {
+                    if (selectedEventIndex < 0 || selectedEventIndex >= song.bpmEvents.Count)
+                    {
+                        selectedEventKind = EventKind.None;
+                        return;
+                    }
+
+                    var kindRow = new Label("種別: BPM変化");
+                    kindRow.AddToClassList("prop-note");
+                    inspectorHost.Add(kindRow);
+
+                    var addrField = AddTextRow(inspectorHost, "位置", v =>
+                    {
+                        try
+                        {
+                            var parsed = SongAddr.ParseAddr(v);
+                            int newTick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
+                            var e = song.bpmEvents[selectedEventIndex];
+                            if (e.tick == newTick) return;
+                            e.tick = newTick;
+                            song.bpmEvents[selectedEventIndex] = e;
+                            songMetaDirty = true;
+                            MarkPreviewDirty();
+                        }
+                        catch (FormatException) { /* 入力途中は無視 */ }
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(addrField,
+                        SongAddr.FormatAddr(SongAddr.ToAddr(song.meters, song.bpmEvents[selectedEventIndex].tick))));
+
+                    var bpmField = AddFloatRow(inspectorHost, "BPM", v =>
+                    {
+                        var e = song.bpmEvents[selectedEventIndex];
+                        e.bpm = Mathf.Max(1f, v);
+                        song.bpmEvents[selectedEventIndex] = e;
+                        songMetaDirty = true;
+                        MarkPreviewDirty();
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(bpmField, song.bpmEvents[selectedEventIndex].bpm));
+
+                    var delBtn = new Button(DeleteSelectedEvent) { text = "このBPMイベントを削除" };
+                    delBtn.AddToClassList("tb-btn");
+                    inspectorHost.Add(delBtn);
+                    break;
+                }
+                case EventKind.Meter:
+                {
+                    if (selectedEventIndex < 0 || selectedEventIndex >= song.meters.Count)
+                    {
+                        selectedEventKind = EventKind.None;
+                        return;
+                    }
+
+                    var kindRow = new Label("種別: 拍子変化");
+                    kindRow.AddToClassList("prop-note");
+                    inspectorHost.Add(kindRow);
+
+                    var barField = AddIntRow(inspectorHost, "小節番号", v =>
+                    {
+                        var m = song.meters[selectedEventIndex];
+                        m.bar = Mathf.Max(1, v);
+                        song.meters[selectedEventIndex] = m;
+                        songMetaDirty = true;
+                        MarkPreviewDirty();
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(barField, song.meters[selectedEventIndex].bar));
+
+                    var numField = AddIntRow(inspectorHost, "分子", v =>
+                    {
+                        var m = song.meters[selectedEventIndex];
+                        m.numerator = Mathf.Max(1, v);
+                        song.meters[selectedEventIndex] = m;
+                        songMetaDirty = true;
+                        MarkPreviewDirty();
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(numField, song.meters[selectedEventIndex].numerator));
+
+                    var denField = AddIntRow(inspectorHost, "分母", v =>
+                    {
+                        var m = song.meters[selectedEventIndex];
+                        m.denominator = Mathf.Max(1, v);
+                        song.meters[selectedEventIndex] = m;
+                        songMetaDirty = true;
+                        MarkPreviewDirty();
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(denField, song.meters[selectedEventIndex].denominator));
+
+                    var delBtn = new Button(DeleteSelectedEvent) { text = "この拍子イベントを削除" };
+                    delBtn.AddToClassList("tb-btn");
+                    inspectorHost.Add(delBtn);
+                    break;
+                }
+                case EventKind.Scroll:
+                {
+                    if (selectedEventIndex < 0 || selectedEventIndex >= chart.scrollEvents.Count)
+                    {
+                        selectedEventKind = EventKind.None;
+                        return;
+                    }
+
+                    var kindRow = new Label("種別: ソフラン");
+                    kindRow.AddToClassList("prop-note");
+                    inspectorHost.Add(kindRow);
+
+                    var addrField = AddTextRow(inspectorHost, "位置", v =>
+                    {
+                        try
+                        {
+                            var parsed = SongAddr.ParseAddr(v);
+                            int newTick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
+                            var e = chart.scrollEvents[selectedEventIndex];
+                            if (e.tick == newTick) return;
+                            PushUndo(coalesce: true);
+                            e.tick = newTick;
+                            chart.scrollEvents[selectedEventIndex] = e;
+                            dirty = true;
+                        }
+                        catch (FormatException) { /* 入力途中は無視 */ }
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(addrField,
+                        SongAddr.FormatAddr(SongAddr.ToAddr(song.meters, chart.scrollEvents[selectedEventIndex].tick))));
+
+                    var groupField = AddIntRow(inspectorHost, "群", v =>
+                    {
+                        PushUndo(coalesce: true);
+                        var e = chart.scrollEvents[selectedEventIndex];
+                        e.group = Mathf.Max(0, v);
+                        chart.scrollEvents[selectedEventIndex] = e;
+                        dirty = true;
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(groupField, chart.scrollEvents[selectedEventIndex].group));
+
+                    var mulField = AddFloatRow(inspectorHost, "倍率", v =>
+                    {
+                        PushUndo(coalesce: true);
+                        var e = chart.scrollEvents[selectedEventIndex];
+                        e.mul = v;
+                        chart.scrollEvents[selectedEventIndex] = e;
+                        dirty = true;
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(mulField, chart.scrollEvents[selectedEventIndex].mul));
+
+                    var easingField = AddEnumRow(inspectorHost, "easing", chart.scrollEvents[selectedEventIndex].easing, (Easing v) =>
+                    {
+                        PushUndo(coalesce: true);
+                        var e = chart.scrollEvents[selectedEventIndex];
+                        e.easing = v;
+                        chart.scrollEvents[selectedEventIndex] = e;
+                        dirty = true;
+                    });
+                    inspectorRefreshers.Add(() => RefreshEnumIfUnfocused(easingField, chart.scrollEvents[selectedEventIndex].easing));
+
+                    var durField = AddIntRow(inspectorHost, "変化にかかるtick", v =>
+                    {
+                        PushUndo(coalesce: true);
+                        var e = chart.scrollEvents[selectedEventIndex];
+                        e.durationTicks = Mathf.Max(0, v);
+                        chart.scrollEvents[selectedEventIndex] = e;
+                        dirty = true;
+                    });
+                    inspectorRefreshers.Add(() => RefreshIfUnfocused(durField, chart.scrollEvents[selectedEventIndex].durationTicks));
+
+                    var delBtn2 = new Button(DeleteSelectedEvent) { text = "このソフランイベントを削除" };
+                    delBtn2.AddToClassList("tb-btn");
+                    inspectorHost.Add(delBtn2);
+                    break;
+                }
+            }
         }
 
         /// <summary>Waypointは構造体なのでリストへ書き戻す。編集はスライダー等から連続で来るのでUndoはまとめる。</summary>
@@ -805,16 +1100,20 @@ namespace Muses.ChartTool
             else
             {
                 UpdateSheetLabels();
+                UpdateEventChips();
                 notesSheet.MarkDirtyRepaint();
             }
 
             // 選択が変わった / 中継点が増減したときだけインスペクタを組み直し、
             // それ以外の間はキャンバス上のドラッグ結果を各フィールドへ反映するだけにする。
             if (!ReferenceEquals(inspectorNote, selectedNote)
-                || (selectedNote != null && inspectorPointCount != selectedNote.points.Count))
+                || (selectedNote != null && inspectorPointCount != selectedNote.points.Count)
+                || inspectorEventKind != selectedEventKind || inspectorEventIndex != selectedEventIndex)
             {
                 inspectorNote = selectedNote;
                 inspectorPointCount = selectedNote?.points.Count ?? 0;
+                inspectorEventKind = selectedEventKind;
+                inspectorEventIndex = selectedEventIndex;
                 RebuildInspector();
             }
             else if (slowTick && foldInspector.value)
