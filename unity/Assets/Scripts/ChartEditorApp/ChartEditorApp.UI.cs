@@ -353,8 +353,8 @@ namespace Muses.ChartTool
 
             int snapTicks = SnapTicks;
             int barTicks = Mathf.Max(snapTicks, SongAddr.TicksPerBar(MeterAtBar(SongAddr.ToAddr(song.meters, scrollTick).bar)));
-            int start = Mathf.Max(0, scrollTick - barTicks) / barTicks * barTicks;
-            int end = scrollTick + L.VisibleTicks + barTicks;
+            int start = Mathf.Max(0, L.BottomTick - barTicks) / barTicks * barTicks;
+            int end = L.TopTick + barTicks;
 
             for (int t = start; t <= end && used < MaxSheetLabels; t += barTicks)
             {

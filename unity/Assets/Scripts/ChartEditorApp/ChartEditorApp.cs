@@ -404,7 +404,10 @@ namespace Muses.ChartTool
 
             public float TickToY(int tick) => judgeLineY - (tick - scrollTick) * pxPerTick;
             public int YToTick(float y) => scrollTick + Mathf.RoundToInt((judgeLineY - y) / pxPerTick);
-            public int VisibleTicks => Mathf.CeilToInt(rect.height / pxPerTick);
+
+            // TickToYは下に行くほどtickが小さくなるため、上端が「大きいtick」・下端が「小さいtick」になる。
+            public int TopTick => scrollTick + Mathf.CeilToInt((judgeLineY - rect.y) / pxPerTick);
+            public int BottomTick => scrollTick - Mathf.CeilToInt((rect.yMax - judgeLineY) / pxPerTick);
 
             public static float CellX(Rect pane, float cellF) => pane.x + cellF / Cells * pane.width;
 
@@ -477,8 +480,8 @@ namespace Muses.ChartTool
 
             // 小節/拍/スナップ線
             int snapTicks = SnapTicks;
-            int lineStart = Mathf.Max(0, scrollTick - snapTicks) / snapTicks * snapTicks;
-            int lineEnd = scrollTick + L.VisibleTicks + snapTicks;
+            int lineStart = Mathf.Max(0, L.BottomTick - snapTicks) / snapTicks * snapTicks;
+            int lineEnd = L.TopTick + snapTicks;
             int guard = 0;
             for (int t = lineStart; t <= lineEnd && guard < 20000; t += snapTicks, guard++)
             {
@@ -500,7 +503,7 @@ namespace Muses.ChartTool
             {
                 int nStart = note.points[0].tick;
                 int nEnd = note.points[^1].tick;
-                if (nEnd < scrollTick - snapTicks * 4 || nStart > scrollTick + L.VisibleTicks + snapTicks * 4) continue;
+                if (nEnd < L.BottomTick - snapTicks * 4 || nStart > L.TopTick + snapTicks * 4) continue;
 
                 Color col = NoteColor(note.kind);
                 if (note.points.Count == 1)
