@@ -362,7 +362,9 @@ namespace Muses.ChartTool
                 if (addr.beat != 1 || addr.tick != 0) continue;
                 float y = L.TickToY(t);
                 if (y < L.rect.y - 4f || y > L.rect.yMax + 4f) continue;
-                PlaceSheetLabel(ref used, addr.bar.ToString(), L.rect.x + 2f, y - 14f);
+                // 余白レーン(§7.2)に退避したので、小節線と同じ高さに縦中央揃えで置ける
+                // （旧実装はGroundレーン内に重ねていたためノーツと被らないよう線の上に逃がしていた）。
+                PlaceSheetLabel(ref used, addr.bar.ToString(), L.leftMargin.x + 4f, y - 7f);
             }
 
             for (int i = used; i < sheetLabels.Count; i++)

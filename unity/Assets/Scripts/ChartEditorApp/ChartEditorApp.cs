@@ -90,6 +90,12 @@ namespace Muses.ChartTool
         private float pxPerBeat = 28f;
         private int scrollTick;
 
+        // ノーツシート左右の余白。左=小節番号の退避先、右=将来のイベントレーン(§7.3)用に確保。
+        // editor-ui-redesign.md §7.2: 将来設定画面から変更できるようインスタンスフィールドにしている
+        // （constにしない）。
+        private float sheetMarginLeft = 44f;
+        private float sheetMarginRight = 104f;
+
         // タイムライン追従: ノーツシート内で「現在時刻」を固定表示する高さ(0=上端,1=下端)。
         // scrollTickはこの位置に置かれるtickとして扱う（judgeLineFracが1.0なら従来どおり下端固定）。
         private bool followPlayback = true;
@@ -383,18 +389,27 @@ namespace Muses.ChartTool
         /// </summary>
         private readonly struct SheetLayout
         {
-            public readonly Rect rect, ground, gutter, sky;
+            // rect: ノーツシート全体（背景塗りつぶし用）。leftMargin/rightMargin: レーン外の余白
+            // （左=小節番号の退避先、右=将来のイベントレーン §7.3 用に確保のみ、当面は空）。
+            // editor-ui-redesign.md §7.2 どおり、帯の大きさは今後設定画面から変更できるよう
+            // ChartEditorApp側のフィールド(sheetMarginLeft/sheetMarginRight)経由で渡す。
+            public readonly Rect rect, leftMargin, ground, gutter, sky, rightMargin;
             public readonly float pxPerTick, judgeLineY;
             private readonly int scrollTick;
 
-            public SheetLayout(Rect rect, float pxPerBeat, int scrollTick, float judgeLineFrac)
+            public SheetLayout(Rect rect, float pxPerBeat, int scrollTick, float judgeLineFrac, float marginLeft, float marginRight)
             {
                 this.rect = rect;
                 this.scrollTick = scrollTick;
 
                 const float gutterW = 26f;
-                float paneW = (rect.width - gutterW) * 0.5f;
-                ground = new Rect(rect.x, rect.y, paneW, rect.height);
+                leftMargin = new Rect(rect.x, rect.y, marginLeft, rect.height);
+                rightMargin = new Rect(rect.xMax - marginRight, rect.y, marginRight, rect.height);
+
+                float lanesX = leftMargin.xMax;
+                float lanesW = Mathf.Max(0f, rightMargin.xMin - lanesX - gutterW);
+                float paneW = lanesW * 0.5f;
+                ground = new Rect(lanesX, rect.y, paneW, rect.height);
                 gutter = new Rect(ground.xMax, rect.y, gutterW, rect.height);
                 sky = new Rect(gutter.xMax, rect.y, paneW, rect.height);
 
@@ -428,7 +443,7 @@ namespace Muses.ChartTool
         private SheetLayout CurrentSheetLayout()
         {
             var r = notesSheet.contentRect;
-            return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac);
+            return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac, sheetMarginLeft, sheetMarginRight);
         }
 
         private int SnapTicks => Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
@@ -469,7 +484,11 @@ namespace Muses.ChartTool
             var rect = L.rect;
 
             FillRect(p, rect, new Color(0.16f, 0.16f, 0.16f));
+            FillRect(p, L.leftMargin, new Color(0.12f, 0.12f, 0.12f));
+            FillRect(p, L.rightMargin, new Color(0.12f, 0.12f, 0.12f));
             FillRect(p, L.gutter, new Color(0.1f, 0.1f, 0.1f));
+
+            float lanesXMin = L.ground.xMin, lanesXMax = L.sky.xMax;
 
             // セル境界線
             for (int c = 0; c <= Cells; c++)
@@ -495,7 +514,7 @@ namespace Muses.ChartTool
                 else if (addr.tick == 0) { c = new Color(1, 1, 1, 0.28f); thickness = 1f; }
                 else { c = new Color(1, 1, 1, 0.12f); thickness = 1f; }
 
-                FillRect(p, new Rect(rect.x, y, rect.width, thickness), c);
+                FillRect(p, new Rect(lanesXMin, y, lanesXMax - lanesXMin, thickness), c);
             }
 
             // ノーツ描画
@@ -553,7 +572,7 @@ namespace Muses.ChartTool
             }
 
             // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（右パネルの「表示設定」）
-            FillRect(p, new Rect(rect.x, L.judgeLineY - 1, rect.width, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
+            FillRect(p, new Rect(lanesXMin, L.judgeLineY - 1, lanesXMax - lanesXMin, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
 
             // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック
             if (pendingSlideStart != null)
