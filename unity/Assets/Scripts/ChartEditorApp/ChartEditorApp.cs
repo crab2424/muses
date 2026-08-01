@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 using Muses.Chart;
 
@@ -65,6 +66,9 @@ namespace Muses.ChartTool
 
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
+        private bool browsePanelOpen;
+        private string browseDir;
+        private Vector2 browseScroll;
         private string chartPath;
         private string songPath;
         private SongMeta song = new();
@@ -78,6 +82,11 @@ namespace Muses.ChartTool
         private float defaultWidthCells = 1f;
         private float pxPerBeat = 28f;
         private int scrollTick;
+
+        // タイムライン追従: ノーツシート内で「現在時刻」を固定表示する高さ(0=上端,1=下端)。
+        // scrollTickはこの位置に置かれるtickとして扱う（judgeLineFracが1.0なら従来どおり下端固定）。
+        private bool followPlayback = true;
+        private float judgeLineFrac = 1f;
         private EditorTool currentTool = EditorTool.Select;
         private Note selectedNote;
         private Note pendingSlideStart;
@@ -96,6 +105,8 @@ namespace Muses.ChartTool
         private void Awake()
         {
             preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader);
+            browseDir = PlayerPrefs.GetString("ChartEditor_LastDir", Application.persistentDataPath);
+            if (!Directory.Exists(browseDir)) browseDir = Application.persistentDataPath;
         }
 
         private void Update()
@@ -108,6 +119,11 @@ namespace Muses.ChartTool
             {
                 preview.Rebuild(song, chart, Path.GetDirectoryName(songPath));
                 lastPreviewRebuildRealtime = Time.unscaledTime;
+            }
+
+            if (followPlayback && preview.IsPlaying)
+            {
+                scrollTick = Math.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.SongTime));
             }
 
             HandleUndoRedoShortcuts();
@@ -185,6 +201,53 @@ namespace Muses.ChartTool
             DrawInspector(inspectorRect);
             DrawValidationPanel(validationRect);
             DrawRestorePrompt();
+            if (browsePanelOpen) DrawBrowsePanel(new Rect(10, toolbarH + 4, 380, 320));
+        }
+
+        // ---- ファイル参照パネル(ネイティブのファイル選択ダイアログが無いスタンドアロン向け代替) ----
+
+        private void DrawBrowsePanel(Rect rect)
+        {
+            DrawRect(rect, new Color(0.12f, 0.12f, 0.12f, 0.98f));
+            DrawRectOutline(rect, new Color(1, 1, 1, 0.3f));
+            GUILayout.BeginArea(rect);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(browseDir, boldStyle);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("x", GUILayout.Width(22))) browsePanelOpen = false;
+            GUILayout.EndHorizontal();
+
+            browseScroll = GUILayout.BeginScrollView(browseScroll, GUILayout.Height(rect.height - 30));
+
+            var parent = Directory.GetParent(browseDir);
+            if (parent != null && GUILayout.Button(".. (上へ)")) browseDir = parent.FullName;
+
+            try
+            {
+                foreach (var dir in Directory.GetDirectories(browseDir).OrderBy(d => d))
+                {
+                    if (GUILayout.Button("📁 " + Path.GetFileName(dir))) browseDir = dir;
+                }
+
+                foreach (var file in Directory.GetFiles(browseDir, "*.muses").OrderBy(f => f))
+                {
+                    if (GUILayout.Button(Path.GetFileName(file)))
+                    {
+                        chartFilePathBuffer = file;
+                        PlayerPrefs.SetString("ChartEditor_LastDir", browseDir);
+                        PlayerPrefs.Save();
+                        browsePanelOpen = false;
+                        OpenChartFromPath();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GUILayout.Label("読み取りエラー: " + ex.Message);
+            }
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
         }
 
         // ---------- ツールバー ----------
@@ -198,6 +261,7 @@ namespace Muses.ChartTool
             GUILayout.Label("ファイル", GUILayout.Width(45));
             chartFilePathBuffer = BufferedTextFieldFixedWidth("chartPathField", chartFilePathBuffer, 320);
 
+            if (GUILayout.Button("参照...", GUILayout.Width(60))) browsePanelOpen = !browsePanelOpen;
             if (GUILayout.Button("読み込む", GUILayout.Width(70))) OpenChartFromPath();
             if (GUILayout.Button("保存", GUILayout.Width(50))) SaveChartToPath();
             if (GUILayout.Button("検証", GUILayout.Width(50))) RunValidation();
@@ -232,6 +296,11 @@ namespace Muses.ChartTool
             GUILayout.BeginHorizontal();
             GUILayout.Label("幅", GUILayout.Width(16));
             defaultWidthCells = Mathf.Max(0.5f, ParseFloatField("defaultWidth", defaultWidthCells, 60));
+            GUILayout.Space(10);
+            followPlayback = GUILayout.Toggle(followPlayback, "再生に追従", GUILayout.Width(80));
+            GUILayout.Label("判定線位置", GUILayout.Width(60));
+            judgeLineFrac = GUILayout.HorizontalSlider(judgeLineFrac, 0f, 1f, GUILayout.Width(100));
+            GUILayout.Space(10);
             GUILayout.Label(statusMessage);
             GUILayout.EndHorizontal();
 
@@ -272,6 +341,9 @@ namespace Muses.ChartTool
                 redoStack.Clear();
                 lastAutosaveRealtime = Time.unscaledTime;
                 statusMessage = "読み込み完了";
+                browseDir = dir;
+                PlayerPrefs.SetString("ChartEditor_LastDir", dir);
+                PlayerPrefs.Save();
                 preview.Rebuild(song, chart, dir);
                 lastPreviewRebuildRealtime = Time.unscaledTime;
                 CheckAutosaveRestore(path);
@@ -718,9 +790,10 @@ namespace Muses.ChartTool
 
             float pxPerTick = pxPerBeat / ChartData.TicksPerBeat;
             int visibleTicks = Mathf.CeilToInt(rect.height / pxPerTick);
+            float judgeLineY = rect.y + rect.height * Mathf.Clamp01(judgeLineFrac);
 
-            float TickToY(int tick) => rect.yMax - (tick - scrollTick) * pxPerTick;
-            int YToTick(float y) => scrollTick + Mathf.RoundToInt((rect.yMax - y) / pxPerTick);
+            float TickToY(int tick) => judgeLineY - (tick - scrollTick) * pxPerTick;
+            int YToTick(float y) => scrollTick + Mathf.RoundToInt((judgeLineY - y) / pxPerTick);
             float CellX(Rect pane, float cellF) => pane.x + cellF / Cells * pane.width;
             float CombinedX(float layerF, float cellF) => Mathf.Lerp(CellX(groundRect, cellF), CellX(skyRect, cellF), Mathf.Clamp01(layerF));
 
@@ -807,6 +880,18 @@ namespace Muses.ChartTool
                 }
             }
 
+            // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（ツールバーの「追従」欄）
+            DrawRect(new Rect(rect.x, judgeLineY - 1, rect.width, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
+
+            // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック
+            if (pendingSlideStart != null)
+            {
+                var wp0 = pendingSlideStart.points[0];
+                float py = TickToY(wp0.tick);
+                float px = CombinedX(wp0.layerF, wp0.cellF);
+                DrawRectOutline(new Rect(px - 5, py - 5, 10, 10), Color.white);
+            }
+
             HandleSheetInput(rect, groundRect, skyRect, TickToY, YToTick, CombinedX, snapTicks);
         }
 
@@ -891,8 +976,15 @@ namespace Muses.ChartTool
                                 chart.notes.Add(pendingSlideStart);
                                 selectedNote = pendingSlideStart;
                                 dirty = true;
+                                pendingSlideStart = null;
+                                statusMessage = "Slideを配置しました";
                             }
-                            pendingSlideStart = null;
+                            else
+                            {
+                                // 終点が始点と同tick以前だと配置できない（スナップが粗いと起きやすい）。
+                                // 1点目は維持し、やり直せるようにする。
+                                statusMessage = "Slideの終点は始点より後ろの位置をクリックしてください（1点目は維持中）";
+                            }
                         }
                         break;
                     }

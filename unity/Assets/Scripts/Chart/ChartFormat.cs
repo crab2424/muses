@@ -97,6 +97,31 @@ namespace Muses.Chart
             return sorted;
         }
 
+        /// <summary>
+        /// editor-spec.md タイムライン追従用: 秒→tickの逆変換（<see cref="BuildTickToSeconds"/>の逆）。
+        /// 区分線形なので各区間を単純に解いて求める。
+        /// </summary>
+        public static int SecondsToTick(List<BpmEvent> bpmEvents, float seconds)
+        {
+            var sorted = SortedBpmEvents(bpmEvents);
+            var accSec = new float[sorted.Count];
+            for (int i = 1; i < sorted.Count; i++)
+            {
+                int dTick = sorted[i].tick - sorted[i - 1].tick;
+                float secPerTick = 60f / sorted[i - 1].bpm / ChartData.TicksPerBeat;
+                accSec[i] = accSec[i - 1] + dTick * secPerTick;
+            }
+
+            int idx = 0;
+            for (int i = 1; i < sorted.Count; i++)
+            {
+                if (accSec[i] > seconds) break;
+                idx = i;
+            }
+            float perTick = 60f / sorted[idx].bpm / ChartData.TicksPerBeat;
+            return sorted[idx].tick + (int)Math.Round((seconds - accSec[idx]) / perTick);
+        }
+
         /// <summary>editor-spec.md §5.1。プレビューのメトロノーム用: 秒(songTime)時点のBPMを引く。</summary>
         public static float BpmAtTime(List<BpmEvent> bpmEvents, float songTime)
         {

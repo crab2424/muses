@@ -185,6 +185,8 @@ namespace Muses.ChartTool
 
         /// <summary>editor-spec.md §4 V10。読み込み済み音源の長さ(秒)。未読み込みなら-1。</summary>
         public float AudioLengthSec => musicSource.clip != null ? musicSource.clip.length : -1f;
+        public float SongTime => clock?.SongTime ?? 0f;
+        public bool IsPlaying => clock?.Running ?? false;
 
         // ---------- 毎フレーム駆動 ----------
 
