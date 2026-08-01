@@ -330,6 +330,7 @@ namespace Muses.ChartTool
             notesSheet.RegisterCallback<PointerDownEvent>(OnSheetPointerDown);
             notesSheet.RegisterCallback<PointerMoveEvent>(OnSheetPointerMove);
             notesSheet.RegisterCallback<PointerUpEvent>(OnSheetPointerUp);
+            notesSheet.RegisterCallback<PointerLeaveEvent>(OnSheetPointerLeave);
             notesSheet.RegisterCallback<WheelEvent>(OnSheetWheel);
             notesSheet.RegisterCallback<KeyDownEvent>(OnSheetKeyDown);
 

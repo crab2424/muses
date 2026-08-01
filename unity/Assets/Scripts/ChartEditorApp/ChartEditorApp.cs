@@ -130,6 +130,11 @@ namespace Muses.ChartTool
         private float dragOriginRawCell;
         private List<Waypoint> dragOriginPoints;
 
+        // ---- 配置ツールのゴースト表示（カーソル追従プレビュー） ----
+        // シート内でのポインタ位置。範囲外/未取得時はnull（PointerLeaveEventで確実にクリアする。
+        // ドラッグでキャプチャ中もPointerMoveEventは届くので、これ単体でホバー判定に使える）。
+        private Vector2? sheetHoverPos;
+
         private void Awake()
         {
             preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader);
@@ -613,7 +618,8 @@ namespace Muses.ChartTool
             // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（右パネルの「表示設定」）
             FillRect(p, new Rect(lanesXMin, L.judgeLineY - 1, lanesXMax - lanesXMin, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
 
-            // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック
+            // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック。マウスがシート外
+            // （インスペクタ確認等）でも1点目クリック済みなことが分かるよう、ホバーの有無に関わらず出す。
             if (pendingSlideStart != null)
             {
                 var wp0 = pendingSlideStart.points[0];
@@ -621,6 +627,136 @@ namespace Muses.ChartTool
                 float px = L.CombinedX(wp0.layerF, wp0.cellF);
                 FillRectOutline(p, new Rect(px - 5, py - 5, 10, 10), Color.white);
             }
+
+            DrawPlacementGhost(p, L);
+        }
+
+        // ---------- 配置ツールのゴースト（カーソル追従プレビュー） ----------
+
+        /// <summary>
+        /// 「ノーツ選択時、カーソルに薄いノーツを追従させ、ここでクリックすると配置される」というUI。
+        /// OnSheetPointerDownの配置ロジックと同じスナップ計算を使い、実際に置かれる位置とゴーストが
+        /// 一致するようにしている（計算がずれると「ゴーストの位置でクリックしたのに違う場所に置かれた」
+        /// という不整合になるため、ここは重複を許容してPointerDown側の分岐をなぞる）。
+        /// </summary>
+        private void DrawPlacementGhost(Painter2D p, SheetLayout L)
+        {
+            if (draggingNote || !sheetHoverPos.HasValue) return;
+            var pos = sheetHoverPos.Value;
+            if (!L.rect.Contains(pos)) return;
+
+            int snapTicks = SnapTicks;
+            int tick = SnapTickTo(Mathf.Max(0, L.YToTick(pos.y)), snapTicks);
+
+            // イベントレーンは現在のツールに関わらず常時クリックで追加できるので、
+            // ホバー時のゴーストもツール非依存で出す。
+            if (L.rightMargin.Contains(pos))
+            {
+                DrawEventGhost(p, L, pos, tick);
+                return;
+            }
+
+            var (layerF, rawCell) = L.PaneAt(pos.x);
+
+            switch (currentTool)
+            {
+                case EditorTool.Tap:
+                case EditorTool.ExTap:
+                case EditorTool.Flick:
+                {
+                    if (layerF != 0f && layerF != 1f) return; // ガターには単発ノーツを置けない
+                    float cellF = SnapCellTo(rawCell, 1f);
+                    var kind = currentTool == EditorTool.Tap ? NoteKind.Tap
+                        : currentTool == EditorTool.ExTap ? NoteKind.ExTap : NoteKind.Flick;
+                    DrawGhostPoint(p, L, tick, layerF, cellF, defaultWidthCells, NoteColor(kind));
+                    break;
+                }
+                case EditorTool.Slide:
+                {
+                    float cellF = SnapCellTo(rawCell, 0.5f);
+                    var col = NoteColor(NoteKind.Slide);
+                    if (pendingSlideStart == null)
+                    {
+                        DrawGhostPoint(p, L, tick, layerF, cellF, defaultWidthCells, col);
+                    }
+                    else
+                    {
+                        var wp0 = pendingSlideStart.points[0];
+                        if (tick > wp0.tick)
+                        {
+                            float y0 = L.TickToY(wp0.tick), y1 = L.TickToY(tick);
+                            float x0 = L.CombinedX(wp0.layerF, wp0.cellF + wp0.width * 0.5f);
+                            float x1 = L.CombinedX(layerF, cellF + defaultWidthCells * 0.5f);
+                            var lineCol = new Color(col.r, col.g, col.b, 0.4f);
+                            FillRect(p, Rect.MinMaxRect(Mathf.Min(x0, x1) - 2, Mathf.Min(y0, y1), Mathf.Max(x0, x1) + 2, Mathf.Max(y0, y1)), lineCol);
+                            DrawGhostPoint(p, L, tick, layerF, cellF, defaultWidthCells, col);
+                        }
+                    }
+                    break;
+                }
+                case EditorTool.AddWaypoint:
+                {
+                    if (selectedNote is { kind: NoteKind.Slide })
+                    {
+                        int nStart = selectedNote.points[0].tick, nEnd = selectedNote.points[^1].tick;
+                        if (tick > nStart && tick < nEnd)
+                        {
+                            float cellF = SnapCellTo(rawCell, 0.5f);
+                            float width = InterpAtTick(selectedNote, tick).width;
+                            DrawGhostPoint(p, L, tick, layerF, cellF, width, Color.white);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        private static void DrawGhostPoint(Painter2D p, SheetLayout L, int tick, float layerF, float cellF, float width, Color baseColor)
+        {
+            float y = L.TickToY(tick);
+            float x0 = L.CombinedX(layerF, cellF);
+            float x1 = L.CombinedX(layerF, cellF + width);
+            var fill = new Color(baseColor.r, baseColor.g, baseColor.b, 0.4f);
+            var outline = new Color(baseColor.r, baseColor.g, baseColor.b, 0.85f);
+            FillRect(p, Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4, Mathf.Max(x0, x1), y + 4), fill);
+            FillRectOutline(p, Rect.MinMaxRect(Mathf.Min(x0, x1) - 1, y - 5, Mathf.Max(x0, x1) + 1, y + 5), outline, 1f);
+        }
+
+        /// <summary>
+        /// イベントレーン(§7.3)のゴースト。列の位置がそのまま種別を表すので、列ごとに
+        /// HandleEventLaneClickと同じtickの丸め方（BPM/ソフランはグリッドスナップ、拍子は小節頭）
+        /// を再現する。
+        /// </summary>
+        private void DrawEventGhost(Painter2D p, SheetLayout L, Vector2 pos, int snappedTick)
+        {
+            var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
+            Rect col;
+            Color baseColor;
+            int tick;
+
+            if (pos.x < bpmCol.xMax)
+            {
+                col = bpmCol;
+                baseColor = new Color(130f / 255f, 214f / 255f, 120f / 255f);
+                tick = snappedTick;
+            }
+            else if (pos.x < meterCol.xMax)
+            {
+                col = meterCol;
+                baseColor = new Color(230f / 255f, 200f / 255f, 90f / 255f);
+                var addr = SongAddr.ToAddr(song.meters, Mathf.Max(0, L.YToTick(pos.y)));
+                tick = SongAddr.ToTick(song.meters, addr.bar, 1, 0);
+            }
+            else
+            {
+                col = scrollCol;
+                baseColor = new Color(190f / 255f, 140f / 255f, 230f / 255f);
+                tick = snappedTick;
+            }
+
+            float y = L.TickToY(tick);
+            FillRect(p, new Rect(col.x + 2f, y - 8f, col.width - 4f, 16f), new Color(baseColor.r, baseColor.g, baseColor.b, 0.45f));
+            FillRectOutline(p, new Rect(col.x + 2f, y - 8f, col.width - 4f, 16f), new Color(baseColor.r, baseColor.g, baseColor.b, 0.9f), 1f);
         }
 
         // ---------- ノーツシートの入力（UI Toolkitのポインタ/ホイール/キーイベント） ----------
@@ -758,6 +894,8 @@ namespace Muses.ChartTool
 
         private void OnSheetPointerMove(PointerMoveEvent evt)
         {
+            sheetHoverPos = (Vector2)evt.localPosition;
+
             if (!draggingNote || selectedNote == null) return;
 
             var L = CurrentSheetLayout();
@@ -788,6 +926,8 @@ namespace Muses.ChartTool
             draggingNote = false;
             if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
         }
+
+        private void OnSheetPointerLeave(PointerLeaveEvent evt) => sheetHoverPos = null;
 
         private void OnSheetWheel(WheelEvent evt)
         {
