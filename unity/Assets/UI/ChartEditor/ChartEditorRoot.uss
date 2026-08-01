@@ -1,0 +1,3 @@
+#chart-editor-root {
+    flex-grow: 1;
+}

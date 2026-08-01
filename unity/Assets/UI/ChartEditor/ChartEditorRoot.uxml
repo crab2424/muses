@@ -1,0 +1,4 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="False">
+    <Style src="ChartEditorRoot.uss" />
+    <ui:VisualElement name="chart-editor-root" picking-mode="Ignore" style="flex-grow: 1;" />
+</ui:UXML>
