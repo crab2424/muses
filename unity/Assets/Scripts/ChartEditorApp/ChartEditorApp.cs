@@ -101,8 +101,53 @@ namespace Muses.ChartTool
         private bool followPlayback = true;
         private float judgeLineFrac = 1f;
         private EditorTool currentTool = EditorTool.Select;
+
+        // ---- §7.4-A 選択状態 ----
+        // selection が実体。selectedNote は「単一選択時のインスペクタ/中継点追加等の対象」を表す
+        // 後方互換フィールドで、selection.Count==1のときだけselection[0]と一致させる（それ以外はnull）。
+        // 既存コードの大半（RebuildInspector、AddWaypoint、BuildChartInfoText等）は
+        // selectedNoteだけを見ればよいようにこの同期を保つ。
+        private readonly List<Note> selection = new();
         private Note selectedNote;
         private Note pendingSlideStart;
+
+        private void SyncSelectedNoteFromSelection() => selectedNote = selection.Count == 1 ? selection[0] : null;
+
+        private void SetSingleSelection(Note note)
+        {
+            selection.Clear();
+            if (note != null) selection.Add(note);
+            SyncSelectedNoteFromSelection();
+            pendingSlideStart = null;
+            draggingNote = false;
+            resizingNote = null;
+            ClearEventSelection();
+        }
+
+        private void SetMultiSelection(List<Note> notes)
+        {
+            selection.Clear();
+            selection.AddRange(notes);
+            SyncSelectedNoteFromSelection();
+            pendingSlideStart = null;
+            draggingNote = false;
+            resizingNote = null;
+            ClearEventSelection();
+        }
+
+        private void ToggleSelectionMembership(Note note)
+        {
+            if (!selection.Remove(note)) selection.Add(note);
+            SyncSelectedNoteFromSelection();
+            pendingSlideStart = null;
+            ClearEventSelection();
+        }
+
+        private void ClearSelection()
+        {
+            selection.Clear();
+            selectedNote = null;
+        }
 
         // ---- §7.3 イベントレーン（BPM/拍子/ソフラン）の選択状態 ----
         // ノーツとイベントは同時に1つしか選択できない（右パネルのインスペクタを共用するため）。
@@ -112,9 +157,10 @@ namespace Muses.ChartTool
 
         private void SelectEvent(EventKind kind, int index)
         {
-            selectedNote = null;
+            ClearSelection();
             pendingSlideStart = null;
             draggingNote = false;
+            resizingNote = null;
             selectedEventKind = kind;
             selectedEventIndex = index;
         }
@@ -125,10 +171,26 @@ namespace Muses.ChartTool
             selectedEventIndex = -1;
         }
 
+        // ---- §7.4-A/B 複数選択ドラッグ ----
         private bool draggingNote;
         private int dragOriginRawTick;
         private float dragOriginRawCell;
-        private List<Waypoint> dragOriginPoints;
+        private float dragOriginRawLayer;
+        private Dictionary<Note, List<Waypoint>> dragOriginByNote;
+
+        // ---- §7.4-A 矩形選択 ----
+        private bool rectSelecting;
+        private bool rectAdditive;
+        private Vector2 rectStartPos;
+        private Vector2 rectCurrentPos;
+
+        // ---- §7.4-D 端ドラッグでの幅変更（単発ノーツのみ） ----
+        private Note resizingNote;
+        private int resizingEdgeSign; // -1=左端, +1=右端
+        private Waypoint resizeOriginWp;
+
+        // ---- §7.4-C コピー/カット/ペースト（内部クリップボード） ----
+        private readonly List<Note> clipboard = new();
 
         // ---- 配置ツールのゴースト表示（カーソル追従プレビュー） ----
         // シート内でのポインタ位置。範囲外/未取得時はnull（PointerLeaveEventで確実にクリアする。
@@ -213,7 +275,7 @@ namespace Muses.ChartTool
                 chart = loadedChart;
                 songPath = songFilePath;
                 chartPath = path;
-                selectedNote = null;
+                ClearSelection();
                 pendingSlideStart = null;
                 draggingNote = false;
                 dirty = false;
@@ -330,7 +392,7 @@ namespace Muses.ChartTool
         {
             chart = snap.chart;
             header = snap.header;
-            selectedNote = null; // 復元後は参照が切れるため選択解除
+            ClearSelection(); // 復元後は参照が切れるため選択解除
             pendingSlideStart = null;
             draggingNote = false;
             dirty = true;
@@ -373,7 +435,7 @@ namespace Muses.ChartTool
                 chart = loadedChart;
                 undoStack.Clear();
                 redoStack.Clear();
-                selectedNote = null;
+                ClearSelection();
                 pendingSlideStart = null;
                 dirty = true;
                 statusMessage = "自動保存ファイルから復元しました";
@@ -603,7 +665,7 @@ namespace Muses.ChartTool
                     }
                 }
 
-                if (ReferenceEquals(note, selectedNote))
+                if (selection.Contains(note))
                 {
                     var startWp = note.points[0];
                     var endWp = note.points[^1];
@@ -629,6 +691,16 @@ namespace Muses.ChartTool
             }
 
             DrawPlacementGhost(p, L);
+
+            // §7.4-A 矩形選択中のドラッグ矩形
+            if (rectSelecting)
+            {
+                var box = Rect.MinMaxRect(
+                    Mathf.Min(rectStartPos.x, rectCurrentPos.x), Mathf.Min(rectStartPos.y, rectCurrentPos.y),
+                    Mathf.Max(rectStartPos.x, rectCurrentPos.x), Mathf.Max(rectStartPos.y, rectCurrentPos.y));
+                FillRect(p, box, new Color(0.4f, 0.7f, 1f, 0.15f));
+                FillRectOutline(p, box, new Color(0.4f, 0.7f, 1f, 0.8f), 1f);
+            }
         }
 
         // ---------- 配置ツールのゴースト（カーソル追従プレビュー） ----------
@@ -766,6 +838,14 @@ namespace Muses.ChartTool
         private void OnSheetPointerDown(PointerDownEvent evt)
         {
             notesSheet.Focus(); // KeyDown（Deleteでの削除）を受け取れるようにする
+
+            // §7.4-E 右クリック→コンテキストメニュー。UI ToolkitのPointerEventBaseはUnity既定の
+            // マウスボタン番号（0=左,1=右,2=中）を使う（W3C PointerEventのDOM番号とは異なる）。
+            if (evt.button == 1)
+            {
+                OnSheetRightClick(evt);
+                return;
+            }
             if (evt.button != 0) return;
 
             var L = CurrentSheetLayout();
@@ -803,8 +883,7 @@ namespace Muses.ChartTool
                     };
                     PushUndo(coalesce: false);
                     chart.notes.Add(note);
-                    selectedNote = note;
-                    ClearEventSelection();
+                    SetSingleSelection(note);
                     dirty = true;
                     break;
                 }
@@ -824,13 +903,13 @@ namespace Muses.ChartTool
                         int startTick = pendingSlideStart.points[0].tick;
                         if (tick > startTick)
                         {
-                            pendingSlideStart.points.Add(NewWaypoint(tick, layerF, cellF, defaultWidthCells));
+                            var completed = pendingSlideStart;
+                            completed.points.Add(NewWaypoint(tick, layerF, cellF, defaultWidthCells));
                             PushUndo(coalesce: false);
-                            chart.notes.Add(pendingSlideStart);
-                            selectedNote = pendingSlideStart;
-                            ClearEventSelection();
-                            dirty = true;
+                            chart.notes.Add(completed);
                             pendingSlideStart = null;
+                            SetSingleSelection(completed);
+                            dirty = true;
                             statusMessage = "Slideを配置しました";
                         }
                         else
@@ -866,7 +945,8 @@ namespace Muses.ChartTool
                     {
                         PushUndo(coalesce: false);
                         chart.notes.Remove(hit);
-                        if (ReferenceEquals(selectedNote, hit)) selectedNote = null;
+                        selection.Remove(hit);
+                        SyncSelectedNoteFromSelection();
                         dirty = true;
                     }
                     break;
@@ -875,15 +955,56 @@ namespace Muses.ChartTool
                 default:
                 {
                     var hit = HitTestNote(L, pos);
-                    selectedNote = hit;
-                    ClearEventSelection();
+
                     if (hit != null)
                     {
-                        PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
-                        draggingNote = true;
-                        dragOriginRawTick = rawTick;
-                        dragOriginRawCell = rawCell;
-                        dragOriginPoints = new List<Waypoint>(hit.points);
+                        // §7.4-D 端ドラッグでの幅変更（単発ノーツのみ、Shift併用時は選択トグル優先）
+                        int edgeSign = EdgeGrabSign(L, hit, pos);
+                        if (edgeSign != 0 && !evt.shiftKey)
+                        {
+                            SetSingleSelection(hit);
+                            PushUndo(coalesce: false);
+                            resizingNote = hit;
+                            resizingEdgeSign = edgeSign;
+                            resizeOriginWp = hit.points[0];
+                            notesSheet.CapturePointer(evt.pointerId);
+                            evt.StopPropagation();
+                            return;
+                        }
+
+                        if (evt.shiftKey)
+                        {
+                            ToggleSelectionMembership(hit);
+                        }
+                        else if (!selection.Contains(hit))
+                        {
+                            // 未選択のノーツをクリック→単一選択に切り替える。
+                            // 既に選択済みグループの一員なら選択を維持し、グループごとドラッグできるようにする。
+                            SetSingleSelection(hit);
+                        }
+
+                        if (selection.Contains(hit))
+                        {
+                            PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
+                            draggingNote = true;
+                            dragOriginRawTick = rawTick;
+                            dragOriginRawCell = rawCell;
+                            dragOriginRawLayer = layerF;
+                            dragOriginByNote = new Dictionary<Note, List<Waypoint>>();
+                            foreach (var n in selection)
+                                dragOriginByNote[n] = new List<Waypoint>(n.points);
+                            notesSheet.CapturePointer(evt.pointerId);
+                        }
+                    }
+                    else
+                    {
+                        // §7.4-A 空白ドラッグ→矩形選択。Shiftなしなら既存選択をクリアしてから開始する。
+                        if (!evt.shiftKey) ClearSelection();
+                        ClearEventSelection();
+                        rectSelecting = true;
+                        rectAdditive = evt.shiftKey;
+                        rectStartPos = pos;
+                        rectCurrentPos = pos;
                         notesSheet.CapturePointer(evt.pointerId);
                     }
                     break;
@@ -892,29 +1013,164 @@ namespace Muses.ChartTool
             evt.StopPropagation();
         }
 
+        /// <summary>
+        /// §7.4-E コンテキストメニュー。右クリック対象が未選択なら単一選択に切り替えてから開く
+        /// （既存の複数選択中に右クリックした場合はそのグループを対象にする）。
+        /// </summary>
+        private void OnSheetRightClick(PointerDownEvent evt)
+        {
+            var L = CurrentSheetLayout();
+            var pos = (Vector2)evt.localPosition;
+            if (L.rightMargin.Contains(pos)) { evt.StopPropagation(); return; }
+
+            var hit = HitTestNote(L, pos);
+            if (hit == null) { evt.StopPropagation(); return; }
+            if (!selection.Contains(hit)) SetSingleSelection(hit);
+
+            var menu = new GenericDropdownMenu();
+            int count = selection.Count;
+            menu.AddItem(count > 1 ? $"選択した{count}件を削除" : "このノーツを削除", false, DeleteSelection);
+
+            if (count == 1 && hit.points.Count == 1)
+            {
+                menu.AddSeparator("");
+                if (hit.kind != NoteKind.Tap) menu.AddItem("Tapに変更", false, () => ChangeNoteKind(hit, NoteKind.Tap));
+                if (hit.kind != NoteKind.ExTap) menu.AddItem("Ex Tapに変更", false, () => ChangeNoteKind(hit, NoteKind.ExTap));
+                if (hit.kind != NoteKind.Flick) menu.AddItem("Flickに変更", false, () => ChangeNoteKind(hit, NoteKind.Flick));
+            }
+
+            if (count == 1 && hit.kind == NoteKind.Slide)
+            {
+                int snapTicks = SnapTicks;
+                int tick = SnapTickTo(Mathf.Max(0, L.YToTick(pos.y)), snapTicks);
+                if (tick > hit.points[0].tick && tick < hit.points[^1].tick)
+                {
+                    menu.AddSeparator("");
+                    menu.AddItem("ここに中継点を追加", false, () => InsertWaypointInto(hit, L, pos, tick));
+                }
+            }
+
+            var worldPos = notesSheet.LocalToWorld(pos);
+            menu.DropDown(new Rect(worldPos, Vector2.zero), notesSheet, DropdownMenuSizeMode.Auto);
+            evt.StopPropagation();
+        }
+
+        private void InsertWaypointInto(Note note, SheetLayout L, Vector2 pos, int tick)
+        {
+            var (layerF, rawCell) = L.PaneAt(pos.x);
+            float cellF = SnapCellTo(rawCell, 0.5f);
+            int insertAt = note.points.FindIndex(pt => pt.tick > tick);
+            if (insertAt < 0) insertAt = note.points.Count;
+            if (insertAt <= 0 || insertAt >= note.points.Count) return;
+            float width = InterpAtTick(note, tick).width;
+            PushUndo(coalesce: false);
+            note.points.Insert(insertAt, NewWaypoint(tick, layerF, cellF, width));
+            dirty = true;
+        }
+
+        private void ChangeNoteKind(Note note, NoteKind kind)
+        {
+            if (note.points.Count != 1 || note.kind == kind) return;
+            PushUndo(coalesce: false);
+            note.kind = kind;
+            dirty = true;
+        }
+
+        /// <summary>単発ノーツの左右端 ±4px を掴んでいるか。-1=左端, 0=対象外, +1=右端。</summary>
+        private static int EdgeGrabSign(SheetLayout L, Note note, Vector2 pos)
+        {
+            if (note.points.Count != 1) return 0;
+            var wp = note.points[0];
+            float x0 = L.CombinedX(wp.layerF, wp.cellF);
+            float x1 = L.CombinedX(wp.layerF, wp.cellF + wp.width);
+            float left = Mathf.Min(x0, x1), right = Mathf.Max(x0, x1);
+            const float grab = 4f;
+            if (Mathf.Abs(pos.x - left) <= grab) return -1;
+            if (Mathf.Abs(pos.x - right) <= grab) return 1;
+            return 0;
+        }
+
+        private List<Note> HitTestNotesInRect(SheetLayout L, Rect rect)
+        {
+            var result = new List<Note>();
+            foreach (var note in chart.notes)
+            {
+                foreach (var wp in note.points)
+                {
+                    float y = L.TickToY(wp.tick);
+                    float x0 = L.CombinedX(wp.layerF, wp.cellF);
+                    float x1 = L.CombinedX(wp.layerF, wp.cellF + wp.width);
+                    var wpRect = Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4f, Mathf.Max(x0, x1), y + 4f);
+                    if (rect.Overlaps(wpRect))
+                    {
+                        result.Add(note);
+                        break;
+                    }
+                }
+            }
+            return result;
+        }
+
         private void OnSheetPointerMove(PointerMoveEvent evt)
         {
             sheetHoverPos = (Vector2)evt.localPosition;
-
-            if (!draggingNote || selectedNote == null) return;
-
-            var L = CurrentSheetLayout();
             var pos = (Vector2)evt.localPosition;
-            int snapTicks = SnapTicks;
+            var L = CurrentSheetLayout();
 
+            if (rectSelecting)
+            {
+                rectCurrentPos = pos;
+                evt.StopPropagation();
+                return;
+            }
+
+            if (resizingNote != null)
+            {
+                var (_, rawCellR) = L.PaneAt(pos.x);
+                float cellF = SnapCellTo(rawCellR, 1f);
+                var wp = resizeOriginWp;
+                if (resizingEdgeSign > 0)
+                {
+                    wp.width = Mathf.Max(0.1f, cellF - wp.cellF);
+                }
+                else
+                {
+                    float rightEdge = resizeOriginWp.cellF + resizeOriginWp.width;
+                    float newCellF = Mathf.Min(cellF, rightEdge - 0.1f);
+                    wp.cellF = newCellF;
+                    wp.width = Mathf.Max(0.1f, rightEdge - newCellF);
+                }
+                resizingNote.points[0] = wp;
+                dirty = true;
+                evt.StopPropagation();
+                return;
+            }
+
+            if (!draggingNote || selection.Count == 0 || dragOriginByNote == null) return;
+
+            int snapTicks = SnapTicks;
             int rawTick = L.YToTick(pos.y);
-            var (_, rawCell) = L.PaneAt(pos.x);
+            var (currentLayerF, rawCell) = L.PaneAt(pos.x);
 
             int deltaTick = Mathf.RoundToInt((float)(rawTick - dragOriginRawTick) / snapTicks) * snapTicks;
-            float cellStep = selectedNote.kind == NoteKind.Slide ? 0.5f : 1f;
+            // 選択中にSlideが1つでもあれば0.5セル刻み、単発ノーツのみなら1セル刻み
+            float cellStep = selection.Exists(n => n.kind == NoteKind.Slide) ? 0.5f : 1f;
             float deltaCell = SnapCellTo(rawCell - dragOriginRawCell, cellStep);
+            // §7.4-B: ペインをまたいだら層(layerF)も更新する（従来はcellFの差分だけを見ており、
+            // Ground⇔Skyへドラッグしても層が変わらないバグがあった）。
+            float deltaLayer = currentLayerF - dragOriginRawLayer;
 
-            for (int i = 0; i < selectedNote.points.Count; i++)
+            foreach (var note in selection)
             {
-                var wp = dragOriginPoints[i];
-                wp.tick = Mathf.Max(0, wp.tick + deltaTick);
-                wp.cellF += deltaCell;
-                selectedNote.points[i] = wp;
+                if (!dragOriginByNote.TryGetValue(note, out var origin)) continue;
+                for (int i = 0; i < note.points.Count; i++)
+                {
+                    var wp = origin[i];
+                    wp.tick = Mathf.Max(0, wp.tick + deltaTick);
+                    wp.cellF += deltaCell;
+                    wp.layerF = Mathf.Clamp01(wp.layerF + deltaLayer);
+                    note.points[i] = wp;
+                }
             }
             dirty = true;
             evt.StopPropagation();
@@ -922,8 +1178,42 @@ namespace Muses.ChartTool
 
         private void OnSheetPointerUp(PointerUpEvent evt)
         {
+            if (rectSelecting)
+            {
+                rectSelecting = false;
+                var L = CurrentSheetLayout();
+                var rect = Rect.MinMaxRect(
+                    Mathf.Min(rectStartPos.x, rectCurrentPos.x), Mathf.Min(rectStartPos.y, rectCurrentPos.y),
+                    Mathf.Max(rectStartPos.x, rectCurrentPos.x), Mathf.Max(rectStartPos.y, rectCurrentPos.y));
+                // 実質移動なしのクリックは矩形選択として扱わない（既にPointerDownで選択解除済み）
+                if (rect.width > 2f || rect.height > 2f)
+                {
+                    var hits = HitTestNotesInRect(L, rect);
+                    if (rectAdditive)
+                    {
+                        foreach (var n in hits)
+                            if (!selection.Contains(n)) selection.Add(n);
+                        SyncSelectedNoteFromSelection();
+                    }
+                    else
+                    {
+                        SetMultiSelection(hits);
+                    }
+                }
+                if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
+                return;
+            }
+
+            if (resizingNote != null)
+            {
+                resizingNote = null;
+                if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
+                return;
+            }
+
             if (!draggingNote) return;
             draggingNote = false;
+            dragOriginByNote = null;
             if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
         }
 
@@ -948,14 +1238,33 @@ namespace Muses.ChartTool
 
         private void OnSheetKeyDown(KeyDownEvent evt)
         {
+            // §7.4-C コピー/カット/ペースト（OS クリップボード連携はせず内部クリップボードのみ）
+            bool cmdOrCtrl = evt.commandKey || evt.ctrlKey;
+            if (cmdOrCtrl && evt.keyCode == KeyCode.C && selection.Count > 0)
+            {
+                CopySelectionToClipboard();
+                evt.StopPropagation();
+                return;
+            }
+            if (cmdOrCtrl && evt.keyCode == KeyCode.X && selection.Count > 0)
+            {
+                CopySelectionToClipboard();
+                DeleteSelection();
+                evt.StopPropagation();
+                return;
+            }
+            if (cmdOrCtrl && evt.keyCode == KeyCode.V && clipboard.Count > 0)
+            {
+                PasteClipboard();
+                evt.StopPropagation();
+                return;
+            }
+
             if (evt.keyCode != KeyCode.Delete && evt.keyCode != KeyCode.Backspace) return;
 
-            if (selectedNote != null)
+            if (selection.Count > 0)
             {
-                PushUndo(coalesce: false);
-                chart.notes.Remove(selectedNote);
-                selectedNote = null;
-                dirty = true;
+                DeleteSelection();
                 evt.StopPropagation();
                 return;
             }
@@ -965,6 +1274,60 @@ namespace Muses.ChartTool
                 DeleteSelectedEvent();
                 evt.StopPropagation();
             }
+        }
+
+        // ---------- §7.4-A/C 選択の削除・複製 ----------
+
+        private static Note CloneNote(Note n) => new()
+        {
+            kind = n.kind,
+            scrollGroup = n.scrollGroup,
+            points = new List<Waypoint>(n.points),
+            comboTimes = new List<float>(n.comboTimes),
+        };
+
+        private void DeleteSelection()
+        {
+            if (selection.Count == 0) return;
+            PushUndo(coalesce: false);
+            foreach (var n in selection) chart.notes.Remove(n);
+            ClearSelection();
+            dirty = true;
+        }
+
+        private void CopySelectionToClipboard()
+        {
+            clipboard.Clear();
+            foreach (var n in selection) clipboard.Add(CloneNote(n));
+            statusMessage = $"{clipboard.Count}件コピーしました";
+        }
+
+        /// <summary>貼り付け基準は判定線位置(=scrollTick、TickToY(scrollTick)==judgeLineYより)。
+        /// クリップボード内の最も早いノーツの開始tickをそこへ揃え、ノーツ間の相対位置は保つ。</summary>
+        private void PasteClipboard()
+        {
+            if (clipboard.Count == 0) return;
+            int minTick = int.MaxValue;
+            foreach (var n in clipboard) minTick = Mathf.Min(minTick, n.points[0].tick);
+            int delta = scrollTick - minTick;
+
+            PushUndo(coalesce: false);
+            var pasted = new List<Note>();
+            foreach (var src in clipboard)
+            {
+                var n = CloneNote(src);
+                for (int i = 0; i < n.points.Count; i++)
+                {
+                    var wp = n.points[i];
+                    wp.tick = Mathf.Max(0, wp.tick + delta);
+                    n.points[i] = wp;
+                }
+                chart.notes.Add(n);
+                pasted.Add(n);
+            }
+            SetMultiSelection(pasted);
+            dirty = true;
+            statusMessage = $"{pasted.Count}件貼り付けました";
         }
 
         // ---------- §7.3 イベントレーンの追加/削除 ----------

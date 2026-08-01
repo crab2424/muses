@@ -88,6 +88,7 @@ namespace Muses.ChartTool
         private VisualElement inspectorHost;
         private Note inspectorNote;
         private int inspectorPointCount = -1;
+        private int inspectorSelectionCount = -1; // §7.4-A 複数選択の件数変化を検知する
         private readonly List<Action> inspectorRefreshers = new();
 
         // §7.3: イベント選択時もインスペクタを共用するため、直近に組んだ選択状態を別途追跡する
@@ -164,10 +165,24 @@ namespace Muses.ChartTool
                 if (redoStack.Count > 0) menu.AddItem("やり直す", false, Redo);
                 else menu.AddDisabledItem("やり直す", false);
                 menu.AddSeparator("");
-                if (selectedNote != null)
-                    menu.AddItem("選択中のノーツを削除", false, DeleteSelectedNote);
+                if (selection.Count > 0)
+                    menu.AddItem(selection.Count > 1 ? $"選択した{selection.Count}件を削除" : "選択中のノーツを削除", false, DeleteSelection);
                 else
                     menu.AddDisabledItem("選択中のノーツを削除", false);
+                if (selection.Count > 0)
+                {
+                    menu.AddItem("コピー", false, CopySelectionToClipboard);
+                    menu.AddItem("切り取り", false, () => { CopySelectionToClipboard(); DeleteSelection(); });
+                }
+                else
+                {
+                    menu.AddDisabledItem("コピー", false);
+                    menu.AddDisabledItem("切り取り", false);
+                }
+                if (clipboard.Count > 0)
+                    menu.AddItem("貼り付け", false, PasteClipboard);
+                else
+                    menu.AddDisabledItem("貼り付け", false);
             });
 
             AddMenu(bar, "表示", menu =>
@@ -209,6 +224,9 @@ namespace Muses.ChartTool
                 menu.AddItem("ショートカット: Cmd/Ctrl+Z = 元に戻す", false, null);
                 menu.AddItem("ショートカット: Cmd/Ctrl+Shift+Z / Y = やり直す", false, null);
                 menu.AddItem("ショートカット: Delete = 選択ノーツを削除", false, null);
+                menu.AddItem("ショートカット: Cmd/Ctrl+C/X/V = コピー/切り取り/貼り付け", false, null);
+                menu.AddItem("Shift+ドラッグ = 追加選択 / Shift+クリック = 選択トグル", false, null);
+                menu.AddItem("右クリック = コンテキストメニュー", false, null);
                 menu.AddItem("ホイール = スクロール / Ctrl+ホイール = 拡大縮小", false, null);
                 menu.AddSeparator("");
                 menu.AddItem($"muses 譜面エディタ {Application.version}", false, null);
@@ -619,6 +637,12 @@ namespace Muses.ChartTool
                 return;
             }
 
+            if (selection.Count > 1)
+            {
+                RebuildMultiSelectInspector();
+                return;
+            }
+
             if (selectedNote == null)
             {
                 var empty = new Label("ノーツを選択してください");
@@ -720,9 +744,50 @@ namespace Muses.ChartTool
                 }
             }
 
-            var deleteBtn = new Button(DeleteSelectedNote) { text = "このノーツを削除" };
+            var deleteBtn = new Button(DeleteSelection) { text = "このノーツを削除" };
             deleteBtn.AddToClassList("tb-btn");
             inspectorHost.Add(deleteBtn);
+        }
+
+        /// <summary>
+        /// §7.4-A: 複数選択時のインスペクタ。個別編集はせず一括操作（削除／単発ノーツのみ種別変更）に留める
+        /// （editor-ui-redesign.md §7.4-Aどおり）。
+        /// </summary>
+        private void RebuildMultiSelectInspector()
+        {
+            var countLabel = new Label($"{selection.Count}件選択");
+            countLabel.AddToClassList("prop-note");
+            inspectorHost.Add(countLabel);
+
+            var deleteBtn = new Button(DeleteSelection) { text = $"選択した{selection.Count}件を削除" };
+            deleteBtn.AddToClassList("tb-btn");
+            inspectorHost.Add(deleteBtn);
+
+            bool allSinglePoint = selection.TrueForAll(n => n.points.Count == 1);
+            if (allSinglePoint)
+            {
+                var kindDropdown = new DropdownField { choices = new List<string> { "Tap", "Ex Tap", "Flick" }, index = 0 };
+                kindDropdown.RegisterValueChangedCallback(evt =>
+                {
+                    if (suppressUiCallbacks) return;
+                    NoteKind newKind = evt.newValue switch
+                    {
+                        "Tap" => NoteKind.Tap,
+                        "Ex Tap" => NoteKind.ExTap,
+                        _ => NoteKind.Flick,
+                    };
+                    PushUndo(coalesce: false);
+                    foreach (var n in selection) n.kind = newKind;
+                    dirty = true;
+                });
+                MakePropRow(inspectorHost, "種別に一括変更", kindDropdown);
+            }
+            else
+            {
+                var note = new Label("種別の一括変更はTap/Ex Tap/Flickのみ対応（Slideを含む選択では非表示）");
+                note.AddToClassList("prop-note");
+                inspectorHost.Add(note);
+            }
         }
 
         /// <summary>
@@ -1107,14 +1172,18 @@ namespace Muses.ChartTool
 
             // 選択が変わった / 中継点が増減したときだけインスペクタを組み直し、
             // それ以外の間はキャンバス上のドラッグ結果を各フィールドへ反映するだけにする。
+            // selectedNoteは複数選択中は常にnullなので、selection.Countも見ないと
+            // 「1件選択→矩形選択で別の2件」のように中身が変わっても再構築されない場合がある。
             if (!ReferenceEquals(inspectorNote, selectedNote)
                 || (selectedNote != null && inspectorPointCount != selectedNote.points.Count)
-                || inspectorEventKind != selectedEventKind || inspectorEventIndex != selectedEventIndex)
+                || inspectorEventKind != selectedEventKind || inspectorEventIndex != selectedEventIndex
+                || inspectorSelectionCount != selection.Count)
             {
                 inspectorNote = selectedNote;
                 inspectorPointCount = selectedNote?.points.Count ?? 0;
                 inspectorEventKind = selectedEventKind;
                 inspectorEventIndex = selectedEventIndex;
+                inspectorSelectionCount = selection.Count;
                 RebuildInspector();
             }
             else if (slowTick && foldInspector.value)
@@ -1406,22 +1475,13 @@ namespace Muses.ChartTool
         {
             PushUndo(coalesce: false);
             chart = new ChartData();
-            selectedNote = null;
+            ClearSelection();
             pendingSlideStart = null;
             draggingNote = false;
             dirty = true;
             uiNeedsPropertyRefresh = true;
             statusMessage = "新規譜面を作成しました";
             MarkPreviewDirty();
-        }
-
-        private void DeleteSelectedNote()
-        {
-            if (selectedNote == null) return;
-            PushUndo(coalesce: false);
-            chart.notes.Remove(selectedNote);
-            selectedNote = null;
-            dirty = true;
         }
 
         private void MarkPreviewDirty()
