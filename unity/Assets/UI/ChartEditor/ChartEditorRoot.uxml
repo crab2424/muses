@@ -1,4 +1,78 @@
 <ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="False">
     <Style src="ChartEditorRoot.uss" />
-    <ui:VisualElement name="chart-editor-root" picking-mode="Ignore" style="flex-grow: 1;" />
+
+    <!--
+        editor-ui-redesign.md §1 の骨格 A〜D。上から順に
+        メニューバー / ツールバー / メイン行(タブ + 右パネル) / ステータスバー の4バンド。
+        各バンドの「中身」はChartEditorApp.UI.csからコードで流し込む(ツールやメニュー項目は
+        列挙型から生成するため)。ここに書くのは器と、器の入れ子関係だけ。
+    -->
+    <ui:VisualElement name="chart-editor-root" class="root">
+
+        <!-- A: メニューバー(§2.1) -->
+        <ui:VisualElement name="menu-bar" class="band menu-bar" />
+
+        <!-- A: ツールバー(§2.2) -->
+        <ui:VisualElement name="toolbar" class="band toolbar">
+            <ui:VisualElement name="toolbar-file" class="tool-group" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:VisualElement name="toolbar-edit" class="tool-group" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:VisualElement name="toolbar-tools" class="tool-group" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:VisualElement name="toolbar-width" class="tool-group" />
+            <ui:VisualElement class="spacer" />
+            <ui:Label name="toolbar-status" class="status-text" />
+            <ui:Label name="toolbar-dirty" class="dirty-badge" />
+        </ui:VisualElement>
+
+        <!-- B/D: メイン行 = タブ付きキャンバス + 右パネル -->
+        <ui:VisualElement name="main-row" class="main-row">
+            <!-- B: メインキャンバスのタブ(§2.3)。TabView本体はコードで生成して差し込む -->
+            <ui:VisualElement name="tabs-host" class="tabs-host" />
+
+            <!-- D: 右パネル(§2.5)。折りたたみセクションで情報を集約する -->
+            <ui:VisualElement name="right-panel" class="right-panel">
+                <ui:ScrollView name="right-scroll" class="right-scroll">
+                    <ui:Foldout text="情報" name="fold-info" value="true" class="section">
+                        <ui:VisualElement name="info-host" />
+                    </ui:Foldout>
+                    <ui:Foldout text="音源" name="fold-audio" value="false" class="section">
+                        <ui:VisualElement name="audio-host" />
+                    </ui:Foldout>
+                    <ui:Foldout text="表示設定" name="fold-view" value="false" class="section">
+                        <ui:VisualElement name="view-host" />
+                    </ui:Foldout>
+                    <ui:Foldout text="統計" name="fold-stats" value="false" class="section">
+                        <ui:Label name="stats-text" class="stats-text" />
+                    </ui:Foldout>
+                    <ui:Foldout text="インスペクタ" name="fold-inspector" value="true" class="section">
+                        <ui:VisualElement name="inspector-host" class="inspector-host" />
+                    </ui:Foldout>
+                    <ui:Foldout text="検証結果" name="fold-validation" value="false" class="section">
+                        <ui:VisualElement name="validation-host" />
+                    </ui:Foldout>
+                </ui:ScrollView>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- C: ステータスバー(§2.6)。再生トランスポートをここへ移設した -->
+        <ui:VisualElement name="status-bar" class="band status-bar">
+            <ui:VisualElement name="status-transport" class="tool-group" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:VisualElement name="status-snap" class="tool-group" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:VisualElement name="status-zoom" class="tool-group" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:VisualElement name="status-scrub" class="status-scrub" />
+            <ui:Label name="status-time" class="mono" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:Label name="status-chartinfo" class="mono" />
+            <ui:VisualElement class="tool-sep" />
+            <ui:Button name="status-validation" class="link-btn" />
+        </ui:VisualElement>
+
+        <!-- モーダル類(ファイル参照・自動保存の復元確認)の置き場 -->
+        <ui:VisualElement name="overlay-layer" class="overlay-layer" picking-mode="Ignore" />
+    </ui:VisualElement>
 </ui:UXML>

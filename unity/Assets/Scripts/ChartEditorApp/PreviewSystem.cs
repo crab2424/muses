@@ -51,10 +51,6 @@ namespace Muses.ChartTool
         private SongMeta song = new();
         private float lastSongTime;
         private bool autoplay;
-        private bool sePreview = true;
-        private bool metronome;
-        private bool expanded = true;
-        private float rateSlider = 1f;
         private string lastLoadedAudioPath;
         private int seCoroutineToken;
 
@@ -96,6 +92,9 @@ namespace Muses.ChartTool
             displayCam.orthographicSize = 1f;
             displayCam.nearClipPlane = 0.01f;
             displayCam.farClipPlane = 1f;
+            // AudioListenerがシーンに1つも無いと、下で作る musicSource/seSource の音が一切鳴らない
+            // （「There are no audio listeners in the scene」の警告の実害はこれ）。
+            displayCamGo.AddComponent<AudioListener>();
 
             var stageGo = new GameObject("PreviewStage") { hideFlags = HideFlags.DontSave };
             stageGo.transform.SetParent(rigRoot.transform, false);
@@ -203,6 +202,55 @@ namespace Muses.ChartTool
         public float SongTime => clock?.SongTime ?? 0f;
         public bool IsPlaying => clock?.Running ?? false;
 
+        // ---------- UI(ChartEditorApp.UI.cs)から触る状態 ----------
+        // 以前はこのクラス自身がIMGUIでトランスポートを描いていたが、UI Toolkit移行にあたって
+        // 「状態を持つ・描かない」に整理した（editor-ui-redesign.md §1-C: トランスポートは
+        // 最下部ステータスバーへ移設）。
+
+        /// <summary>プレビュータブが表示されている間だけtrue。falseの間はRender()を呼ばない（§2.2の負荷対策）。</summary>
+        public bool RenderEnabled { get; set; }
+
+        public bool SePreview { get; set; } = true;
+        public bool Metronome { get; set; }
+        public bool Autoplay => autoplay;
+        public RenderTexture Texture => rt;
+
+        private float rate = 1f;
+        public float Rate
+        {
+            get => rate;
+            set
+            {
+                if (Mathf.Approximately(rate, value)) return;
+                rate = value;
+                clock.SetRate(rate);
+            }
+        }
+
+        /// <summary>オートプレイ中のスコア表示（非オートプレイ時はnull）。</summary>
+        public string AutoplaySummary
+        {
+            get
+            {
+                if (!autoplay || judge == null) return null;
+                var s = judge.Score;
+                int totalCombo = 0;
+                foreach (var n in chart.notes) totalCombo += n.kind == NoteKind.Slide ? n.comboTimes.Count : 1;
+                return $"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}  combo{s.maxCombo}  score{s.ComputeScore(totalCombo)}";
+            }
+        }
+
+        /// <summary>譜面の最後のノーツが終わる時刻(秒)。シークバーの上限に使う。</summary>
+        public float ChartEndSec
+        {
+            get
+            {
+                float end = 0f;
+                foreach (var n in chart.notes) end = Mathf.Max(end, ChartMath.NoteEnd(n));
+                return end;
+            }
+        }
+
         // ---------- 毎フレーム駆動 ----------
 
         public void Tick()
@@ -220,8 +268,8 @@ namespace Muses.ChartTool
                     judge.Update(cur, contacts);
                 }
 
-                if (sePreview) PlayNoteSe(prev, cur);
-                if (metronome) TickMetronome(prev, cur);
+                if (SePreview) PlayNoteSe(prev, cur);
+                if (Metronome) TickMetronome(prev, cur);
 
                 MarkDirty();
             }
@@ -259,7 +307,7 @@ namespace Muses.ChartTool
 
         private void MaybeRender()
         {
-            if (!expanded || cam == null || rt == null) return;
+            if (!RenderEnabled || cam == null || rt == null) return;
             bool shouldRender = clock.Running
                 ? Time.realtimeSinceStartup - lastRenderRealtime >= RenderIntervalSec
                 : sceneDirty;
@@ -293,90 +341,31 @@ namespace Muses.ChartTool
             MarkDirty();
         }
 
-        // ---------- 描画 ----------
+        // ---------- 描画先 ----------
 
-        public void Draw(Rect rect)
+        /// <summary>
+        /// プレビュータブの表示サイズに合わせてRenderTextureを張り替える。UI Toolkit側は
+        /// 戻り値を <c>style.backgroundImage</c> に割り当てる（editor-ui-redesign.md §6 の
+        /// 「RenderTexture埋め込みはImage要素のbackgroundImageでそのまま置き換えられる」）。
+        /// </summary>
+        public RenderTexture EnsureRenderTexture(int width, int height)
         {
-            const float headerH = 22f;
-            var header = new Rect(rect.x, rect.y, rect.width, headerH);
-            GUI.Box(header, "");
-            if (GUI.Button(new Rect(header.x + 2, header.y + 1, 20, headerH - 2), expanded ? "▼" : "▶"))
-                expanded = !expanded;
-            GUI.Label(new Rect(header.x + 26, header.y + 2, rect.width - 30, headerH - 2), "3Dプレビュー");
-
-            if (!expanded)
-            {
-                cam.targetTexture = null; // 畳んでいる間は描画対象を持たせない（§2.2: Render()も呼ばない）
-                return;
-            }
-
-            var body = new Rect(rect.x, header.yMax, rect.width, rect.height - headerH);
-            const float transportH = 76f;
-            var imageRect = new Rect(body.x, body.y, body.width, Mathf.Max(0, body.height - transportH));
-            var transportRect = new Rect(body.x, imageRect.yMax, body.width, transportH);
-
-            EnsureRenderTexture(imageRect);
-            if (rt != null) GUI.DrawTexture(imageRect, rt, ScaleMode.ScaleToFit);
-
-            DrawTransport(transportRect);
-        }
-
-        private void EnsureRenderTexture(Rect imageRect)
-        {
-            int w = Mathf.Clamp(Mathf.RoundToInt(imageRect.width), 16, 512);
-            int h = Mathf.Clamp(Mathf.RoundToInt(imageRect.height), 16, 384);
-            if (rt != null && w == rtW && h == rtH) return;
+            int w = Mathf.Clamp(width, 16, 1920);
+            int h = Mathf.Clamp(height, 16, 1080);
+            if (rt != null && w == rtW && h == rtH) return rt;
 
             if (rt != null) rt.Release();
             rt = new RenderTexture(w, h, 16) { name = "ChartEditorPreview" };
             rtW = w; rtH = h;
             MarkDirty();
+            return rt;
         }
 
-        private void DrawTransport(Rect rect)
+        /// <summary>プレビュータブから離れたときに呼ぶ。カメラに描画対象を持たせない（§2.2）。</summary>
+        public void DetachTexture()
         {
-            GUILayout.BeginArea(rect);
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button(clock.Running ? "⏸" : "▶", GUILayout.Width(32))) TogglePlay();
-            if (GUILayout.Button("■", GUILayout.Width(28))) { Pause(); Seek(0f); }
-            GUILayout.Label($"{clock.SongTime:0.00}s", GUILayout.Width(56));
-
-            GUILayout.Label("速度", GUILayout.Width(30));
-            float newRate = GUILayout.HorizontalSlider(rateSlider, 0.25f, 2f, GUILayout.Width(80));
-            if (!Mathf.Approximately(newRate, rateSlider))
-            {
-                rateSlider = newRate;
-                clock.SetRate(rateSlider);
-            }
-            GUILayout.Label($"{rateSlider:0.00}x", GUILayout.Width(36));
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            float chartEnd = 0f;
-            foreach (var n in chart.notes) chartEnd = Mathf.Max(chartEnd, ChartMath.NoteEnd(n));
-            float scrubMax = Mathf.Max(10f, chartEnd + 2f);
-            float scrub = GUILayout.HorizontalSlider(clock.SongTime, 0f, scrubMax);
-            if (Mathf.Abs(scrub - clock.SongTime) > 0.05f) Seek(scrub);
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            bool newAutoplay = GUILayout.Toggle(autoplay, "オートプレイ", GUILayout.Width(90));
-            if (newAutoplay != autoplay) SetAutoplay(newAutoplay);
-            sePreview = GUILayout.Toggle(sePreview, "SE", GUILayout.Width(40));
-            metronome = GUILayout.Toggle(metronome, "メトロノーム", GUILayout.Width(100));
-            GUILayout.EndHorizontal();
-
-            if (autoplay && judge != null)
-            {
-                var s = judge.Score;
-                int totalCombo = 0;
-                foreach (var n in chart.notes) totalCombo += n.kind == NoteKind.Slide ? n.comboTimes.Count : 1;
-                int score = s.ComputeScore(totalCombo);
-                GUILayout.Label($"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}  combo{s.maxCombo}  score{score}");
-            }
-
-            GUILayout.EndArea();
+            RenderEnabled = false;
+            if (cam != null) cam.targetTexture = null;
         }
 
         // ---------- 破棄 ----------

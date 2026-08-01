@@ -1,31 +1,40 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
-using System.Linq;
 using UnityEngine;
+using UnityEngine.UIElements;
 using Muses.Chart;
 
 namespace Muses.ChartTool
 {
     /// <summary>
-    /// editor-spec.md §2,3。譜面エディタのノーツシート（主キャンバス）・ツールパレット・インスペクタ。
+    /// editor-spec.md §2,3。譜面エディタのデータモデルとノーツシート（主キャンバス）の描画・入力。
     ///
     /// **Unity Editor拡張ではなく、単独ビルドとして動くランタイムツール**として実装している
     /// （2026-07-31、ユーザーとの相談で方針転換。旧実装は Assets/Editor/ChartEditorWindow.cs
-    /// だったが、Editorフォルダはプレイヤービルドから除外されるため、この MonoBehaviour + OnGUI
-    /// 方式に書き直した）。空のGameObjectにアタッチしたシーンを作り、そのシーンだけをビルドする
-    /// ことでゲーム本体とは別の実行ファイルになる。
+    /// だったが、Editorフォルダはプレイヤービルドから除外されるため書き直した）。空のGameObjectに
+    /// アタッチしたシーンを作り、そのシーンだけをビルドすることでゲーム本体とは別の実行ファイルになる。
+    ///
+    /// 画面まわりは 2026-08-01 に OnGUI から **UI Toolkit** へ全面移行した
+    /// （editor-ui-redesign.md §4.1）。バンド構成・メニュー・タブ・右パネル・ステータスバーは
+    /// <c>ChartEditorApp.UI.cs</c>（同じクラスの分割定義）と Assets/UI/ChartEditor/ 配下の
+    /// .uxml/.uss にある。このファイルが持つのはデータモデルと、ノーツシートの描画
+    /// （<see cref="GenerateNotesSheet"/>）・入力処理。
+    ///
+    /// なお §6 は「ノーツシートはまず IMGUIContainer で包み、後から generateVisualContent へ」
+    /// という段階移行を想定していたが、**IMGUIContainer はランタイムパネルでは使えない**
+    /// （"IMGUIContainer cannot be used in a runtime panel"）ため、この案は成立しなかった。
+    /// スタンドアロン実行が前提である以上、painter2D への書き直しは選択ではなく必須。
     ///
     /// §5（プレビュー: 音源同期再生・オートプレイ・RenderTexture 3Dプレビュー）は
     /// <see cref="PreviewSystem"/> に、§4（検証）は <see cref="Muses.Chart.ChartValidator"/> に、
     /// §6（Undo/Redo・自動保存）はこのクラス内に実装済み。波形+イベントレーンはまだ未実装。
     /// 現時点でのスコープ: ファイルの読み書き（OSネイティブのファイル選択ダイアログは無く、
-    /// パスを直接テキスト入力する簡易UI）、ノーツの配置/選択/平行移動/削除、Slideの中継点追加、
+    /// 自前の簡易ファイルブラウザ）、ノーツの配置/選択/平行移動/削除、Slideの中継点追加、
     /// インスペクタでの数値編集、プレビュー再生、検証、Undo/Redo、自動保存。
     /// 矩形選択・コピペ・一括変換・端のドラッグでの幅変更はまだ無い。
     /// </summary>
-    public class ChartEditorApp : MonoBehaviour
+    public partial class ChartEditorApp : MonoBehaviour
     {
         private enum EditorTool { Select, Tap, ExTap, Slide, Flick, AddWaypoint, Delete }
 
@@ -42,9 +51,7 @@ namespace Muses.ChartTool
 
         // ---- §4 検証 ----
         private List<ValidationIssue> validationIssues = new();
-        private bool validationPanelOpen;
         private bool validateOnSave = true;
-        private Vector2 validationScroll;
 
         // ---- §6 Undo/Redo ----
         private struct UndoSnapshot
@@ -66,15 +73,15 @@ namespace Muses.ChartTool
 
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
-        private bool browsePanelOpen;
         private string browseDir;
-        private Vector2 browseScroll;
         private string chartPath;
         private string songPath;
         private SongMeta song = new();
         private ChartData chart = new();
         private ChartFileHeader header = new() { difficulty = "CUBE", level = 1, charter = "", songFile = "song.muses" };
         private bool dirty;
+        /// <summary>SongMeta(song.muses)側だけの変更。chartのdirtyとは別に持ち、保存時に書き戻す。</summary>
+        private bool songMetaDirty;
         private string statusMessage = "";
 
         // ---- 表示/編集状態 ----
@@ -95,12 +102,6 @@ namespace Muses.ChartTool
         private int dragOriginRawTick;
         private float dragOriginRawCell;
         private List<Waypoint> dragOriginPoints;
-
-        // ---- ランタイムGUI用の下地 ----
-        private Texture2D whiteTex;
-        private GUIStyle boldStyle;
-        private GUIStyle panelStyle;
-        private readonly Dictionary<string, string> textBuffers = new();
 
         private void Awake()
         {
@@ -128,6 +129,7 @@ namespace Muses.ChartTool
 
             HandleUndoRedoShortcuts();
             TickAutosave();
+            SyncModelToUi();
         }
 
         private void HandleUndoRedoShortcuts()
@@ -151,160 +153,6 @@ namespace Muses.ChartTool
         private void OnDestroy()
         {
             preview?.Dispose();
-        }
-
-        private void EnsureStyles()
-        {
-            if (whiteTex != null) return;
-            whiteTex = new Texture2D(1, 1);
-            whiteTex.SetPixel(0, 0, Color.white);
-            whiteTex.Apply();
-
-            boldStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
-            panelStyle = new GUIStyle(GUI.skin.box);
-        }
-
-        private void DrawRect(Rect r, Color c)
-        {
-            var old = GUI.color;
-            GUI.color = c;
-            GUI.DrawTexture(r, whiteTex);
-            GUI.color = old;
-        }
-
-        private void OnGUI()
-        {
-            EnsureStyles();
-
-            const float toolbarH = 44f;
-            const float paletteW = 130f;
-            const float inspectorW = 280f;
-            const float previewH = 260f; // editor-spec.md §2: 右側は上に3Dプレビュー、下にインスペクタ
-            const float validationHeaderH = 24f;
-            const float validationOpenH = 160f;
-
-            float validationH = validationPanelOpen ? validationOpenH : validationHeaderH;
-            float bodyH = Mathf.Max(0, Screen.height - toolbarH - validationH);
-
-            var toolbarRect = new Rect(0, 0, Screen.width, toolbarH);
-            var paletteRect = new Rect(0, toolbarH, paletteW, bodyH);
-            var rightColRect = new Rect(Screen.width - inspectorW, toolbarH, inspectorW, bodyH);
-            var previewRect = new Rect(rightColRect.x, rightColRect.y, rightColRect.width, Mathf.Min(previewH, rightColRect.height));
-            var inspectorRect = new Rect(rightColRect.x, previewRect.yMax, rightColRect.width, Mathf.Max(0, rightColRect.height - previewRect.height));
-            var sheetRect = new Rect(paletteW, toolbarH, Mathf.Max(0, Screen.width - paletteW - inspectorW), bodyH);
-            var validationRect = new Rect(0, toolbarH + bodyH, Screen.width, validationH);
-
-            DrawToolbar(toolbarRect);
-            DrawPalette(paletteRect);
-            DrawNotesSheet(sheetRect);
-            preview.Draw(previewRect);
-            DrawInspector(inspectorRect);
-            DrawValidationPanel(validationRect);
-            DrawRestorePrompt();
-            if (browsePanelOpen) DrawBrowsePanel(new Rect(10, toolbarH + 4, 380, 320));
-        }
-
-        // ---- ファイル参照パネル(ネイティブのファイル選択ダイアログが無いスタンドアロン向け代替) ----
-
-        private void DrawBrowsePanel(Rect rect)
-        {
-            DrawRect(rect, new Color(0.12f, 0.12f, 0.12f, 0.98f));
-            DrawRectOutline(rect, new Color(1, 1, 1, 0.3f));
-            GUILayout.BeginArea(rect);
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(browseDir, boldStyle);
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("x", GUILayout.Width(22))) browsePanelOpen = false;
-            GUILayout.EndHorizontal();
-
-            browseScroll = GUILayout.BeginScrollView(browseScroll, GUILayout.Height(rect.height - 30));
-
-            var parent = Directory.GetParent(browseDir);
-            if (parent != null && GUILayout.Button(".. (上へ)")) browseDir = parent.FullName;
-
-            try
-            {
-                foreach (var dir in Directory.GetDirectories(browseDir).OrderBy(d => d))
-                {
-                    if (GUILayout.Button("📁 " + Path.GetFileName(dir))) browseDir = dir;
-                }
-
-                foreach (var file in Directory.GetFiles(browseDir, "*.muses").OrderBy(f => f))
-                {
-                    if (GUILayout.Button(Path.GetFileName(file)))
-                    {
-                        chartFilePathBuffer = file;
-                        PlayerPrefs.SetString("ChartEditor_LastDir", browseDir);
-                        PlayerPrefs.Save();
-                        browsePanelOpen = false;
-                        OpenChartFromPath();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                GUILayout.Label("読み取りエラー: " + ex.Message);
-            }
-
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        // ---------- ツールバー ----------
-
-        private void DrawToolbar(Rect rect)
-        {
-            DrawRect(rect, new Color(0.22f, 0.22f, 0.22f));
-            GUILayout.BeginArea(rect);
-            GUILayout.BeginHorizontal();
-
-            GUILayout.Label("ファイル", GUILayout.Width(45));
-            chartFilePathBuffer = BufferedTextFieldFixedWidth("chartPathField", chartFilePathBuffer, 320);
-
-            if (GUILayout.Button("参照...", GUILayout.Width(60))) browsePanelOpen = !browsePanelOpen;
-            if (GUILayout.Button("読み込む", GUILayout.Width(70))) OpenChartFromPath();
-            if (GUILayout.Button("保存", GUILayout.Width(50))) SaveChartToPath();
-            if (GUILayout.Button("検証", GUILayout.Width(50))) RunValidation();
-
-            GUILayout.Space(6);
-            GUI.enabled = undoStack.Count > 0;
-            if (GUILayout.Button("元に戻す", GUILayout.Width(60))) Undo();
-            GUI.enabled = redoStack.Count > 0;
-            if (GUILayout.Button("やり直す", GUILayout.Width(60))) Redo();
-            GUI.enabled = true;
-
-            GUILayout.Space(10);
-            GUILayout.Label("snap", GUILayout.Width(30));
-            var snapLabels = new string[SnapDenominators.Length];
-            for (int i = 0; i < SnapDenominators.Length; i++) snapLabels[i] = $"1/{SnapDenominators[i]}";
-            snapIndex = GUILayout.SelectionGrid(snapIndex, snapLabels, snapLabels.Length, GUILayout.Width(320));
-
-            GUILayout.Space(10);
-            GUILayout.Label("倍率", GUILayout.Width(26));
-            pxPerBeat = GUILayout.HorizontalSlider(pxPerBeat, 8f, 240f, GUILayout.Width(100));
-
-            GUILayout.FlexibleSpace();
-
-            string posLabel = selectedNote != null
-                ? SongAddr.FormatAddr(SongAddr.ToAddr(song.meters, selectedNote.points[0].tick))
-                : "-";
-            GUILayout.Label($"位置 {posLabel}", GUILayout.Width(140));
-            GUILayout.Label(dirty ? "● 未保存" : "保存済み", GUILayout.Width(70));
-
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("幅", GUILayout.Width(16));
-            defaultWidthCells = Mathf.Max(0.5f, ParseFloatField("defaultWidth", defaultWidthCells, 60));
-            GUILayout.Space(10);
-            followPlayback = GUILayout.Toggle(followPlayback, "再生に追従", GUILayout.Width(80));
-            GUILayout.Label("判定線位置", GUILayout.Width(60));
-            judgeLineFrac = GUILayout.HorizontalSlider(judgeLineFrac, 0f, 1f, GUILayout.Width(100));
-            GUILayout.Space(10);
-            GUILayout.Label(statusMessage);
-            GUILayout.EndHorizontal();
-
-            GUILayout.EndArea();
         }
 
         private void OpenChartFromPath()
@@ -341,6 +189,7 @@ namespace Muses.ChartTool
                 redoStack.Clear();
                 lastAutosaveRealtime = Time.unscaledTime;
                 statusMessage = "読み込み完了";
+                uiNeedsPropertyRefresh = true;
                 browseDir = dir;
                 PlayerPrefs.SetString("ChartEditor_LastDir", dir);
                 PlayerPrefs.Save();
@@ -365,6 +214,13 @@ namespace Muses.ChartTool
             try
             {
                 ChartSerializer.WriteChart(path, header, chart, song);
+                // 右パネルの「情報」「音源」セクション(§2.5)は SongMeta を直接編集するので、
+                // 譜面と一緒に song.muses も書き戻さないと編集内容が消える。
+                if (songMetaDirty && !string.IsNullOrEmpty(songPath))
+                {
+                    ChartSerializer.WriteSongMeta(song, songPath);
+                    songMetaDirty = false;
+                }
                 chartPath = path;
                 dirty = false;
                 statusMessage = "保存完了";
@@ -446,6 +302,7 @@ namespace Muses.ChartTool
             pendingSlideStart = null;
             draggingNote = false;
             dirty = true;
+            uiNeedsPropertyRefresh = true;
         }
 
         // ---------- §6 自動保存 ----------
@@ -475,39 +332,27 @@ namespace Muses.ChartTool
             restoreAutosavePath = autosavePath;
         }
 
-        private void DrawRestorePrompt()
+        private void RestoreFromAutosave()
         {
-            if (!showRestorePrompt) return;
-            const float w = 480f, h = 60f;
-            var rect = new Rect((Screen.width - w) / 2f, 60f, w, h);
-            DrawRect(rect, new Color(0.05f, 0.05f, 0.05f, 0.95f));
-            GUILayout.BeginArea(rect);
-            GUILayout.Label("自動保存ファイルの方が新しいです。復元しますか？", boldStyle);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("復元する", GUILayout.Width(100)))
+            try
             {
-                try
-                {
-                    var (loadedHeader, loadedChart) = ChartSerializer.ReadChart(restoreAutosavePath, song);
-                    header = loadedHeader;
-                    chart = loadedChart;
-                    undoStack.Clear();
-                    redoStack.Clear();
-                    selectedNote = null;
-                    pendingSlideStart = null;
-                    dirty = true;
-                    statusMessage = "自動保存ファイルから復元しました";
-                    preview.Rebuild(song, chart, Path.GetDirectoryName(chartPath));
-                }
-                catch (Exception ex)
-                {
-                    statusMessage = "復元エラー: " + ex.Message;
-                }
-                showRestorePrompt = false;
+                var (loadedHeader, loadedChart) = ChartSerializer.ReadChart(restoreAutosavePath, song);
+                header = loadedHeader;
+                chart = loadedChart;
+                undoStack.Clear();
+                redoStack.Clear();
+                selectedNote = null;
+                pendingSlideStart = null;
+                dirty = true;
+                statusMessage = "自動保存ファイルから復元しました";
+                uiNeedsPropertyRefresh = true;
+                preview.Rebuild(song, chart, Path.GetDirectoryName(chartPath));
             }
-            if (GUILayout.Button("無視する", GUILayout.Width(100))) showRestorePrompt = false;
-            GUILayout.EndHorizontal();
-            GUILayout.EndArea();
+            catch (Exception ex)
+            {
+                statusMessage = "復元エラー: " + ex.Message;
+            }
+            showRestorePrompt = false;
         }
 
         // ---------- §4 検証 ----------
@@ -525,293 +370,119 @@ namespace Muses.ChartTool
             ChartFormat.ResolveSlideComboPoints(chart);
 
             validationIssues = ChartValidator.Validate(chart, Cells, preview.AudioLengthSec);
-            validationPanelOpen = true;
+            RefreshValidationList();
+            if (foldValidation != null) foldValidation.value = true;
         }
 
-        private void DrawValidationPanel(Rect rect)
-        {
-            DrawRect(rect, new Color(0.14f, 0.14f, 0.14f));
-            var header = new Rect(rect.x, rect.y, rect.width, 24);
-            GUI.Box(header, "");
-            if (GUI.Button(new Rect(header.x + 2, header.y + 1, 20, 22), validationPanelOpen ? "▼" : "▶"))
-                validationPanelOpen = !validationPanelOpen;
-
-            int errors = 0, warnings = 0, infos = 0;
-            foreach (var iss in validationIssues)
-            {
-                if (iss.severity == ValidationSeverity.Error) errors++;
-                else if (iss.severity == ValidationSeverity.Warning) warnings++;
-                else infos++;
-            }
-            GUI.Label(new Rect(header.x + 26, header.y + 3, 300, 20),
-                $"検証結果: エラー{errors} 警告{warnings} 情報{infos}");
-
-            if (!validationPanelOpen) return;
-
-            var bodyRect = new Rect(rect.x, header.yMax, rect.width, rect.height - header.height);
-            GUILayout.BeginArea(bodyRect);
-            GUILayout.BeginHorizontal();
-            bool newValidateOnSave = GUILayout.Toggle(validateOnSave, "保存時に自動実行", GUILayout.Width(120));
-            if (newValidateOnSave != validateOnSave) validateOnSave = newValidateOnSave;
-            GUILayout.EndHorizontal();
-
-            validationScroll = GUILayout.BeginScrollView(validationScroll);
-            foreach (var iss in validationIssues)
-            {
-                var color = iss.severity switch
-                {
-                    ValidationSeverity.Error => new Color(1f, 0.5f, 0.5f),
-                    ValidationSeverity.Warning => new Color(1f, 0.85f, 0.4f),
-                    _ => Color.white,
-                };
-                var old = GUI.color;
-                GUI.color = color;
-                if (GUILayout.Button($"[{iss.id}] {iss.message}", GUI.skin.label))
-                {
-                    scrollTick = Mathf.Max(0, iss.tick - 2000);
-                }
-                GUI.color = old;
-            }
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        // ---------- ツールパレット ----------
-
-        private void DrawPalette(Rect rect)
-        {
-            DrawRect(rect, new Color(0.18f, 0.18f, 0.18f));
-            GUILayout.BeginArea(rect);
-            GUILayout.Label("ツール", boldStyle);
-            DrawToolButton(EditorTool.Select, "選択");
-            DrawToolButton(EditorTool.Tap, "Tap");
-            DrawToolButton(EditorTool.ExTap, "Ex Tap");
-            DrawToolButton(EditorTool.Slide, "Slide");
-            DrawToolButton(EditorTool.Flick, "Flick");
-            DrawToolButton(EditorTool.AddWaypoint, "Waypoint追加");
-            DrawToolButton(EditorTool.Delete, "削除");
-
-            GUILayout.Space(12);
-            GUILayout.Label("譜面情報", boldStyle);
-            GUILayout.Label("難易度");
-            header.difficulty = GUILayout.TextField(header.difficulty ?? "");
-            GUILayout.Label("レベル");
-            header.level = Mathf.RoundToInt(ParseFloatField("headerLevel", header.level, 100));
-            GUILayout.Label("譜面制作者");
-            header.charter = GUILayout.TextField(header.charter ?? "");
-
-            GUILayout.EndArea();
-        }
-
-        private void DrawToolButton(EditorTool tool, string label)
-        {
-            bool selected = currentTool == tool;
-            var old = GUI.backgroundColor;
-            GUI.backgroundColor = selected ? new Color(0.5f, 0.7f, 1f) : Color.white;
-            if (GUILayout.Button(label))
-            {
-                currentTool = tool;
-                pendingSlideStart = null;
-            }
-            GUI.backgroundColor = old;
-        }
-
-        // ---------- インスペクタ ----------
-
-        private void DrawInspector(Rect rect)
-        {
-            DrawRect(rect, new Color(0.18f, 0.18f, 0.18f));
-            GUILayout.BeginArea(rect);
-            GUILayout.Label("インスペクタ", boldStyle);
-
-            if (selectedNote == null)
-            {
-                GUILayout.Label("ノーツを選択してください");
-                GUILayout.EndArea();
-                return;
-            }
-
-            GUILayout.Label($"kind: {selectedNote.kind}");
-            int newGroup = Mathf.RoundToInt(ParseFloatField("scrollGroup", selectedNote.scrollGroup, 200));
-            if (newGroup != selectedNote.scrollGroup)
-            {
-                PushUndo(coalesce: true);
-                selectedNote.scrollGroup = Mathf.Max(0, newGroup);
-                dirty = true;
-            }
-
-            for (int i = 0; i < selectedNote.points.Count; i++)
-            {
-                GUILayout.Space(6);
-                string role = i == 0 ? " (始点)" : i == selectedNote.points.Count - 1 ? " (終点)" : "";
-                GUILayout.Label($"Waypoint {i}{role}", boldStyle);
-
-                var wp = selectedNote.points[i];
-                string idPrefix = $"wp{i}_";
-
-                var addr = SongAddr.ToAddr(song.meters, wp.tick);
-                string addrText = BufferedTextField(idPrefix + "addr", SongAddr.FormatAddr(addr));
-
-                GUILayout.Label("layerF");
-                float layerF = GUILayout.HorizontalSlider(wp.layerF, 0f, 1f);
-
-                GUILayout.Label("cellF");
-                float cellF = ParseFloatField(idPrefix + "cellF", wp.cellF, 200);
-                GUILayout.Label("width");
-                float width = ParseFloatField(idPrefix + "width", wp.width, 200);
-
-                var easing = EnumCycleButton("easing", wp.easing);
-                var marker = EnumCycleButton("marker", wp.marker);
-
-                bool hasCombo = GUILayout.Toggle(wp.comboStep.HasValue, "comboStep上書き");
-                int comboVal = wp.comboStep ?? 0;
-                if (hasCombo)
-                {
-                    GUILayout.Label("comboStep(tick)");
-                    comboVal = Mathf.RoundToInt(ParseFloatField(idPrefix + "combo", comboVal, 200));
-                }
-
-                bool changed = !Mathf.Approximately(layerF, wp.layerF)
-                               || !Mathf.Approximately(cellF, wp.cellF)
-                               || !Mathf.Approximately(width, wp.width)
-                               || easing != wp.easing
-                               || marker != wp.marker
-                               || hasCombo != wp.comboStep.HasValue
-                               || (hasCombo && comboVal != (wp.comboStep ?? int.MinValue));
-
-                int newTick = wp.tick;
-                bool addrValid = true;
-                try
-                {
-                    var parsed = SongAddr.ParseAddr(addrText);
-                    newTick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
-                }
-                catch (FormatException)
-                {
-                    addrValid = false; // 無効なaddr文字列はtickの変更を無視する
-                }
-                if (addrValid && newTick != wp.tick) changed = true;
-
-                if (changed)
-                {
-                    PushUndo(coalesce: true); // スライダー/テキスト編集はフレームごとに来るので一定時間内はまとめる
-                    wp.tick = addrValid ? newTick : wp.tick;
-                    wp.layerF = Mathf.Clamp01(layerF);
-                    wp.cellF = cellF;
-                    wp.width = Mathf.Max(0.1f, width);
-                    wp.easing = easing;
-                    wp.marker = marker;
-                    wp.comboStep = hasCombo ? comboVal : null;
-                    selectedNote.points[i] = wp;
-                    dirty = true;
-                }
-
-                if (selectedNote.kind == NoteKind.Slide && selectedNote.points.Count > 2)
-                {
-                    if (GUILayout.Button("この中継点を削除"))
-                    {
-                        PushUndo(coalesce: false);
-                        selectedNote.points.RemoveAt(i);
-                        dirty = true;
-                        break;
-                    }
-                }
-            }
-
-            GUILayout.Space(8);
-            if (GUILayout.Button("このノーツを削除"))
-            {
-                PushUndo(coalesce: false);
-                chart.notes.Remove(selectedNote);
-                selectedNote = null;
-                dirty = true;
-            }
-
-            GUILayout.EndArea();
-        }
-
-        /// <summary>フォーカス中は上書きせず、フォーカスが外れているときだけ model の値で同期するテキストフィールド。</summary>
-        private string BufferedTextField(string controlName, string modelValue)
-        {
-            bool focused = GUI.GetNameOfFocusedControl() == controlName;
-            if (!focused) textBuffers[controlName] = modelValue;
-            else if (!textBuffers.ContainsKey(controlName)) textBuffers[controlName] = modelValue;
-
-            GUI.SetNextControlName(controlName);
-            textBuffers[controlName] = GUILayout.TextField(textBuffers[controlName], GUILayout.Width(140));
-            return textBuffers[controlName];
-        }
-
-        private float ParseFloatField(string controlName, float modelValue, float width)
-        {
-            string text = BufferedTextFieldFixedWidth(controlName, modelValue.ToString("0.###", CultureInfo.InvariantCulture), width);
-            return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : modelValue;
-        }
-
-        private string BufferedTextFieldFixedWidth(string controlName, string modelValue, float width)
-        {
-            bool focused = GUI.GetNameOfFocusedControl() == controlName;
-            if (!focused) textBuffers[controlName] = modelValue;
-            else if (!textBuffers.ContainsKey(controlName)) textBuffers[controlName] = modelValue;
-
-            GUI.SetNextControlName(controlName);
-            textBuffers[controlName] = GUILayout.TextField(textBuffers[controlName], GUILayout.Width(width));
-            return textBuffers[controlName];
-        }
-
-        private static T EnumCycleButton<T>(string label, T current) where T : struct, Enum
-        {
-            var values = (T[])Enum.GetValues(typeof(T));
-            int idx = Array.IndexOf(values, current);
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(70));
-            if (GUILayout.Button(current.ToString(), GUILayout.Width(100)))
-                idx = (idx + 1) % values.Length;
-            GUILayout.EndHorizontal();
-            return values[idx];
-        }
 
         // ---------- ノーツシート（主キャンバス） ----------
 
-        private void DrawNotesSheet(Rect rect)
+        /// <summary>
+        /// ノーツシートの座標変換。描画・小節番号ラベルの配置・入力判定の3か所で同じ計算が要るので、
+        /// 現在の状態から都度組み立てて共有する（IMGUI版ではローカル関数をFuncで引き回していた）。
+        /// </summary>
+        private readonly struct SheetLayout
         {
-            DrawRect(rect, new Color(0.16f, 0.16f, 0.16f));
-            if (rect.width <= 1f || rect.height <= 1f) return;
+            public readonly Rect rect, ground, gutter, sky;
+            public readonly float pxPerTick, judgeLineY;
+            private readonly int scrollTick;
 
-            const float gutterW = 26f;
-            float paneW = (rect.width - gutterW) * 0.5f;
-            var groundRect = new Rect(rect.x, rect.y, paneW, rect.height);
-            var gutterRect = new Rect(groundRect.xMax, rect.y, gutterW, rect.height);
-            var skyRect = new Rect(gutterRect.xMax, rect.y, paneW, rect.height);
+            public SheetLayout(Rect rect, float pxPerBeat, int scrollTick, float judgeLineFrac)
+            {
+                this.rect = rect;
+                this.scrollTick = scrollTick;
 
-            DrawRect(gutterRect, new Color(0.1f, 0.1f, 0.1f));
-            GUI.Label(new Rect(groundRect.x, rect.y, groundRect.width, 16), "Ground");
-            GUI.Label(new Rect(skyRect.x, rect.y, skyRect.width, 16), "Sky");
+                const float gutterW = 26f;
+                float paneW = (rect.width - gutterW) * 0.5f;
+                ground = new Rect(rect.x, rect.y, paneW, rect.height);
+                gutter = new Rect(ground.xMax, rect.y, gutterW, rect.height);
+                sky = new Rect(gutter.xMax, rect.y, paneW, rect.height);
 
-            float pxPerTick = pxPerBeat / ChartData.TicksPerBeat;
-            int visibleTicks = Mathf.CeilToInt(rect.height / pxPerTick);
-            float judgeLineY = rect.y + rect.height * Mathf.Clamp01(judgeLineFrac);
+                pxPerTick = pxPerBeat / ChartData.TicksPerBeat;
+                judgeLineY = rect.y + rect.height * Mathf.Clamp01(judgeLineFrac);
+            }
 
-            float TickToY(int tick) => judgeLineY - (tick - scrollTick) * pxPerTick;
-            int YToTick(float y) => scrollTick + Mathf.RoundToInt((judgeLineY - y) / pxPerTick);
-            float CellX(Rect pane, float cellF) => pane.x + cellF / Cells * pane.width;
-            float CombinedX(float layerF, float cellF) => Mathf.Lerp(CellX(groundRect, cellF), CellX(skyRect, cellF), Mathf.Clamp01(layerF));
+            public float TickToY(int tick) => judgeLineY - (tick - scrollTick) * pxPerTick;
+            public int YToTick(float y) => scrollTick + Mathf.RoundToInt((judgeLineY - y) / pxPerTick);
+            public int VisibleTicks => Mathf.CeilToInt(rect.height / pxPerTick);
+
+            public static float CellX(Rect pane, float cellF) => pane.x + cellF / Cells * pane.width;
+
+            public float CombinedX(float layerF, float cellF) =>
+                Mathf.Lerp(CellX(ground, cellF), CellX(sky, cellF), Mathf.Clamp01(layerF));
+
+            /// <summary>x座標がGround/Skyどちらのペインか。ガター上なら中間値を返す（単発ノーツは置けない）。</summary>
+            public (float layerF, float cellF) PaneAt(float x)
+            {
+                if (x >= ground.xMin && x <= ground.xMax)
+                    return (0f, Mathf.Clamp((x - ground.x) / ground.width * Cells, 0f, Cells));
+                if (x >= sky.xMin && x <= sky.xMax)
+                    return (1f, Mathf.Clamp((x - sky.x) / sky.width * Cells, 0f, Cells));
+                return (0.5f, Cells * 0.5f);
+            }
+        }
+
+        private SheetLayout CurrentSheetLayout()
+        {
+            var r = notesSheet.contentRect;
+            return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac);
+        }
+
+        private int SnapTicks => Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
+
+        // painter2D は塗りつぶしパスしか使わない。矩形1個 = パス1本。
+        private static void FillRect(Painter2D p, Rect r, Color c)
+        {
+            p.fillColor = c;
+            p.BeginPath();
+            p.MoveTo(new Vector2(r.xMin, r.yMin));
+            p.LineTo(new Vector2(r.xMax, r.yMin));
+            p.LineTo(new Vector2(r.xMax, r.yMax));
+            p.LineTo(new Vector2(r.xMin, r.yMax));
+            p.ClosePath();
+            p.Fill();
+        }
+
+        private static void FillRectOutline(Painter2D p, Rect r, Color c, float t = 2f)
+        {
+            FillRect(p, new Rect(r.x, r.y, r.width, t), c);
+            FillRect(p, new Rect(r.x, r.yMax - t, r.width, t), c);
+            FillRect(p, new Rect(r.x, r.y, t, r.height), c);
+            FillRect(p, new Rect(r.xMax - t, r.y, t, r.height), c);
+        }
+
+        /// <summary>
+        /// ノーツシート本体の描画。UI Toolkitのランタイムパネルでは IMGUIContainer が使えないため
+        /// （"IMGUIContainer cannot be used in a runtime panel"）、generateVisualContent から
+        /// painter2D で直接描く。文字（Ground/Sky・小節番号）はここでは描けないので、
+        /// <see cref="UpdateSheetLabels"/> が絶対配置のLabel要素として別に置いている。
+        /// </summary>
+        private void GenerateNotesSheet(MeshGenerationContext mgc)
+        {
+            var L = CurrentSheetLayout();
+            if (L.rect.width < 2f || L.rect.height < 2f) return;
+
+            var p = mgc.painter2D;
+            var rect = L.rect;
+
+            FillRect(p, rect, new Color(0.16f, 0.16f, 0.16f));
+            FillRect(p, L.gutter, new Color(0.1f, 0.1f, 0.1f));
 
             // セル境界線
             for (int c = 0; c <= Cells; c++)
             {
-                DrawRect(new Rect(CellX(groundRect, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
-                DrawRect(new Rect(CellX(skyRect, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                FillRect(p, new Rect(SheetLayout.CellX(L.ground, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                FillRect(p, new Rect(SheetLayout.CellX(L.sky, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
             }
 
             // 小節/拍/スナップ線
-            int snapTicks = Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
+            int snapTicks = SnapTicks;
             int lineStart = Mathf.Max(0, scrollTick - snapTicks) / snapTicks * snapTicks;
-            int lineEnd = scrollTick + visibleTicks + snapTicks;
+            int lineEnd = scrollTick + L.VisibleTicks + snapTicks;
             int guard = 0;
             for (int t = lineStart; t <= lineEnd && guard < 20000; t += snapTicks, guard++)
             {
-                float y = TickToY(t);
+                float y = L.TickToY(t);
                 if (y < rect.y - 4 || y > rect.yMax + 4) continue;
 
                 var addr = SongAddr.ToAddr(song.meters, t);
@@ -821,9 +492,7 @@ namespace Muses.ChartTool
                 else if (addr.tick == 0) { c = new Color(1, 1, 1, 0.28f); thickness = 1f; }
                 else { c = new Color(1, 1, 1, 0.12f); thickness = 1f; }
 
-                DrawRect(new Rect(rect.x, y, rect.width, thickness), c);
-                if (addr.beat == 1 && addr.tick == 0)
-                    GUI.Label(new Rect(rect.x + 2, y - 14, 60, 14), addr.bar.ToString());
+                FillRect(p, new Rect(rect.x, y, rect.width, thickness), c);
             }
 
             // ノーツ描画
@@ -831,30 +500,30 @@ namespace Muses.ChartTool
             {
                 int nStart = note.points[0].tick;
                 int nEnd = note.points[^1].tick;
-                if (nEnd < scrollTick - snapTicks * 4 || nStart > scrollTick + visibleTicks + snapTicks * 4) continue;
+                if (nEnd < scrollTick - snapTicks * 4 || nStart > scrollTick + L.VisibleTicks + snapTicks * 4) continue;
 
                 Color col = NoteColor(note.kind);
                 if (note.points.Count == 1)
                 {
                     var wp = note.points[0];
-                    float y = TickToY(wp.tick);
-                    float x0 = CombinedX(wp.layerF, wp.cellF);
-                    float x1 = CombinedX(wp.layerF, wp.cellF + wp.width);
-                    DrawRect(Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4, Mathf.Max(x0, x1), y + 4), col);
+                    float y = L.TickToY(wp.tick);
+                    float x0 = L.CombinedX(wp.layerF, wp.cellF);
+                    float x1 = L.CombinedX(wp.layerF, wp.cellF + wp.width);
+                    FillRect(p, Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4, Mathf.Max(x0, x1), y + 4), col);
                 }
                 else
                 {
-                    int stepTicks = Mathf.Max(1, Mathf.RoundToInt(4f / pxPerTick));
+                    int stepTicks = Mathf.Max(1, Mathf.RoundToInt(4f / L.pxPerTick));
                     for (int t = nStart; t < nEnd; t += stepTicks)
                     {
                         int t2 = Mathf.Min(t + stepTicks, nEnd);
-                        float ya = TickToY(t), yb = TickToY(t2);
+                        float ya = L.TickToY(t), yb = L.TickToY(t2);
                         if (yb > rect.yMax + 8 || ya < rect.y - 8) continue;
 
                         var a = InterpAtTick(note, t);
-                        float xa0 = CombinedX(a.layerF, a.cellF);
-                        float xa1 = CombinedX(a.layerF, a.cellF + a.width);
-                        DrawRect(
+                        float xa0 = L.CombinedX(a.layerF, a.cellF);
+                        float xa1 = L.CombinedX(a.layerF, a.cellF + a.width);
+                        FillRect(p,
                             Rect.MinMaxRect(Mathf.Min(xa0, xa1), Mathf.Min(ya, yb) - 1, Mathf.Max(xa0, xa1), Mathf.Max(ya, yb) + 1),
                             new Color(col.r, col.g, col.b, 0.55f));
                     }
@@ -862,9 +531,9 @@ namespace Muses.ChartTool
                     foreach (var wp in note.points)
                     {
                         if (wp.marker != WaypointMarker.Visible) continue;
-                        float y = TickToY(wp.tick);
-                        float x = CombinedX(wp.layerF, wp.cellF);
-                        DrawRect(new Rect(x - 3, y - 3, 6, 6), Color.white);
+                        float y = L.TickToY(wp.tick);
+                        float x = L.CombinedX(wp.layerF, wp.cellF);
+                        FillRect(p, new Rect(x - 3, y - 3, 6, 6), Color.white);
                     }
                 }
 
@@ -872,204 +541,215 @@ namespace Muses.ChartTool
                 {
                     var startWp = note.points[0];
                     var endWp = note.points[^1];
-                    float y0 = TickToY(nStart), y1 = TickToY(nEnd);
-                    float sx0 = CombinedX(startWp.layerF, startWp.cellF);
-                    float sx1 = CombinedX(endWp.layerF, endWp.cellF + endWp.width);
+                    float y0 = L.TickToY(nStart), y1 = L.TickToY(nEnd);
+                    float sx0 = L.CombinedX(startWp.layerF, startWp.cellF);
+                    float sx1 = L.CombinedX(endWp.layerF, endWp.cellF + endWp.width);
                     var box = Rect.MinMaxRect(Mathf.Min(sx0, sx1) - 3, Mathf.Min(y0, y1) - 6, Mathf.Max(sx0, sx1) + 3, Mathf.Max(y0, y1) + 6);
-                    DrawRectOutline(box, Color.yellow);
+                    FillRectOutline(p, box, Color.yellow);
                 }
             }
 
-            // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（ツールバーの「追従」欄）
-            DrawRect(new Rect(rect.x, judgeLineY - 1, rect.width, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
+            // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（右パネルの「表示設定」）
+            FillRect(p, new Rect(rect.x, L.judgeLineY - 1, rect.width, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
 
             // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック
             if (pendingSlideStart != null)
             {
                 var wp0 = pendingSlideStart.points[0];
-                float py = TickToY(wp0.tick);
-                float px = CombinedX(wp0.layerF, wp0.cellF);
-                DrawRectOutline(new Rect(px - 5, py - 5, 10, 10), Color.white);
+                float py = L.TickToY(wp0.tick);
+                float px = L.CombinedX(wp0.layerF, wp0.cellF);
+                FillRectOutline(p, new Rect(px - 5, py - 5, 10, 10), Color.white);
             }
-
-            HandleSheetInput(rect, groundRect, skyRect, TickToY, YToTick, CombinedX, snapTicks);
         }
 
-        private void HandleSheetInput(
-            Rect rect, Rect groundRect, Rect skyRect,
-            Func<int, float> tickToY, Func<float, int> yToTick, Func<float, float, float> combinedX, int snapTicks)
+        // ---------- ノーツシートの入力（UI Toolkitのポインタ/ホイール/キーイベント） ----------
+
+        private float sheetScrollAccum;
+
+        private void OnSheetPointerDown(PointerDownEvent evt)
         {
-            var e = Event.current;
-            bool overSheet = rect.Contains(e.mousePosition);
+            notesSheet.Focus(); // KeyDown（Deleteでの削除）を受け取れるようにする
+            if (evt.button != 0) return;
 
-            if (e.type == EventType.ScrollWheel && overSheet)
+            var L = CurrentSheetLayout();
+            var pos = (Vector2)evt.localPosition;
+            int snapTicks = SnapTicks;
+
+            int rawTick = Mathf.Max(0, L.YToTick(pos.y));
+            int tick = SnapTickTo(rawTick, snapTicks);
+            var (layerF, rawCell) = L.PaneAt(pos.x);
+
+            switch (currentTool)
             {
-                if (e.control)
+                case EditorTool.Tap:
+                case EditorTool.ExTap:
+                case EditorTool.Flick:
                 {
-                    pxPerBeat = Mathf.Clamp(pxPerBeat - e.delta.y * 2f, 8f, 240f);
-                }
-                else
-                {
-                    scrollTick = Mathf.Max(0, scrollTick + Mathf.RoundToInt(e.delta.y) * snapTicks);
-                }
-                e.Use();
-                return;
-            }
-
-            (float layerF, float cellF) PaneAt(float x)
-            {
-                if (x >= groundRect.xMin && x <= groundRect.xMax)
-                    return (0f, Mathf.Clamp((x - groundRect.x) / groundRect.width * Cells, 0f, Cells));
-                if (x >= skyRect.xMin && x <= skyRect.xMax)
-                    return (1f, Mathf.Clamp((x - skyRect.x) / skyRect.width * Cells, 0f, Cells));
-                return (0.5f, Cells * 0.5f);
-            }
-
-            int SnapTickTo(int rawTick) => Mathf.RoundToInt((float)rawTick / snapTicks) * snapTicks;
-            float SnapCellTo(float rawCell, float step) => Mathf.Round(rawCell / step) * step;
-
-            if (e.type == EventType.MouseDown && e.button == 0 && overSheet)
-            {
-                int rawTick = Mathf.Max(0, yToTick(e.mousePosition.y));
-                int tick = SnapTickTo(rawTick);
-                var (layerF, rawCell) = PaneAt(e.mousePosition.x);
-
-                switch (currentTool)
-                {
-                    case EditorTool.Tap:
-                    case EditorTool.ExTap:
-                    case EditorTool.Flick:
+                    if (layerF != 0f && layerF != 1f) break; // ガターには単発ノーツを置かない
+                    float cellF = SnapCellTo(rawCell, 1f);
+                    var kind = currentTool == EditorTool.Tap ? NoteKind.Tap
+                        : currentTool == EditorTool.ExTap ? NoteKind.ExTap : NoteKind.Flick;
+                    var note = new Note
                     {
-                        if (layerF != 0f && layerF != 1f) break; // ガターには単発ノーツを置かない
-                        float cellF = SnapCellTo(rawCell, 1f);
-                        var kind = currentTool == EditorTool.Tap ? NoteKind.Tap
-                            : currentTool == EditorTool.ExTap ? NoteKind.ExTap : NoteKind.Flick;
-                        var note = new Note
+                        kind = kind,
+                        points = new List<Waypoint> { NewWaypoint(tick, layerF, cellF, defaultWidthCells) },
+                    };
+                    PushUndo(coalesce: false);
+                    chart.notes.Add(note);
+                    selectedNote = note;
+                    dirty = true;
+                    break;
+                }
+                case EditorTool.Slide:
+                {
+                    float cellF = SnapCellTo(rawCell, 0.5f);
+                    if (pendingSlideStart == null)
+                    {
+                        pendingSlideStart = new Note
                         {
-                            kind = kind,
+                            kind = NoteKind.Slide,
                             points = new List<Waypoint> { NewWaypoint(tick, layerF, cellF, defaultWidthCells) },
                         };
-                        PushUndo(coalesce: false);
-                        chart.notes.Add(note);
-                        selectedNote = note;
-                        dirty = true;
-                        break;
                     }
-                    case EditorTool.Slide:
+                    else
                     {
-                        float cellF = SnapCellTo(rawCell, 0.5f);
-                        if (pendingSlideStart == null)
+                        int startTick = pendingSlideStart.points[0].tick;
+                        if (tick > startTick)
                         {
-                            pendingSlideStart = new Note
-                            {
-                                kind = NoteKind.Slide,
-                                points = new List<Waypoint> { NewWaypoint(tick, layerF, cellF, defaultWidthCells) },
-                            };
+                            pendingSlideStart.points.Add(NewWaypoint(tick, layerF, cellF, defaultWidthCells));
+                            PushUndo(coalesce: false);
+                            chart.notes.Add(pendingSlideStart);
+                            selectedNote = pendingSlideStart;
+                            dirty = true;
+                            pendingSlideStart = null;
+                            statusMessage = "Slideを配置しました";
                         }
                         else
                         {
-                            int startTick = pendingSlideStart.points[0].tick;
-                            if (tick > startTick)
-                            {
-                                pendingSlideStart.points.Add(NewWaypoint(tick, layerF, cellF, defaultWidthCells));
-                                PushUndo(coalesce: false);
-                                chart.notes.Add(pendingSlideStart);
-                                selectedNote = pendingSlideStart;
-                                dirty = true;
-                                pendingSlideStart = null;
-                                statusMessage = "Slideを配置しました";
-                            }
-                            else
-                            {
-                                // 終点が始点と同tick以前だと配置できない（スナップが粗いと起きやすい）。
-                                // 1点目は維持し、やり直せるようにする。
-                                statusMessage = "Slideの終点は始点より後ろの位置をクリックしてください（1点目は維持中）";
-                            }
+                            // 終点が始点と同tick以前だと配置できない（スナップが粗いと起きやすい）。
+                            // 1点目は維持し、やり直せるようにする。
+                            statusMessage = "Slideの終点は始点より後ろの位置をクリックしてください（1点目は維持中）";
                         }
-                        break;
                     }
-                    case EditorTool.AddWaypoint:
+                    break;
+                }
+                case EditorTool.AddWaypoint:
+                {
+                    if (selectedNote is { kind: NoteKind.Slide })
                     {
-                        if (selectedNote is { kind: NoteKind.Slide })
+                        float cellF = SnapCellTo(rawCell, 0.5f);
+                        int insertAt = selectedNote.points.FindIndex(pt => pt.tick > tick);
+                        if (insertAt < 0) insertAt = selectedNote.points.Count;
+                        if (insertAt > 0 && insertAt < selectedNote.points.Count)
                         {
-                            float cellF = SnapCellTo(rawCell, 0.5f);
-                            int insertAt = selectedNote.points.FindIndex(p => p.tick > tick);
-                            if (insertAt < 0) insertAt = selectedNote.points.Count;
-                            if (insertAt > 0 && insertAt < selectedNote.points.Count)
-                            {
-                                float width = InterpAtTick(selectedNote, tick).width;
-                                PushUndo(coalesce: false);
-                                selectedNote.points.Insert(insertAt, NewWaypoint(tick, layerF, cellF, width));
-                                dirty = true;
-                            }
-                        }
-                        break;
-                    }
-                    case EditorTool.Delete:
-                    {
-                        var hit = HitTestNote(e.mousePosition, tickToY, yToTick, combinedX);
-                        if (hit != null)
-                        {
+                            float width = InterpAtTick(selectedNote, tick).width;
                             PushUndo(coalesce: false);
-                            chart.notes.Remove(hit);
-                            if (ReferenceEquals(selectedNote, hit)) selectedNote = null;
+                            selectedNote.points.Insert(insertAt, NewWaypoint(tick, layerF, cellF, width));
                             dirty = true;
                         }
-                        break;
                     }
-                    case EditorTool.Select:
-                    default:
-                    {
-                        var hit = HitTestNote(e.mousePosition, tickToY, yToTick, combinedX);
-                        selectedNote = hit;
-                        if (hit != null)
-                        {
-                            PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
-                            draggingNote = true;
-                            dragOriginRawTick = rawTick;
-                            dragOriginRawCell = rawCell;
-                            dragOriginPoints = new List<Waypoint>(hit.points);
-                        }
-                        break;
-                    }
+                    break;
                 }
-                e.Use();
-            }
-            else if (e.type == EventType.MouseDrag && e.button == 0 && draggingNote && selectedNote != null)
-            {
-                int rawTick = yToTick(e.mousePosition.y);
-                var (_, rawCell) = PaneAt(e.mousePosition.x);
-
-                int deltaTickRaw = rawTick - dragOriginRawTick;
-                int deltaTick = Mathf.RoundToInt((float)deltaTickRaw / snapTicks) * snapTicks;
-                float cellStep = selectedNote.kind == NoteKind.Slide ? 0.5f : 1f;
-                float deltaCell = SnapCellTo(rawCell - dragOriginRawCell, cellStep);
-
-                for (int i = 0; i < selectedNote.points.Count; i++)
+                case EditorTool.Delete:
                 {
-                    var wp = dragOriginPoints[i];
-                    wp.tick = Mathf.Max(0, wp.tick + deltaTick);
-                    wp.cellF += deltaCell;
-                    selectedNote.points[i] = wp;
+                    var hit = HitTestNote(L, pos);
+                    if (hit != null)
+                    {
+                        PushUndo(coalesce: false);
+                        chart.notes.Remove(hit);
+                        if (ReferenceEquals(selectedNote, hit)) selectedNote = null;
+                        dirty = true;
+                    }
+                    break;
                 }
-                dirty = true;
-                e.Use();
+                case EditorTool.Select:
+                default:
+                {
+                    var hit = HitTestNote(L, pos);
+                    selectedNote = hit;
+                    if (hit != null)
+                    {
+                        PushUndo(coalesce: false); // ドラッグ開始時点(変更前)を1手として記録する
+                        draggingNote = true;
+                        dragOriginRawTick = rawTick;
+                        dragOriginRawCell = rawCell;
+                        dragOriginPoints = new List<Waypoint>(hit.points);
+                        notesSheet.CapturePointer(evt.pointerId);
+                    }
+                    break;
+                }
             }
-            else if (e.type == EventType.MouseUp && e.button == 0)
-            {
-                draggingNote = false;
-            }
-            else if (e.type == EventType.KeyDown && (e.keyCode == KeyCode.Delete || e.keyCode == KeyCode.Backspace) && selectedNote != null)
-            {
-                PushUndo(coalesce: false);
-                chart.notes.Remove(selectedNote);
-                selectedNote = null;
-                dirty = true;
-                e.Use();
-            }
+            evt.StopPropagation();
         }
 
-        private Note HitTestNote(Vector2 mouse, Func<int, float> tickToY, Func<float, int> yToTick, Func<float, float, float> combinedX)
+        private void OnSheetPointerMove(PointerMoveEvent evt)
+        {
+            if (!draggingNote || selectedNote == null) return;
+
+            var L = CurrentSheetLayout();
+            var pos = (Vector2)evt.localPosition;
+            int snapTicks = SnapTicks;
+
+            int rawTick = L.YToTick(pos.y);
+            var (_, rawCell) = L.PaneAt(pos.x);
+
+            int deltaTick = Mathf.RoundToInt((float)(rawTick - dragOriginRawTick) / snapTicks) * snapTicks;
+            float cellStep = selectedNote.kind == NoteKind.Slide ? 0.5f : 1f;
+            float deltaCell = SnapCellTo(rawCell - dragOriginRawCell, cellStep);
+
+            for (int i = 0; i < selectedNote.points.Count; i++)
+            {
+                var wp = dragOriginPoints[i];
+                wp.tick = Mathf.Max(0, wp.tick + deltaTick);
+                wp.cellF += deltaCell;
+                selectedNote.points[i] = wp;
+            }
+            dirty = true;
+            evt.StopPropagation();
+        }
+
+        private void OnSheetPointerUp(PointerUpEvent evt)
+        {
+            if (!draggingNote) return;
+            draggingNote = false;
+            if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
+        }
+
+        private void OnSheetWheel(WheelEvent evt)
+        {
+            if (evt.ctrlKey || evt.commandKey)
+            {
+                pxPerBeat = Mathf.Clamp(pxPerBeat - evt.delta.y * 2f, 8f, 240f);
+            }
+            else
+            {
+                // トラックパッドでは delta が小数で連続的に来るため、端数を持ち越して1スナップ単位に量子化する
+                sheetScrollAccum += evt.delta.y;
+                int steps = (int)sheetScrollAccum;
+                sheetScrollAccum -= steps;
+                if (steps != 0) scrollTick = Mathf.Max(0, scrollTick + steps * SnapTicks);
+            }
+            evt.StopPropagation();
+        }
+
+        private void OnSheetKeyDown(KeyDownEvent evt)
+        {
+            if (evt.keyCode != KeyCode.Delete && evt.keyCode != KeyCode.Backspace) return;
+            if (selectedNote == null) return;
+            PushUndo(coalesce: false);
+            chart.notes.Remove(selectedNote);
+            selectedNote = null;
+            dirty = true;
+            evt.StopPropagation();
+        }
+
+        private static int SnapTickTo(int rawTick, int snapTicks) =>
+            Mathf.RoundToInt((float)rawTick / snapTicks) * snapTicks;
+
+        private static float SnapCellTo(float rawCell, float step) =>
+            Mathf.Round(rawCell / step) * step;
+
+        private Note HitTestNote(SheetLayout L, Vector2 mouse)
         {
             for (int idx = chart.notes.Count - 1; idx >= 0; idx--)
             {
@@ -1077,21 +757,21 @@ namespace Muses.ChartTool
                 if (n.points.Count == 1)
                 {
                     var wp = n.points[0];
-                    float y = tickToY(wp.tick);
+                    float y = L.TickToY(wp.tick);
                     if (Mathf.Abs(mouse.y - y) > 6f) continue;
-                    float x0 = combinedX(wp.layerF, wp.cellF);
-                    float x1 = combinedX(wp.layerF, wp.cellF + wp.width);
+                    float x0 = L.CombinedX(wp.layerF, wp.cellF);
+                    float x1 = L.CombinedX(wp.layerF, wp.cellF + wp.width);
                     if (mouse.x >= Mathf.Min(x0, x1) - 2 && mouse.x <= Mathf.Max(x0, x1) + 2) return n;
                 }
                 else
                 {
-                    int tick = yToTick(mouse.y);
+                    int tick = L.YToTick(mouse.y);
                     int nStart = n.points[0].tick, nEnd = n.points[^1].tick;
                     if (tick < nStart - 4 || tick > nEnd + 4) continue;
                     int clamped = Mathf.Clamp(tick, nStart, nEnd);
                     var s = InterpAtTick(n, clamped);
-                    float x0 = combinedX(s.layerF, s.cellF);
-                    float x1 = combinedX(s.layerF, s.cellF + s.width);
+                    float x0 = L.CombinedX(s.layerF, s.cellF);
+                    float x1 = L.CombinedX(s.layerF, s.cellF + s.width);
                     if (mouse.x >= Mathf.Min(x0, x1) - 4 && mouse.x <= Mathf.Max(x0, x1) + 4) return n;
                 }
             }
@@ -1143,13 +823,5 @@ namespace Muses.ChartTool
             NoteKind.Flick => new Color(0.95f, 0.45f, 0.3f),
             _ => Color.white,
         };
-
-        private void DrawRectOutline(Rect r, Color c)
-        {
-            DrawRect(new Rect(r.x, r.y, r.width, 2), c);
-            DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), c);
-            DrawRect(new Rect(r.x, r.y, 2, r.height), c);
-            DrawRect(new Rect(r.xMax - 2, r.y, 2, r.height), c);
-        }
     }
 }

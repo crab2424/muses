@@ -1,3 +1,401 @@
-#chart-editor-root {
+/*
+    editor-ui-redesign.md §2 の見た目。色や寸法はここのカスタムプロパティに集約しておき、
+    §2.7 の「エディタ画面倍率」を入れるときは --font-* と --band-h-* を差し替えるだけで
+    済むようにしておく(USS変数はCSSのcustom propertyと同じくカスケードする)。
+*/
+.root {
+    flex-grow: 1;
+
+    --bg-canvas: rgb(24, 24, 28);
+    --bg-panel: rgb(38, 38, 44);
+    --bg-band: rgb(47, 47, 54);
+    --bg-control: rgb(58, 58, 66);
+    --bg-control-hover: rgb(72, 72, 82);
+    --bg-overlay: rgb(30, 30, 36);
+    --border: rgb(20, 20, 24);
+    --text: rgb(216, 216, 222);
+    --text-dim: rgb(143, 143, 154);
+    --accent: rgb(74, 158, 255);
+
+    --note-tap: rgb(77, 204, 230);
+    --note-extap: rgb(242, 204, 64);
+    --note-slide: rgb(102, 230, 153);
+    --note-flick: rgb(242, 115, 77);
+
+    --band-h: 30px;
+    --font-sm: 11px;
+    --font-md: 12px;
+
+    flex-direction: column;
+    background-color: var(--bg-canvas);
+    color: var(--text);
+    font-size: var(--font-md);
+}
+
+/* ---------- 共通バンド ---------- */
+
+.band {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    background-color: var(--bg-band);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--border);
+    padding-left: 4px;
+    padding-right: 4px;
+}
+
+.tool-group {
+    flex-direction: row;
+    align-items: center;
+}
+
+/* 機能グループごとの縦セパレータ(§2.2「区切りが無い」への対処) */
+.tool-sep {
+    width: 1px;
+    height: 16px;
+    margin-left: 5px;
+    margin-right: 5px;
+    background-color: var(--border);
+}
+
+.spacer {
     flex-grow: 1;
 }
+
+.mono {
+    -unity-font-style: bold;
+    font-size: var(--font-sm);
+    color: var(--text-dim);
+    margin-left: 6px;
+    margin-right: 6px;
+}
+
+/* ---------- A: メニューバー(§2.1) ---------- */
+
+.menu-bar {
+    height: 24px;
+    background-color: var(--bg-panel);
+    padding-left: 2px;
+}
+
+.menu-btn {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 3px;
+    margin: 0;
+    padding-left: 9px;
+    padding-right: 9px;
+    height: 20px;
+    color: var(--text);
+    font-size: var(--font-md);
+}
+
+.menu-btn:hover {
+    background-color: var(--bg-control-hover);
+}
+
+/* ---------- A: ツールバー(§2.2) ---------- */
+
+.toolbar {
+    height: var(--band-h);
+}
+
+.tb-btn {
+    background-color: var(--bg-control);
+    border-width: 1px;
+    border-color: var(--border);
+    border-radius: 3px;
+    margin: 0 2px 0 0;
+    padding: 0 8px 0 8px;
+    height: 22px;
+    color: var(--text);
+    font-size: var(--font-sm);
+}
+
+.tb-btn:hover {
+    background-color: var(--bg-control-hover);
+}
+
+.tb-btn:disabled {
+    opacity: 0.4;
+}
+
+/* ノーツ種別ボタン。左端の色帯でnote-spec.mdの色と対応づける(§2.2: 種別はツールバーへ) */
+.tool-btn {
+    border-left-width: 3px;
+    min-width: 42px;
+}
+
+.tool-btn--selected {
+    background-color: var(--accent);
+    color: rgb(12, 12, 16);
+    -unity-font-style: bold;
+}
+
+.tool-btn--tap { border-left-color: var(--note-tap); }
+.tool-btn--extap { border-left-color: var(--note-extap); }
+.tool-btn--slide { border-left-color: var(--note-slide); }
+.tool-btn--flick { border-left-color: var(--note-flick); }
+.tool-btn--neutral { border-left-color: var(--text-dim); }
+
+.field-label {
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+    margin-right: 4px;
+}
+
+.status-text {
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+    margin-right: 8px;
+}
+
+.dirty-badge {
+    font-size: var(--font-sm);
+    -unity-font-style: bold;
+    margin-right: 4px;
+}
+
+.dirty-badge--dirty { color: var(--note-extap); }
+.dirty-badge--clean { color: var(--text-dim); }
+
+/* ---------- B: メイン行 ---------- */
+
+.main-row {
+    flex-direction: row;
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.tabs-host {
+    flex-grow: 1;
+    min-width: 0;
+    background-color: var(--bg-canvas);
+}
+
+/* タブ内のキャンバスは常に残り全域を埋める */
+.canvas-host {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unity-tab-view__content-container,
+.unity-tab__content-container {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unity-tab__header {
+    background-color: var(--bg-panel);
+}
+
+/* ---------- D: 右パネル(§2.5) ---------- */
+
+.right-panel {
+    width: 300px;
+    flex-shrink: 0;
+    background-color: var(--bg-panel);
+    border-left-width: 1px;
+    border-left-color: var(--border);
+}
+
+.right-scroll {
+    flex-grow: 1;
+}
+
+.section {
+    border-bottom-width: 1px;
+    border-bottom-color: var(--border);
+    padding-bottom: 4px;
+    margin-bottom: 2px;
+}
+
+.section > .unity-foldout__toggle {
+    background-color: var(--bg-band);
+    margin: 0;
+    padding: 3px 0 3px 2px;
+}
+
+.section .unity-foldout__text {
+    -unity-font-style: bold;
+    font-size: var(--font-sm);
+}
+
+/* 参考画像と同じ「ラベル左・値右」の2カラム(§2.5: 現状は縦積みで間延びしている) */
+.prop-row {
+    flex-direction: row;
+    align-items: center;
+    height: 20px;
+    margin: 1px 4px 1px 4px;
+}
+
+.prop-row > .prop-label {
+    width: 88px;
+    flex-shrink: 0;
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+}
+
+.prop-row > .prop-value {
+    flex-grow: 1;
+    margin: 0;
+    min-width: 0;
+}
+
+.prop-row .unity-base-field__input {
+    background-color: var(--bg-control);
+    border-color: var(--border);
+}
+
+.prop-note {
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+    white-space: normal;
+    margin: 2px 4px 2px 4px;
+}
+
+.stats-text {
+    white-space: normal;
+    font-size: var(--font-sm);
+    margin: 4px;
+}
+
+.inspector-host {
+    min-height: 60px;
+}
+
+/* painter2Dでは文字が描けないので、Ground/Sky見出しと小節番号だけLabelを重ねる */
+.sheet-label {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.validation-item {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    -unity-text-align: middle-left;
+    white-space: normal;
+    font-size: var(--font-sm);
+    margin: 0;
+    padding: 2px 4px 2px 4px;
+}
+
+.validation-item:hover { background-color: var(--bg-control-hover); }
+.validation-item--error { color: rgb(255, 128, 128); }
+.validation-item--warning { color: rgb(255, 217, 102); }
+.validation-item--info { color: var(--text); }
+
+/* ---------- C: ステータスバー(§2.6) ---------- */
+
+.status-bar {
+    height: var(--band-h);
+    border-bottom-width: 0;
+    border-top-width: 1px;
+    border-top-color: var(--border);
+}
+
+.transport-btn {
+    min-width: 28px;
+    -unity-text-align: middle-center;
+}
+
+.link-btn {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+    margin: 0;
+    padding: 0 6px 0 6px;
+}
+
+.link-btn:hover { color: var(--text); }
+
+.status-bar .unity-base-popup-field {
+    margin: 0 2px 0 2px;
+    min-width: 96px;
+}
+
+.status-bar .unity-base-field__input {
+    background-color: var(--bg-control);
+    border-color: var(--border);
+}
+
+.zoom-slider {
+    width: 110px;
+    margin: 0 4px 0 4px;
+}
+
+/* 曲全体のどこにいるかを常時見せる(§2.4「スクロールバーが無く把握できない」への対処) */
+.status-scrub {
+    flex-grow: 1;
+    flex-direction: row;
+    align-items: center;
+    min-width: 80px;
+}
+
+.status-scrub > .unity-slider {
+    flex-grow: 1;
+    margin: 0 8px 0 8px;
+}
+
+/* ---------- モーダル ---------- */
+
+.overlay-layer {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+}
+
+.modal-scrim {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    align-items: center;
+    justify-content: center;
+}
+
+.modal {
+    background-color: var(--bg-overlay);
+    border-width: 1px;
+    border-color: var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    min-width: 420px;
+}
+
+.modal-title {
+    -unity-font-style: bold;
+    margin-bottom: 6px;
+}
+
+.modal-row {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 6px;
+}
+
+.browse-list {
+    height: 300px;
+    background-color: var(--bg-canvas);
+    border-width: 1px;
+    border-color: var(--border);
+}
+
+.browse-item {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    -unity-text-align: middle-left;
+    margin: 0;
+    padding: 2px 6px 2px 6px;
+    font-size: var(--font-sm);
+    color: var(--text);
+}
+
+.browse-item:hover { background-color: var(--bg-control-hover); }
+.browse-item--dir { color: var(--note-tap); }
