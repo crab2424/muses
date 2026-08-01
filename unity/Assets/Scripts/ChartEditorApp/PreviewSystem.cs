@@ -82,6 +82,21 @@ namespace Muses.ChartTool
             cam = camGo.AddComponent<Camera>();
             cam.enabled = false; // 明示的に Render() を呼ぶ（自動レンダリングでの垂れ流しを防ぐ、§2.2）
 
+            // PreviewCameraはenabled=falseでオフスクリーンRenderTextureにしか描かないため、
+            // シーンに描画用カメラが1台も無くなり「Display 1 / No cameras rendering」の警告
+            // オーバーレイが出る（editor-ui-redesign.md §5-2）。何も映さない最背面カメラを別途置いて解消する。
+            var displayCamGo = new GameObject("DisplayFallbackCamera") { hideFlags = HideFlags.DontSave };
+            displayCamGo.transform.SetParent(rigRoot.transform, false);
+            var displayCam = displayCamGo.AddComponent<Camera>();
+            displayCam.clearFlags = CameraClearFlags.SolidColor;
+            displayCam.backgroundColor = Color.black;
+            displayCam.cullingMask = 0;
+            displayCam.depth = -100f;
+            displayCam.orthographic = true;
+            displayCam.orthographicSize = 1f;
+            displayCam.nearClipPlane = 0.01f;
+            displayCam.farClipPlane = 1f;
+
             var stageGo = new GameObject("PreviewStage") { hideFlags = HideFlags.DontSave };
             stageGo.transform.SetParent(rigRoot.transform, false);
             stageView = stageGo.AddComponent<StageView>();
