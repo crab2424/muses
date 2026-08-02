@@ -90,6 +90,7 @@ namespace Muses.ChartTool
         // インスペクタは選択ノーツの中継点の数だけ行が変わるので、構造の作り直しと値の追従を分けて持つ
         private VisualElement inspectorHost;
         private Note inspectorNote;
+        private int inspectorPointIndex = -1; // §3: どの点を表示中かも再構築判定に含める
         private int inspectorPointCount = -1;
         private int inspectorSelectionCount = -1; // §7.4-A 複数選択の件数変化を検知する
         private readonly List<Action> inspectorRefreshers = new();
@@ -372,6 +373,15 @@ namespace Muses.ChartTool
             notesSheet.RegisterCallback<PointerLeaveEvent>(OnSheetPointerLeave);
             notesSheet.RegisterCallback<WheelEvent>(OnSheetWheel);
             notesSheet.RegisterCallback<KeyDownEvent>(OnSheetKeyDown);
+            // editor-ui-rework-r2.md §5: 矢印キーはKeyDownEventとは別にNavigationMoveEventを
+            // 発行し、既定でフォーカスを次のfocusable要素へ移す。OnSheetKeyDownのStopPropagation
+            // はKeyDownEventしか止められないため、これを止めないと数回に1回しかカーソルが
+            // 動かない（フォーカスが一巡してnotesSheetに戻るまで反応しない）不具合になる。
+            notesSheet.RegisterCallback<NavigationMoveEvent>(evt =>
+            {
+                evt.PreventDefault();
+                evt.StopPropagation();
+            });
 
             previewSurface = new VisualElement();
             previewSurface.style.flexGrow = 1;
@@ -717,8 +727,11 @@ namespace Muses.ChartTool
         // ================= インスペクタ(§2.5) =================
 
         /// <summary>
-        /// 選択中ノーツの編集UI。中継点の増減で行数が変わるため、選択や点数が変わったときだけ作り直す。
-        /// 作り直しの間、値の追従（キャンバス上でのドラッグなど）は inspectorRefreshers が担当する。
+        /// 選択中の1点だけを編集するUI（editor-ui-rework-r2.md §3）。
+        /// 旧実装はSlideの全waypointをFoldoutで並べており、中継点が増えるとインスペクタが
+        /// 圧迫された。選択の粒度は既にNoteRef(点単位)なので、Foldoutで包む代わりに
+        /// 「選択中の1点」だけをフラットに表示する。単一選択はその点、複数選択は代表点
+        /// （SelectionRepresentative）を対象にする。
         /// </summary>
         private void RebuildInspector()
         {
@@ -731,13 +744,8 @@ namespace Muses.ChartTool
                 return;
             }
 
-            if (selection.Count > 1)
-            {
-                RebuildMultiSelectInspector();
-                return;
-            }
-
-            if (selectedNote == null)
+            var rep = SelectionRepresentative();
+            if (rep == null)
             {
                 var empty = new Label("ノーツを選択してください");
                 empty.AddToClassList("prop-note");
@@ -745,143 +753,184 @@ namespace Muses.ChartTool
                 return;
             }
 
-            var note = selectedNote;
+            var (note, index) = (rep.Value.note, rep.Value.index);
 
-            var kindRow = new Label($"種別: {note.kind}");
-            kindRow.AddToClassList("prop-note");
-            inspectorHost.Add(kindRow);
-
-            var groupField = AddIntRow(inspectorHost, "スクロール群", v =>
+            if (selection.Count > 1)
             {
-                PushUndo(coalesce: true);
-                note.scrollGroup = Mathf.Max(0, v);
-                dirty = true;
-            });
-            groupField.SetValueWithoutNotify(note.scrollGroup);
-            inspectorRefreshers.Add(() => RefreshIfUnfocused(groupField, note.scrollGroup));
+                var countLabel = new Label($"{selection.Count}件選択 — 代表点（種別: {note.kind}）を編集中");
+                countLabel.AddToClassList("prop-note");
+                inspectorHost.Add(countLabel);
 
-            for (int i = 0; i < note.points.Count; i++)
-            {
-                int index = i; // クロージャ用に確定させる
-                string role = index == 0 ? "（始点）"
-                    : index == note.points.Count - 1 ? "（終点）" : "";
-                var section = new Foldout { text = $"中継点 {index}{role}", value = index == 0 };
-                section.AddToClassList("section");
-                inspectorHost.Add(section);
+                var deleteAllBtn = new Button(DeleteSelection) { text = $"選択した{selection.Count}件を削除" };
+                deleteAllBtn.AddToClassList("tb-btn");
+                inspectorHost.Add(deleteAllBtn);
 
-                var addrField = AddTextRow(section, "位置", v =>
+                bool allSinglePoint = selection.TrueForAll(r => r.note.points.Count == 1);
+                if (allSinglePoint)
                 {
-                    try
+                    var kindDropdown = new DropdownField { choices = new List<string> { "Tap", "Ex Tap", "Flick" }, index = 0 };
+                    kindDropdown.RegisterValueChangedCallback(evt =>
                     {
-                        var parsed = SongAddr.ParseAddr(v);
-                        int newTick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
-                        var w = note.points[index];
-                        if (w.tick == newTick) return;
-                        PushUndo(coalesce: true);
-                        w.tick = newTick;
-                        note.points[index] = w;
-                        dirty = true;
-                    }
-                    catch (FormatException)
-                    {
-                        // 入力途中の無効な文字列は無視する（フォーカスが外れれば値で上書きされる）
-                    }
-                });
-                inspectorRefreshers.Add(() =>
-                    RefreshIfUnfocused(addrField, SongAddr.FormatAddr(SongAddr.ToAddr(song.meters, note.points[index].tick))));
-
-                var layerField = AddSliderRow(section, "layerF", 0f, 1f, v =>
-                    MutateWaypoint(note, index, w => { w.layerF = Mathf.Clamp01(v); return w; }));
-                inspectorRefreshers.Add(() => RefreshIfUnfocused(layerField, note.points[index].layerF));
-
-                var cellField = AddFloatRow(section, "cellF", v =>
-                    MutateWaypoint(note, index, w => { w.cellF = v; return w; }));
-                inspectorRefreshers.Add(() => RefreshIfUnfocused(cellField, note.points[index].cellF));
-
-                var widthField = AddFloatRow(section, "width", v =>
-                    MutateWaypoint(note, index, w => { w.width = Mathf.Max(0.1f, v); return w; }));
-                inspectorRefreshers.Add(() => RefreshIfUnfocused(widthField, note.points[index].width));
-
-                var easingField = AddEnumRow(section, "easing", note.points[index].easing, (Easing v) =>
-                    MutateWaypoint(note, index, w => { w.easing = v; return w; }));
-                inspectorRefreshers.Add(() => RefreshEnumIfUnfocused(easingField, note.points[index].easing));
-
-                var markerField = AddEnumRow(section, "marker", note.points[index].marker, (WaypointMarker v) =>
-                    MutateWaypoint(note, index, w => { w.marker = v; return w; }));
-                inspectorRefreshers.Add(() => RefreshEnumIfUnfocused(markerField, note.points[index].marker));
-
-                var comboToggle = AddToggleRow(section, "comboStep上書き", v =>
-                    MutateWaypoint(note, index, w => { w.comboStep = v ? w.comboStep ?? 0 : null; return w; }));
-                comboToggle.SetValueWithoutNotify(note.points[index].comboStep.HasValue);
-                inspectorRefreshers.Add(() => comboToggle.SetValueWithoutNotify(note.points[index].comboStep.HasValue));
-
-                var comboField = AddIntRow(section, "comboStep(tick)", v =>
-                    MutateWaypoint(note, index, w => { w.comboStep = v; return w; }));
-                inspectorRefreshers.Add(() =>
-                {
-                    var wp = note.points[index];
-                    comboField.parent.style.display = wp.comboStep.HasValue ? DisplayStyle.Flex : DisplayStyle.None;
-                    RefreshIfUnfocused(comboField, wp.comboStep ?? 0);
-                });
-
-                if (note.kind == NoteKind.Slide && note.points.Count > 2)
-                {
-                    var removeBtn = new Button(() =>
-                    {
+                        if (suppressUiCallbacks) return;
+                        NoteKind newKind = evt.newValue switch
+                        {
+                            "Tap" => NoteKind.Tap,
+                            "Ex Tap" => NoteKind.ExTap,
+                            _ => NoteKind.Flick,
+                        };
                         PushUndo(coalesce: false);
-                        note.points.RemoveAt(index);
+                        foreach (var r in selection) r.note.kind = newKind;
                         dirty = true;
-                    })
-                    { text = "この中継点を削除" };
-                    removeBtn.AddToClassList("tb-btn");
-                    section.Add(removeBtn);
+                    });
+                    MakePropRow(inspectorHost, "種別に一括変更", kindDropdown);
                 }
-            }
-
-            var deleteBtn = new Button(DeleteSelection) { text = "このノーツを削除" };
-            deleteBtn.AddToClassList("tb-btn");
-            inspectorHost.Add(deleteBtn);
-        }
-
-        /// <summary>
-        /// §7.4-A: 複数選択時のインスペクタ。個別編集はせず一括操作（削除／単発ノーツのみ種別変更）に留める
-        /// （editor-ui-redesign.md §7.4-Aどおり）。
-        /// </summary>
-        private void RebuildMultiSelectInspector()
-        {
-            var countLabel = new Label($"{selection.Count}件選択");
-            countLabel.AddToClassList("prop-note");
-            inspectorHost.Add(countLabel);
-
-            var deleteBtn = new Button(DeleteSelection) { text = $"選択した{selection.Count}件を削除" };
-            deleteBtn.AddToClassList("tb-btn");
-            inspectorHost.Add(deleteBtn);
-
-            bool allSinglePoint = selection.TrueForAll(r => r.note.points.Count == 1);
-            if (allSinglePoint)
-            {
-                var kindDropdown = new DropdownField { choices = new List<string> { "Tap", "Ex Tap", "Flick" }, index = 0 };
-                kindDropdown.RegisterValueChangedCallback(evt =>
+                else
                 {
-                    if (suppressUiCallbacks) return;
-                    NoteKind newKind = evt.newValue switch
-                    {
-                        "Tap" => NoteKind.Tap,
-                        "Ex Tap" => NoteKind.ExTap,
-                        _ => NoteKind.Flick,
-                    };
-                    PushUndo(coalesce: false);
-                    foreach (var r in selection) r.note.kind = newKind;
-                    dirty = true;
-                });
-                MakePropRow(inspectorHost, "種別に一括変更", kindDropdown);
+                    var note2 = new Label("種別の一括変更はTap/Ex Tap/Flickのみ対応（Slideを含む選択では非表示）");
+                    note2.AddToClassList("prop-note");
+                    inspectorHost.Add(note2);
+                }
+
+                inspectorHost.Add(new VisualElement { style = { height = 1, marginTop = 4, marginBottom = 4, backgroundColor = new Color(1, 1, 1, 0.15f) } });
             }
             else
             {
-                var note = new Label("種別の一括変更はTap/Ex Tap/Flickのみ対応（Slideを含む選択では非表示）");
-                note.AddToClassList("prop-note");
-                inspectorHost.Add(note);
+                var kindRow = new Label($"種別: {note.kind}");
+                kindRow.AddToClassList("prop-note");
+                inspectorHost.Add(kindRow);
+
+                var groupField = AddIntRow(inspectorHost, "スクロール群", v =>
+                {
+                    PushUndo(coalesce: true);
+                    note.scrollGroup = Mathf.Max(0, v);
+                    dirty = true;
+                });
+                groupField.SetValueWithoutNotify(note.scrollGroup);
+                inspectorRefreshers.Add(() => RefreshIfUnfocused(groupField, note.scrollGroup));
             }
+
+            string role = note.points.Count == 1 ? ""
+                : index == 0 ? "（始点）"
+                : index == note.points.Count - 1 ? "（終点）" : "（中継点）";
+            var pointRow = new Label($"点 {index + 1}/{note.points.Count}{role}");
+            pointRow.AddToClassList("prop-note");
+            inspectorHost.Add(pointRow);
+
+            BuildWaypointRows(inspectorHost, note, index);
+
+            if (note.points.Count > 1 && index != 0 && index != note.points.Count - 1)
+            {
+                var removeBtn = new Button(() =>
+                {
+                    PushUndo(coalesce: false, "中継点を削除");
+                    note.points.RemoveAt(index);
+                    dirty = true;
+                })
+                { text = "この中継点を削除" };
+                removeBtn.AddToClassList("tb-btn");
+                inspectorHost.Add(removeBtn);
+            }
+
+            if (selection.Count == 1)
+            {
+                var deleteBtn = new Button(DeleteSelection) { text = "このノーツを削除" };
+                deleteBtn.AddToClassList("tb-btn");
+                inspectorHost.Add(deleteBtn);
+            }
+        }
+
+        /// <summary>editor-ui-rework-r2.md §3: 1点分の編集行（位置/layerF/cellF/width/easing/marker/
+        /// comboStep）を組む。単一選択・複数選択時の代表点表示の両方から呼ぶ共通部分。</summary>
+        private void BuildWaypointRows(VisualElement host, Note note, int index)
+        {
+            var addrField = AddTextRow(host, "位置", v =>
+            {
+                try
+                {
+                    var parsed = SongAddr.ParseAddr(v);
+                    int newTick = SongAddr.ToTick(song.meters, parsed.bar, parsed.beat, parsed.tick);
+                    var w = note.points[index];
+                    if (w.tick == newTick) return;
+                    PushUndo(coalesce: true);
+                    w.tick = newTick;
+                    note.points[index] = w;
+                    dirty = true;
+                }
+                catch (FormatException)
+                {
+                    // 入力途中の無効な文字列は無視する（フォーカスが外れれば値で上書きされる）
+                }
+            });
+            inspectorRefreshers.Add(() =>
+                RefreshIfUnfocused(addrField, SongAddr.FormatAddr(SongAddr.ToAddr(song.meters, note.points[index].tick))));
+
+            var layerField = AddSliderRow(host, "layerF", 0f, 1f, v =>
+                MutateWaypoint(note, index, w => { w.layerF = Mathf.Clamp01(v); return w; }));
+            inspectorRefreshers.Add(() => RefreshIfUnfocused(layerField, note.points[index].layerF));
+
+            var cellField = AddFloatRow(host, "cellF", v =>
+                MutateWaypoint(note, index, w => { w.cellF = v; return w; }));
+            inspectorRefreshers.Add(() => RefreshIfUnfocused(cellField, note.points[index].cellF));
+
+            var widthField = AddFloatRow(host, "width", v =>
+                MutateWaypoint(note, index, w => { w.width = Mathf.Max(0.1f, v); return w; }));
+            inspectorRefreshers.Add(() => RefreshIfUnfocused(widthField, note.points[index].width));
+
+            var easingField = AddEnumRow(host, "easing(横)", note.points[index].easing, (Easing v) =>
+                MutateWaypoint(note, index, w => { w.easing = v; return w; }));
+            inspectorRefreshers.Add(() => RefreshEnumIfUnfocused(easingField, note.points[index].easing));
+
+            // editor-ui-rework-r2.md §6: 横(cellF/width)と高さ(layerF)のeasingは独立に設定できる。
+            var easingHField = AddEnumRow(host, "easing(高さ)", note.points[index].easingH, (Easing v) =>
+                MutateWaypoint(note, index, w => { w.easingH = v; return w; }));
+            inspectorRefreshers.Add(() => RefreshEnumIfUnfocused(easingHField, note.points[index].easingH));
+
+            var markerField = AddEnumRow(host, "marker", note.points[index].marker, (WaypointMarker v) =>
+                MutateWaypoint(note, index, w => { w.marker = v; return w; }));
+            inspectorRefreshers.Add(() => RefreshEnumIfUnfocused(markerField, note.points[index].marker));
+
+            var comboToggle = AddToggleRow(host, "comboStep上書き", v =>
+                MutateWaypoint(note, index, w => { w.comboStep = v ? w.comboStep ?? 0 : null; return w; }));
+            comboToggle.SetValueWithoutNotify(note.points[index].comboStep.HasValue);
+            inspectorRefreshers.Add(() => comboToggle.SetValueWithoutNotify(note.points[index].comboStep.HasValue));
+
+            var comboField = AddIntRow(host, "comboStep(tick)", v =>
+                MutateWaypoint(note, index, w => { w.comboStep = v; return w; }));
+            inspectorRefreshers.Add(() =>
+            {
+                var wp = note.points[index];
+                comboField.parent.style.display = wp.comboStep.HasValue ? DisplayStyle.Flex : DisplayStyle.None;
+                RefreshIfUnfocused(comboField, wp.comboStep ?? 0);
+            });
+        }
+
+        /// <summary>
+        /// editor-ui-rework-r2.md §3.2: 複数選択時の代表点を段階的な絞り込みで決める。
+        /// 1) 始点(index==0)があれば絞る 2) 無ければ終点(index==最終)で絞る
+        /// 3) 残った候補のうちcellFが最小(左)のもの 4) 同値ならtickが最小(早い)のもの。
+        /// 単一選択時はそのまま選択中の1点を返す。
+        /// </summary>
+        private NoteRef? SelectionRepresentative()
+        {
+            if (selection.Count == 0) return null;
+            if (selection.Count == 1) return selection[0];
+
+            var candidates = selection.FindAll(r => r.index == 0);
+            if (candidates.Count == 0) candidates = selection.FindAll(r => r.index == r.note.points.Count - 1);
+            if (candidates.Count == 0) candidates = new List<NoteRef>(selection);
+
+            float minCell = float.MaxValue;
+            foreach (var r in candidates) minCell = Mathf.Min(minCell, r.note.points[r.index].cellF);
+            candidates = candidates.FindAll(r => Mathf.Approximately(r.note.points[r.index].cellF, minCell));
+
+            var best = candidates[0];
+            int bestTick = best.note.points[best.index].tick;
+            for (int i = 1; i < candidates.Count; i++)
+            {
+                int t = candidates[i].note.points[candidates[i].index].tick;
+                if (t < bestTick) { best = candidates[i]; bestTick = t; }
+            }
+            return best;
         }
 
         /// <summary>
@@ -1277,17 +1326,22 @@ namespace Muses.ChartTool
                 notesSheet.MarkDirtyRepaint();
             }
 
-            // 選択が変わった / 中継点が増減したときだけインスペクタを組み直し、
+            // 選択（どの点を表示するか）が変わった / 中継点が増減したときだけインスペクタを組み直し、
             // それ以外の間はキャンバス上のドラッグ結果を各フィールドへ反映するだけにする。
-            // selectedNoteは複数選択中は常にnullなので、selection.Countも見ないと
-            // 「1件選択→矩形選択で別の2件」のように中身が変わっても再構築されない場合がある。
-            if (!ReferenceEquals(inspectorNote, selectedNote)
-                || (selectedNote != null && inspectorPointCount != selectedNote.points.Count)
+            // §3: 単一選択の点だけでなく複数選択の代表点(SelectionRepresentative)が変わった
+            // 場合も再構築が要る（例: 矩形選択のドラッグで代表点になる点が入れ替わる）。
+            var rep = SelectionRepresentative();
+            Note repNote = rep?.note;
+            int repIndex = rep?.index ?? -1;
+            if (!ReferenceEquals(inspectorNote, repNote)
+                || inspectorPointIndex != repIndex
+                || (repNote != null && inspectorPointCount != repNote.points.Count)
                 || inspectorEventKind != selectedEventKind || inspectorEventIndex != selectedEventIndex
                 || inspectorSelectionCount != selection.Count)
             {
-                inspectorNote = selectedNote;
-                inspectorPointCount = selectedNote?.points.Count ?? 0;
+                inspectorNote = repNote;
+                inspectorPointIndex = repIndex;
+                inspectorPointCount = repNote?.points.Count ?? 0;
                 inspectorEventKind = selectedEventKind;
                 inspectorEventIndex = selectedEventIndex;
                 inspectorSelectionCount = selection.Count;

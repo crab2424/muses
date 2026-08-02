@@ -614,10 +614,55 @@ Step Type  ▸  (Visible / Invisible / Ignored)    有効条件: hasSelectionSte
 
 ---
 
+## 実装ログ（2026-08-02、同セッション内、Unity Editor未検証）
+
+§0の確定事項に沿って§5→§1→§2→§7→§4→§3→§6の順で全項目実装した。**Unity Editorが既に
+ユーザーの手元で開いていたため、このセッションでは二重起動を避けてバッチコンパイルを
+実行していない**。ブレース対応・構文の静的チェックとコードレビューのみ。次回セッション
+冒頭（またはユーザーがConsoleを確認可能なタイミング）でコンパイルエラーの有無を確認すること。
+
+- **§5**: `NavigationMoveEvent`をPreventDefault/StopPropagationするハンドラを`notesSheet`に追加
+  （`ChartEditorApp.UI.cs`）。`EnsureCursorVisible`を「画面端に達したら1/4画面分の余裕を
+  持ってスクロール」に変更（`ChartEditorApp.cs`）。
+- **§1**: `DrawWaypointGlyph`ヘルパーを追加（Visible=塗りつぶし/None・Invisible=輪郭のみ）。
+  シート本体の帯描画2箇所（forceSky/非forceSky）と高さレーンの点描画に適用。
+  始点・終点は従来どおり無条件で塗りつぶし扱い。
+- **§2**: `DrawHeightLane`を全ノーツ描画（非選択はα0.28の輪郭のみ、選択中は不透明で後描き）に変更。
+  `HandleHeightLanePointerDown`を`FindClosestHeightPoint`ヘルパー抽出＋2パス探索
+  （選択中を優先、無ければ全ノーツ）にし、Shift対応・選択状態の更新を追加。
+- **§7**: `OnSheetRightClick`を「常設ブロック（削除/切り取り/コピー/貼り付け/反転して貼り付け/
+  選択を反転、実行不可はAddDisabledItemで無効表示）＋文脈ブロック（種別変更 or 中継点追加）」の
+  2段構成に全面書き換え。
+- **§4**: `SheetLayout.TryPaneAt`（ガター上でnull）を追加。`ResolveCellDelta`/`ResolveLayerDelta`
+  （点群全体に対する1回のスナップ＋盤面内クランプ）を追加し、`ComputePasteTransform`で
+  `ConfirmPaste`/`DrawPasteGhost`が同じ変換を共有するようにした。ドラッグ移動
+  （`OnSheetPointerMove`）にも同じクランプを適用し、ガター対策の`dragLastValidCell/Layer`を追加。
+- **§3**: `RebuildInspector`をFoldoutループから「選択中1点（単一選択はその点、複数選択は
+  `SelectionRepresentative`の代表点）をフラット表示」に書き換え。共通行構築を
+  `BuildWaypointRows`に抽出。代表点選出は設計どおりの段階的絞り込み（始点→終点→左→早い）。
+  再構築トリガーに`inspectorPointIndex`を追加し、代表点が入れ替わったときも再構築されるようにした。
+  旧`RebuildMultiSelectInspector`は`RebuildInspector`に統合されたため削除（呼び出し元皆無を確認済み）。
+- **§6**: `Waypoint.easingH`を追加（`Chart/ChartNote.cs`）。`ChartMath.At`を横=`easing`・
+  高さ=`easingH`の2軸補間に変更。`ChartSerializer`は`easeh=`を新設し、省略時は`ease=`を
+  両軸に流用（既存譜面と完全互換、`AppendWaypointOptions`は`easingH != easing`のときのみ出力）。
+  `ChartBuilder.WP()`に`easingH`引数（既定null=easingと同値）を追加、既存呼び出しは無変更で
+  従来の見た目を維持。エディタ側は`NewWaypoint`/`InterpAtTick`（`ChartEditorApp.cs`内の
+  `ChartMath.At`複製）を追随、高さレーンのカーブ描画が参照するeasingを`easingH`に修正
+  （**取り違えると高さカーブが横のeasingに引きずられるため要注意箇所**）。easing巡回は
+  シート本体のクリックで`easing`、高さレーンのクリックで`easingH`を巡回するよう分離
+  （`heightEasingCycleCandidate`/`heightDragStartScreenPos`を新設し、`easingCycleCandidate`と
+  同じ「クリック(3px未満の移動)か否か」判定を高さレーン側にも複製）。インスペクタに
+  「easing(横)」「easing(高さ)」の2行を追加。`memory/note-spec.md`をrev.5に更新
+  （§1.1構造体定義・§1.2補間規則・冒頭のrev変更履歴）。
+
+**次回セッション最優先事項**: Unity Editorでコンパイルエラーの有無を確認し、実機で
+§1〜§7の各項目（特に§2の高さレーン全ノーツ選択、§6のeasing巡回の場所依存分岐、
+§4のガター越えドラッグ/ペースト）を操作確認すること。
+
 ## 関連
 
 - `memory/editor-ui-rework-mmw.md` — 前段。§1〜§7・移植候補8件（実装済み・実機確認済み）。
 - `memory/editor-ui-redesign.md` — その前段。§1〜§7（実装済み）。
-- `memory/note-spec.md` — ノーツ仕様 rev.4。**§6 で rev.5 へ更新が必要**。
+- `memory/note-spec.md` — ノーツ仕様。**§6実装によりrev.5へ更新済み**。
 - `memory/editor-spec.md` — Phase 4 機能仕様 rev.2。§2 のレイアウト図は既に古い。
 - `memory/reference/MikuMikuWorld-master/` — 参照元ソース。

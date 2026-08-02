@@ -1,4 +1,4 @@
-# muses ノーツ仕様（Phase 1 / 2026-07-31 改訂 rev.4）
+# muses ノーツ仕様（Phase 1 / 2026-08-02 改訂 rev.5）
 
 対象: **Tap / Ex Tap / Slide / Flick** と、Slide に付く**中継点**。
 目的は「今あるものを確定させる」ことに加えて、**今後ノーツ種別が増えても
@@ -21,6 +21,12 @@
 > **同一層でセル範囲が交差する同時刻ノーツを許可**（rev.3 の禁止ルールを撤回、
 > 併せて縦連判定に関する誤った記述を訂正）。**包含判定と駆動の分離**を明文化し、
 > Slide 始点を「枠内更新で駆動・連続座標で包含判定」に確定。
+>
+> rev.5 の主な変更: **`Waypoint.easing` を横方向専用に据え置き、高さ方向用に
+> `easingH` を新設**（editor-ui-rework-r2.md §6）。§1.2 が予告していた「別々に
+> 指定したくなったら構造体に昇格」を実施した形。`easing` は `cellF`/`width`、
+> `easingH` は `layerF` を独立に補間する。ファイル形式は `ease=` を横用のまま流用し、
+> 高さ用に `easeh=` を追加（省略時は `ease` を両軸に流用するため既存譜面は完全互換）。
 
 ---
 
@@ -136,7 +142,8 @@ Waypoint {
   layerF      : float           // 0=地上 … 1=空中（連続値）
   cellF       : float           // セル境界インデックスの連続値
   width       : float           // この点における帯の幅（セル数）
-  easing      : Easing          // 「この点から次の点まで」の補間種別。既定 Linear
+  easing      : Easing          // 「この点から次の点まで」の cellF/width（横方向）の補間種別。既定 Linear
+  easingH     : Easing          // 「この点から次の点まで」の layerF（高さ方向）の補間種別。既定 Linear（rev.5）
   marker      : WaypointMarker  // None / Visible / Invisible（§3）
   comboStep   : int?            // この点から次の点までのコンボ刻み幅の上書き（§2.3）。null なら自動
 }
@@ -146,7 +153,7 @@ Waypoint {
 - **Slide** は `points.Length >= 2`。始点 = `points[0]`、終点 = `points[^1]`、
   間にあるものがすべて**中継点**。
 - 幅を点ごとに持たせることで「始点・中継点・終点で幅を変更可能」を満たす。
-  区間内の幅は `easing` に従って補間する。
+  区間内の幅は `easing` に従って補間する（`easingH` ではない。§1.2）。
 - **幅はデータ上 float**。エディタ側で 0.5 / 1.0 セル刻みにスナップする。
   連続判定なら float の実装コストがゼロ（箱判定の閾値が float になるだけ）で、
   描画側は既に float 幅を扱えるため、後から刻みを緩めるのも締めるのも自由。
@@ -166,10 +173,15 @@ Waypoint {
 | `SineIn` / `SineOut` / `SineInOut` | sin 曲線 |
 | `QuadIn` / `QuadOut` | 2次関数 |
 
-- 補間は `layerF` / `cellF` / `width` すべてに同じ easing を適用する（当面）。
-  別々に指定したくなったら `easing` を構造体に昇格させれば拡張できる。
+- **rev.5 で `easing` を横方向専用（`cellF`/`width`）に据え置き、高さ方向（`layerF`）用に
+  `easingH` を新設**した。区間の easing は区間開始側 Waypoint の値を使う点は両者共通。
+  以前は両方に同じ `easing` を適用していたが、「sky のノーツは高さを変えても
+  横位置は変化しない」設計（editor-ui-rework-mmw.md §4）と合わせ、横と高さで
+  別カーブを指定できるようにした（editor-ui-rework-r2.md §6）。
+- ファイル形式は `ease=` を横用のまま流用し、高さ用に `easeh=` を追加する。
+  `easeh=` を省略した既存譜面は `ease=` の値が両軸に流用されるため完全互換。
 - **現行 `ChartMath.ArcAt` は smoothstep 固定**なので、Linear 既定への変更が入る。
-- この列挙はソフランの補間（§5.5）でも再利用する。
+- この列挙はソフランの補間（§5.5）でも再利用する（ソフランは単一軸なので `easingH` は無関係）。
 
 ### 1.3 判定の性質（トレイト）
 

@@ -95,7 +95,10 @@ namespace Muses.Chart
         public float layerF;
         public float cellF;
         public float width;
+        /// <summary>この点から次の点までの cellF / width（横方向）の補間種別。既定 Linear（note-spec.md §1.2）。</summary>
         public Easing easing;
+        /// <summary>この点から次の点までの layerF（高さ方向）の補間種別。既定 Linear（note-spec.md §1.2）。</summary>
+        public Easing easingH;
         public WaypointMarker marker;
         /// <summary>この点から次の点までのコンボ刻み幅（tick）の上書き。null なら自動決定（note-spec.md §2.3）</summary>
         public int? comboStep;
@@ -166,7 +169,9 @@ namespace Muses.Chart
         /// <summary>
         /// ノーツ上の時刻 t における (layerF, cellF, width) を区間補間で求める。
         /// points.Length==1 の Tap/ExTap/Flick にもそのまま使える（常に始点の値を返す）。
-        /// 区間の easing は区間開始側 Waypoint の easing を使う（note-spec.md §1.1）。
+        /// 区間の easing は区間開始側 Waypoint の値を使う。note-spec.md §1.2（rev.5）どおり、
+        /// 横方向(cellF/width)は easing、高さ方向(layerF)は easingH で独立に補間する
+        /// （editor-ui-rework-r2.md §6）。
         /// </summary>
         public static (float layerF, float cellF, float width) At(Note n, float t)
         {
@@ -183,8 +188,9 @@ namespace Muses.Chart
                 {
                     float k = b.time == a.time ? 0f : (t - a.time) / (b.time - a.time);
                     float e = Ease(a.easing, k);
+                    float eh = Ease(a.easingH, k);
                     return (
-                        a.layerF + (b.layerF - a.layerF) * e,
+                        a.layerF + (b.layerF - a.layerF) * eh,
                         a.cellF + (b.cellF - a.cellF) * e,
                         a.width + (b.width - a.width) * e
                     );

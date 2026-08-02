@@ -317,13 +317,19 @@ namespace Muses.Chart
             WriteAllTextLf(path, sb.ToString());
         }
 
+        /// <summary>editor-ui-rework-r2.md §6: easeは横(cellF/width)専用として据え置き、
+        /// 高さ(layerF)用にeasehを新設する。easehはeasingと異なる場合のみ出力する
+        /// （同値ならeaseh省略=既存フォーマットと同じ行になり、diffが最小になる）。</summary>
         private static void AppendWaypointOptions(List<string> opts, Waypoint wp)
         {
             if (wp.easing != Easing.Linear) opts.Add($"ease={EasingToStr(wp.easing)}");
+            if (wp.easingH != wp.easing) opts.Add($"easeh={EasingToStr(wp.easingH)}");
             if (wp.marker != WaypointMarker.None) opts.Add($"mark={MarkerToStr(wp.marker)}");
             if (wp.comboStep.HasValue) opts.Add($"combo={wp.comboStep.Value}");
         }
 
+        /// <summary>easeh省略時はeaseを両軸に流用する（既存譜面はease=1個のままで横高さとも
+        /// 同じeasingがかかる、editor-ui-rework-r2.md §6の互換規則）。</summary>
         private static Waypoint MakeWaypoint(int tick, float layerF, float cellF, float width, Dictionary<string, string> opts)
         {
             var wp = new Waypoint
@@ -333,10 +339,12 @@ namespace Muses.Chart
                 cellF = cellF,
                 width = width,
                 easing = Easing.Linear,
+                easingH = Easing.Linear,
                 marker = WaypointMarker.None,
                 comboStep = null,
             };
-            if (opts.TryGetValue("ease", out var e)) wp.easing = ParseEasing(e);
+            if (opts.TryGetValue("ease", out var e)) wp.easing = wp.easingH = ParseEasing(e);
+            if (opts.TryGetValue("easeh", out var eh)) wp.easingH = ParseEasing(eh);
             if (opts.TryGetValue("mark", out var m)) wp.marker = ParseMarker(m);
             if (opts.TryGetValue("combo", out var c)) wp.comboStep = int.Parse(c, CultureInfo.InvariantCulture);
             return wp;

@@ -28,14 +28,17 @@ namespace Muses.Chart
             float F(float c) => c * S;
             int T(float beats) => (int)MathF.Round(beats * ChartData.TicksPerBeat);
 
+            // editor-ui-rework-r2.md §6: easingHの既定はeasingと同値（横高さとも同じカーブを保つ）。
+            // 既存の呼び出し(easingHを指定しない)は完全に従来どおりの見た目になる。
             Waypoint WP(float beats, float layerF, float cellF, float width, Easing easing = Easing.Linear,
-                WaypointMarker marker = WaypointMarker.None) => new()
+                WaypointMarker marker = WaypointMarker.None, Easing? easingH = null) => new()
             {
                 tick = T(beats),
                 layerF = layerF,
                 cellF = cellF,
                 width = width,
                 easing = easing,
+                easingH = easingH ?? easing,
                 marker = marker,
                 comboStep = null,
             };
