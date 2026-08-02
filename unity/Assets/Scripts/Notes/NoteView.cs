@@ -60,7 +60,7 @@ namespace Muses.Notes
         private Material beatMaterial;
 
         public void Build(StageConfig cfg, in Derived d, List<Chart.Note> notes,
-            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null)
+            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null, List<float> barTimes = null)
         {
             if (noteShader == null || beatLineShader == null)
             {
@@ -71,7 +71,7 @@ namespace Muses.Notes
             this.scrollTimelines = scrollTimelines ?? new Dictionary<int, Chart.ScrollTimeline>();
             baseSpeed = d.speed;
 
-            var data = NoteGeometry.Build(cfg, d, notes, this.scrollTimelines);
+            var data = NoteGeometry.Build(cfg, d, notes, this.scrollTimelines, barTimes);
             Runtimes = data.runtimes;
 
             EnsureNotesObject();

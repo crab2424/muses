@@ -33,8 +33,11 @@ namespace Muses.Chart
     /// <summary>
     /// editor-spec.md §1.4。bar:beat:tick ↔ 累積tick の変換。
     /// beat の単位はその区間の拍子の分母音符（4/4ならbeat=四分音符、6/8ならbeat=八分音符）。
-    /// bar/beat は1始まり、tickは0始まり。meters が空、または先頭barが1でない場合は
-    /// 「bar=1から4/4」を補って扱う（song.musesの[METER]省略時の既定と同じ）。
+    /// editor-ui-rework-r4.md §10: barは0始まり（beatは1始まり、tickは0始まり）。
+    /// アウフタクト（弱起）を0小節目に置けるようにするため、参照元(MikuMikuWorld)と同じ
+    /// 0始まりに揃えた（旧: bar=1始まり、0小節目にあたる場所が無くアウフタクトを表現できなかった）。
+    /// meters が空、または先頭barが0でない場合は「bar=0から4/4」を補って扱う
+    /// （song.musesの[METER]省略時の既定と同じ）。
     /// </summary>
     public static class SongAddr
     {
@@ -47,8 +50,8 @@ namespace Muses.Chart
         {
             var sorted = new List<MeterEvent>(meters);
             sorted.Sort((a, b) => a.bar.CompareTo(b.bar));
-            if (sorted.Count == 0 || sorted[0].bar != 1)
-                sorted.Insert(0, new MeterEvent { bar = 1, numerator = 4, denominator = 4 });
+            if (sorted.Count == 0 || sorted[0].bar != 0)
+                sorted.Insert(0, new MeterEvent { bar = 0, numerator = 4, denominator = 4 });
             return sorted;
         }
 
@@ -114,5 +117,11 @@ namespace Muses.Chart
 
         public static string FormatAddr((int bar, int beat, int tick) addr) =>
             $"{addr.bar}:{addr.beat}:{addr.tick}";
+
+        /// <summary>editor-ui-rework-r4.md §11: ステータスバー表示専用。tickを4桁ゼロ埋めする
+        /// (TicksPerBeat=5040なので1拍内のtickは最大4桁)。.musesファイルやインスペクタの
+        /// 「位置」欄はFormatAddrのまま(ゼロ埋めはステータスバーだけで良いとユーザー確定済み)。</summary>
+        public static string FormatAddrPadded((int bar, int beat, int tick) addr) =>
+            $"{addr.bar}:{addr.beat}:{addr.tick:0000}";
     }
 }

@@ -148,6 +148,10 @@ namespace Muses.ChartTool
         {
             song = newSong;
             chart = newChart;
+            // editor-ui-rework-r4.md §12: 音源先頭→譜面tick0のズレをPreviewClockへ反映する
+            // （今まではSongMeta.offsetSecがどこからも読まれておらず、頭出しが常に「音源0秒=tick0」
+            // 固定になっていた）。
+            clock.Offset = song.offsetSec;
 
             // ChartSerializer.ReadChart と同じ規則: BPMは曲の属性なので、譜面側へ都度コピーしてから解決する
             // （エディタでの編集中は ChartSerializer を経由しないため、ここで明示的に合わせておく必要がある）。
@@ -156,9 +160,10 @@ namespace Muses.ChartTool
             ChartFormat.ResolveTimes(chart);
             ChartFormat.ResolveSlideComboPoints(chart);
             var scrollTimelines = ChartFormat.BuildScrollTimelines(chart);
+            var barTimes = BuildBarTimes(chart);
 
             stageController.EnsureBuilt();
-            noteView.Build(cfg, stageController.Derived, chart.notes, scrollTimelines);
+            noteView.Build(cfg, stageController.Derived, chart.notes, scrollTimelines, barTimes);
             runtimes = noteView.Runtimes;
 
             judge = new Judge(cfg, noteView.SetNoteAlpha);
@@ -171,6 +176,31 @@ namespace Muses.ChartTool
 
             TryLoadAudio(audioDir);
             MarkDirty();
+        }
+
+        /// <summary>
+        /// editor-ui-rework-r4.md §3: プレビューの小節線をエディタのタイムラインと同じ情報源
+        /// (song.meters + chart.bpmEvents)から求める。旧実装はStageConfig.bpmから「4拍ごと」を
+        /// 決め打ちしており、譜面のBPM・拍子と食い違うと必ずずれていた
+        /// （新規譜面はbpmEventsが空→既定120BPM、cfg.bpm=150なので1.25倍ずれる）。
+        /// </summary>
+        private List<float> BuildBarTimes(ChartData c)
+        {
+            var tickToSeconds = ChartFormat.BuildTickToSeconds(c.bpmEvents);
+            float end = 0f;
+            foreach (var n in c.notes) end = Mathf.Max(end, ChartMath.NoteEnd(n));
+
+            var result = new List<float>();
+            int firstBar = SongAddr.Normalize(song.meters)[0].bar;
+            int guard = 0;
+            for (int bar = firstBar; guard < 100000; bar++, guard++)
+            {
+                int tick = SongAddr.ToTick(song.meters, bar, 1, 0);
+                float t = tickToSeconds(tick);
+                if (t > end + 4f) break;
+                result.Add(t);
+            }
+            return result;
         }
 
         private void TryLoadAudio(string audioDir)
@@ -353,6 +383,10 @@ namespace Muses.ChartTool
                 ? Time.realtimeSinceStartup - lastRenderRealtime >= RenderIntervalSec
                 : sceneDirty;
             if (!shouldRender) return;
+            // editor-ui-rework-r4.md §8: StageController.Update()との実行順は保証されないため、
+            // 描く直前に明示的にEnsureBuiltを呼んでおく(cam.aspectは既に固定済みなので
+            // 呼んでも呼ばなくても同じ値になるはずだが、念のため確実にそのフレームの状態にする)。
+            stageController.EnsureBuilt();
             cam.targetTexture = rt;
             cam.Render();
             lastRenderRealtime = Time.realtimeSinceStartup;
@@ -398,6 +432,12 @@ namespace Muses.ChartTool
             if (rt != null) rt.Release();
             rt = new RenderTexture(w, h, 16) { name = "ChartEditorPreview" };
             rtW = w; rtH = h;
+            // editor-ui-rework-r4.md §8: cam.aspectをRenderTextureのアスペクトに固定する。
+            // 代入するとUnityは以後この値を使い続け(自動導出には戻らない)、DetachTexture()で
+            // targetTexture=nullにしても画面全体のアスペクトへ戻らなくなる。固定しないと、
+            // [ExecuteAlways]なStageController.Update()が「一瞬だけ画面アスペクトで作られた形」を
+            // 描いてしまい、タブ切替のたびにステージが広がって見える不具合になる。
+            cam.aspect = (float)w / h;
             MarkDirty();
             return rt;
         }

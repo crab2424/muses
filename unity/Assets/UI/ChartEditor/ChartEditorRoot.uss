@@ -75,6 +75,18 @@
     margin-right: 6px;
 }
 
+/* editor-ui-rework-r4.md §11: 中身の文字数で幅が変わると隣接するstatus-scrubのシークバーが
+   動いてしまう。桁数を固定した上で、ラベル自体の幅も固定して確実に動かなくする。 */
+#status-time {
+    min-width: 70px;
+    -unity-text-align: middle-right;
+}
+
+#status-chartinfo {
+    min-width: 190px;
+    -unity-text-align: middle-right;
+}
+
 /* ---------- A: メニューバー(§2.1) ---------- */
 
 .menu-bar {
@@ -142,6 +154,7 @@
 .tool-btn--slide { border-left-color: var(--note-slide); }
 .tool-btn--flick { border-left-color: var(--note-flick); }
 .tool-btn--neutral { border-left-color: var(--text-dim); }
+.tool-btn--event { border-left-color: var(--event-bpm); }
 
 .field-label {
     color: var(--text-dim);
@@ -176,6 +189,14 @@
     flex-grow: 1;
     min-width: 0;
     background-color: var(--bg-canvas);
+}
+
+/* editor-ui-rework-r4.md §2: painter2Dの描画も絶対配置の子Labelも要素の矩形を越えると
+   既定(overflow:visible)ではクリップされず、上のバンド類の上に重なって見えてしまう。 */
+.notes-sheet,
+.preview-surface {
+    flex-grow: 1;
+    overflow: hidden;
 }
 
 /*
@@ -276,9 +297,15 @@
     min-width: 0;
 }
 
-.prop-row .unity-base-field__input {
+.prop-row .unity-base-field__input,
+.status-bar .unity-base-field__input,
+.toolbar .unity-base-field__input,
+.modal .unity-base-field__input {
     background-color: var(--bg-control);
     border-color: var(--border);
+    color: var(--text);
+    --unity-cursor-color: var(--text);
+    --unity-selection-color: rgba(74, 158, 255, 0.45);
 }
 
 .prop-note {
@@ -367,11 +394,6 @@
 .status-bar .unity-base-popup-field {
     margin: 0 2px 0 2px;
     min-width: 96px;
-}
-
-.status-bar .unity-base-field__input {
-    background-color: var(--bg-control);
-    border-color: var(--border);
 }
 
 .zoom-slider {

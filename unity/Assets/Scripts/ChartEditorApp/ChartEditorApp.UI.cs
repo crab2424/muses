@@ -33,6 +33,7 @@ namespace Muses.ChartTool
             (EditorTool.Flick, "Flick", "flick"),
             (EditorTool.AddWaypoint, "中継点", "neutral"),
             (EditorTool.Delete, "削除", "neutral"),
+            (EditorTool.Event, "イベント", "event"),
         };
 
         private const int TabTimeline = 0;
@@ -81,6 +82,7 @@ namespace Muses.ChartTool
         private Slider viewJudgeLine;
         private Slider viewRate;
         private Toggle viewHeightLane;
+        private Toggle viewEventLane;
         private Label statsText;
         private VisualElement presetHost;
         private TextField presetNameField;
@@ -219,6 +221,11 @@ namespace Muses.ChartTool
                     showHeightLane = !showHeightLane;
                     if (viewHeightLane != null) viewHeightLane.SetValueWithoutNotify(showHeightLane);
                 });
+                menu.AddItem("イベントレーン", showEventLane, () =>
+                {
+                    showEventLane = !showEventLane;
+                    if (viewEventLane != null) viewEventLane.SetValueWithoutNotify(showEventLane);
+                });
             });
 
             AddMenu(bar, "再生", menu =>
@@ -330,6 +337,13 @@ namespace Muses.ChartTool
         {
             currentTool = tool;
             pendingSlideStart = null;
+            // editor-ui-rework-r4.md §6: イベントレーンを畳んだままEventツールを選ぶと
+            // 何もできず原因が分からないため、自動で表示に戻す。
+            if (tool == EditorTool.Event && !showEventLane)
+            {
+                showEventLane = true;
+                if (viewEventLane != null) viewEventLane.SetValueWithoutNotify(true);
+            }
             foreach (var kv in toolButtons)
                 kv.Value.EnableInClassList("tool-btn--selected", kv.Key == tool);
         }
@@ -367,7 +381,7 @@ namespace Muses.ChartTool
             // runtime panel"）ため、editor-ui-redesign.md §6 が「後から」としていた
             // generateVisualContent + painter2D 方式を最初から採る。
             notesSheet = new VisualElement { focusable = true };
-            notesSheet.style.flexGrow = 1;
+            notesSheet.AddToClassList("notes-sheet");
             notesSheet.generateVisualContent += GenerateNotesSheet;
             notesSheet.RegisterCallback<PointerDownEvent>(OnSheetPointerDown);
             notesSheet.RegisterCallback<PointerMoveEvent>(OnSheetPointerMove);
@@ -386,7 +400,7 @@ namespace Muses.ChartTool
             });
 
             previewSurface = new VisualElement();
-            previewSurface.style.flexGrow = 1;
+            previewSurface.AddToClassList("preview-surface");
             previewSurface.RegisterCallback<GeometryChangedEvent>(_ => UpdatePreviewTexture());
             // editor-ui-rework-r3.md §6: 判定線をRenderTexture(3D)の上にPainter2Dで重ねて描く。
             previewSurface.generateVisualContent += GeneratePreviewOverlay;
@@ -424,10 +438,14 @@ namespace Muses.ChartTool
             if (L.heightLane.width > 0f)
                 PlaceSheetLabel(ref used, "高さ G→S", L.heightLane.x + 4f, L.rect.y + 2f);
 
-            var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
-            PlaceSheetLabel(ref used, "BPM", bpmCol.x + 2f, L.rect.y + 2f);
-            PlaceSheetLabel(ref used, "拍子", meterCol.x + 2f, L.rect.y + 2f);
-            PlaceSheetLabel(ref used, "速度", scrollCol.x + 2f, L.rect.y + 2f);
+            // editor-ui-rework-r4.md §5: イベントレーンを畳んでいる間(幅0)は見出しも出さない。
+            if (L.rightMargin.width > 0f)
+            {
+                var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
+                PlaceSheetLabel(ref used, "BPM", bpmCol.x + 2f, L.rect.y + 2f);
+                PlaceSheetLabel(ref used, "拍子", meterCol.x + 2f, L.rect.y + 2f);
+                PlaceSheetLabel(ref used, "速度", scrollCol.x + 2f, L.rect.y + 2f);
+            }
 
             int snapTicks = SnapTicks;
             int barTicks = Mathf.Max(snapTicks, SongAddr.TicksPerBar(MeterAtBar(SongAddr.ToAddr(song.meters, scrollTick).bar)));
@@ -480,6 +498,12 @@ namespace Muses.ChartTool
         {
             var L = CurrentSheetLayout();
             if (L.rect.width < 2f || L.rect.height < 2f) return;
+            // editor-ui-rework-r4.md §5: イベントレーンを畳んでいる間(幅0)はチップを1つも出さない。
+            if (L.rightMargin.width <= 0f)
+            {
+                for (int i = 0; i < eventChipLabels.Count; i++) eventChipLabels[i].style.display = DisplayStyle.None;
+                return;
+            }
 
             var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
             int used = 0;
@@ -613,6 +637,9 @@ namespace Muses.ChartTool
             var audioHost = uiRoot.Q<VisualElement>("audio-host");
             audioHost.Clear();
             audioFile = AddTextRow(audioHost, "音源ファイル", v => { song.audio = v; songMetaDirty = true; MarkPreviewDirty(); });
+            var audioPickBtn = new Button(PickAudioFile) { text = "…" };
+            audioPickBtn.AddToClassList("tb-btn");
+            audioFile.parent.Add(audioPickBtn);
             audioOffset = AddFloatRow(audioHost, "オフセット(秒)", v => { song.offsetSec = v; songMetaDirty = true; MarkPreviewDirty(); });
             var note = new Label("タイトル〜オフセットは song.muses の内容です。保存時に譜面と一緒に書き戻します。");
             note.AddToClassList("prop-note");
@@ -630,6 +657,7 @@ namespace Muses.ChartTool
             var heightNote = new Label("高さレーンには選択中のノーツの中継点だけを表示します（点を横にドラッグで層を編集）。");
             heightNote.AddToClassList("prop-note");
             viewHost.Add(heightNote);
+            viewEventLane = AddToggleRow(viewHost, "イベントレーン", v => showEventLane = v);
 
             // MikuMikuWorld移植候補: 小節ジャンプ（ScoreEditor.cpp:409-416のgotoMeasure）。
             var jumpRow = new VisualElement();
@@ -1037,8 +1065,9 @@ namespace Muses.ChartTool
 
                     var barField = AddIntRow(inspectorHost, "小節番号", v =>
                     {
+                        // editor-ui-rework-r4.md §10: barは0始まり（アウフタクト用に0小節目を許可）。
                         var m = song.meters[selectedEventIndex];
-                        m.bar = Mathf.Max(1, v);
+                        m.bar = Mathf.Max(0, v);
                         song.meters[selectedEventIndex] = m;
                         songMetaDirty = true;
                         MarkPreviewDirty();
@@ -1326,6 +1355,7 @@ namespace Muses.ChartTool
                 viewJudgeLine.SetValueWithoutNotify(judgeLineFrac);
                 viewRate.SetValueWithoutNotify(preview.Rate);
                 viewHeightLane.SetValueWithoutNotify(showHeightLane);
+                viewEventLane.SetValueWithoutNotify(showEventLane);
                 if (snapDropdown.index != snapIndex) snapDropdown.index = snapIndex;
                 zoomSlider.SetValueWithoutNotify(pxPerBeat);
                 zoomLabel.text = $"{pxPerBeat / 28f:0.00}x";
@@ -1437,7 +1467,7 @@ namespace Muses.ChartTool
                 ? ChartFormat.BpmAtTime(song.bpmEvents, preview.SongTime)
                 : 0f;
             string bpmText = bpm > 0f ? $"{bpm:0.##} BPM" : "BPM -";
-            return $"{SongAddr.FormatAddr(addr)}  │  {meter.numerator}/{meter.denominator}  │  {bpmText}";
+            return $"{SongAddr.FormatAddrPadded(addr)}  │  {meter.numerator}/{meter.denominator}  │  {bpmText}";
         }
 
         private MeterEvent MeterAtBar(int bar)
@@ -1519,6 +1549,23 @@ namespace Muses.ChartTool
                 statusValidation.text = $"検証 E{errors} W{warnings} I{infos}";
         }
 
+        /// <summary>editor-ui-rework-r4.md §9: 音源は必ずsong.musesと同じフォルダから
+        /// 相対パス(ファイル名のみ)で解決される（PreviewSystem.TryLoadAudio）。別フォルダの
+        /// ファイルを選んだ場合は選べてしまうが読み込めないので、その場で警告する。
+        /// 拡張子は*.oggに絞る（UnityWebRequestMultimedia.GetAudioClipがOGG決め打ちのため、
+        /// 他形式を選べても読めない）。</summary>
+        private void PickAudioFile()
+        {
+            ShowFilePickerModal("音源ファイルを選択", "*.ogg", picked =>
+            {
+                string songDir = string.IsNullOrEmpty(songPath) ? null : Path.GetDirectoryName(songPath);
+                string pickedDir = Path.GetDirectoryName(picked);
+                if (songDir != null && !string.Equals(pickedDir, songDir, StringComparison.OrdinalIgnoreCase))
+                    statusMessage = "音源はsong.musesと同じフォルダに置く必要があります（選択したファイルは読み込めません）";
+                audioFile.value = Path.GetFileName(picked); // RegisterValueChangedCallback経由でsong.audioに反映される
+            });
+        }
+
         // ================= モーダル(ファイル参照 / 自動保存の復元) =================
 
         private VisualElement ShowModal(string title)
@@ -1538,6 +1585,83 @@ namespace Muses.ChartTool
         private void CloseModal(VisualElement modal)
         {
             modal?.parent?.RemoveFromHierarchy();
+        }
+
+        /// <summary>
+        /// editor-ui-rework-r4.md §9: 音源ファイル等、ChartEditorApp内部の状態
+        /// （chartFilePathBuffer・OpenChartFromPath等）に依存しない汎用のファイル選択モーダル。
+        /// スタンドアロンビルドにはOSネイティブのファイル選択APIが無いため、ShowFileModal
+        /// （.musesの開く/別名保存専用）と同じ自前ブラウザの骨格を、拡張子フィルタと
+        /// コールバックだけを受け取る形に切り出した。
+        /// </summary>
+        private void ShowFilePickerModal(string title, string pattern, Action<string> onPick)
+        {
+            var modal = ShowModal(title);
+
+            var pathLabel = new Label(browseDir);
+            pathLabel.AddToClassList("prop-note");
+            modal.Add(pathLabel);
+
+            var list = new ScrollView();
+            list.AddToClassList("browse-list");
+            modal.Add(list);
+
+            var row = new VisualElement();
+            row.AddToClassList("modal-row");
+            modal.Add(row);
+
+            void Rebuild()
+            {
+                pathLabel.text = browseDir;
+                list.Clear();
+
+                var parent = Directory.GetParent(browseDir);
+                if (parent != null)
+                {
+                    var up = new Button(() => { browseDir = parent.FullName; Rebuild(); }) { text = ".. (上へ)" };
+                    up.AddToClassList("browse-item");
+                    up.AddToClassList("browse-item--dir");
+                    list.Add(up);
+                }
+
+                try
+                {
+                    foreach (var dir in Directory.GetDirectories(browseDir).OrderBy(d => d))
+                    {
+                        string captured = dir;
+                        var b = new Button(() => { browseDir = captured; Rebuild(); }) { text = "[ " + Path.GetFileName(dir) + " ]" };
+                        b.AddToClassList("browse-item");
+                        b.AddToClassList("browse-item--dir");
+                        list.Add(b);
+                    }
+
+                    foreach (var file in Directory.GetFiles(browseDir, pattern).OrderBy(f => f))
+                    {
+                        string captured = file;
+                        var b = new Button(() =>
+                        {
+                            RememberBrowseDir();
+                            CloseModal(modal);
+                            onPick(captured);
+                        })
+                        { text = Path.GetFileName(file) };
+                        b.AddToClassList("browse-item");
+                        list.Add(b);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var err = new Label("読み取りエラー: " + ex.Message);
+                    err.AddToClassList("prop-note");
+                    list.Add(err);
+                }
+            }
+
+            var cancel = new Button(() => CloseModal(modal)) { text = "キャンセル" };
+            cancel.AddToClassList("tb-btn");
+            row.Add(cancel);
+
+            Rebuild();
         }
 
         /// <summary>

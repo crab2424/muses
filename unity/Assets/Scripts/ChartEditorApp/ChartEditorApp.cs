@@ -36,7 +36,10 @@ namespace Muses.ChartTool
     /// </summary>
     public partial class ChartEditorApp : MonoBehaviour
     {
-        private enum EditorTool { Select, Tap, ExTap, Slide, Flick, AddWaypoint, Delete }
+        // editor-ui-rework-r4.md §6: Eventはイベントレーン(BPM/拍子/ソフラン)への追加専用ツール。
+        // 参照元(MikuMikuWorld)もInsertBPM/InsertTimeSignをTap/Hold/Flickと同じ列挙・同じ
+        // ツールボックスの一員として持っており、モードに関わらず追加できていた旧実装は独自仕様だった。
+        private enum EditorTool { Select, Tap, ExTap, Slide, Flick, AddWaypoint, Delete, Event }
 
         private const int Cells = 12;
         private static readonly int[] SnapDenominators = { 4, 8, 12, 16, 24, 32, 48, 64 };
@@ -99,11 +102,16 @@ namespace Muses.ChartTool
         // （EditorWindows.cpp:513-546のupdate()と同じ設計）。
         private int cursorTick;
 
-        // ノーツシート左右の余白。左=小節番号の退避先、右=将来のイベントレーン(§7.3)用に確保。
+        // ノーツシート左右の余白。左=小節番号の退避先、右=イベントレーン(§7.3)用に確保。
         // editor-ui-redesign.md §7.2: 将来設定画面から変更できるようインスタンスフィールドにしている
         // （constにしない）。
         private float sheetMarginLeft = 44f;
         private float sheetMarginRight = 104f;
+        // editor-ui-rework-r4.md §5: 高さレーン(showHeightLane)と同じ形の折りたたみ。
+        // 既定は表示（現状維持）。3種(BPM/拍子/ソフラン)は等分割の列で種別を兼ねているため
+        // まとめて1つのトグルにする（個別に消すと列位置が動き「どの列が何か」が変わってしまう）。
+        private bool showEventLane = true;
+        private float EventLaneW => showEventLane ? sheetMarginRight : 0f;
 
         // タイムライン追従: ノーツシート内で「現在時刻」を固定表示する高さ(0=上端,1=下端)。
         // scrollTickはこの位置に置かれるtickとして扱う（judgeLineFracが1.0なら従来どおり下端固定）。
@@ -178,7 +186,7 @@ namespace Muses.ChartTool
             SyncSelectedNoteFromSelection();
             pendingSlideStart = null;
             draggingNote = false;
-            resizingNote = null;
+            resizingActive = false;
             heightDragNote = null;
             ClearEventSelection();
         }
@@ -193,7 +201,7 @@ namespace Muses.ChartTool
             SyncSelectedNoteFromSelection();
             pendingSlideStart = null;
             draggingNote = false;
-            resizingNote = null;
+            resizingActive = false;
             heightDragNote = null;
             ClearEventSelection();
         }
@@ -228,7 +236,7 @@ namespace Muses.ChartTool
             ClearSelection();
             pendingSlideStart = null;
             draggingNote = false;
-            resizingNote = null;
+            resizingActive = false;
             heightDragNote = null;
             selectedEventKind = kind;
             selectedEventIndex = index;
@@ -269,10 +277,13 @@ namespace Muses.ChartTool
         private Vector2 rectStartPos;
         private Vector2 rectCurrentPos;
 
-        // ---- §7.4-D 端ドラッグでの幅変更（単発ノーツのみ） ----
-        private Note resizingNote;
+        // ---- §7.4-D 端ドラッグでの幅変更 ----
+        // editor-ui-rework-r4.md §4: 単発ノーツ限定という制約は、選択がNoteRef(点単位)になった
+        // editor-ui-rework-mmw.md §5.2で既に前提が消えている。掴んだ点だけでなく、選択中の
+        // 全点へ同じ差分を適用する（参照元・移動ドラッグと同じ規則、ユーザー確定）。
+        private bool resizingActive;
         private int resizingEdgeSign; // -1=左端, +1=右端
-        private Waypoint resizeOriginWp;
+        private Dictionary<NoteRef, Waypoint> resizeOriginByRef;
 
         // ---- §7.4-C コピー/カット/ペースト（内部クリップボード） ----
         private readonly List<Note> clipboard = new();
@@ -321,7 +332,7 @@ namespace Muses.ChartTool
             // 編集中は毎フレーム再構築しない。ドラッグ終了後・一定間隔をおいて反映する
             // （chart.notes を直接ドラッグしている最中にtick→秒の再解決やNoteView再構築を挟むと重い上、無駄）。
             // §7.4の幅変更・§7.5の高さドラッグも同じくchart.notesを直接書き換えるので同列に扱う。
-            bool draggingAnything = draggingNote || resizingNote != null || heightDragNote != null;
+            bool draggingAnything = draggingNote || resizingActive || heightDragNote != null;
             if (dirty && !draggingAnything && Time.unscaledTime - lastPreviewRebuildRealtime > 0.3f)
             {
                 preview.Rebuild(song, chart, Path.GetDirectoryName(songPath));
@@ -772,7 +783,7 @@ namespace Muses.ChartTool
         {
             var r = notesSheet.contentRect;
             return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac,
-                sheetMarginLeft, sheetMarginRight, HeightLaneW);
+                sheetMarginLeft, EventLaneW, HeightLaneW);
         }
 
         private int SnapTicks => Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
@@ -1118,17 +1129,17 @@ namespace Muses.ChartTool
                 }
             }
 
-            // Slide配置中(1点目クリック済み・2点目待ち)の視覚フィードバック。マウスがシート外
-            // （インスペクタ確認等）でも1点目クリック済みなことが分かるよう、ホバーの有無に関わらず出す。
+            DrawPlacementGhost(p, L);
+
+            // editor-ui-rework-r4.md §1: Slide配置中(1点目クリック済み・2点目待ち)の始点は、
+            // マウスがシート外（インスペクタ確認等）にあってもクリック済みなことが分かるよう、
+            // ホバーの有無に関わらず常に出す（DrawPlacementGhostの帯と同じ形・同じ求め方にして、
+            // 「ノーツを置いた」ことが視覚的に読めるようにする）。
             if (pendingSlideStart != null)
             {
                 var wp0 = pendingSlideStart.points[0];
-                float py = L.TickToY(wp0.tick);
-                float px = L.NoteX(wp0.layerF, wp0.cellF, forceSky: false); // 単一点なのでまだ高さ情報は無い
-                FillRectOutline(p, new Rect(px - 5, py - 5, 10, 10), Color.white);
+                DrawGhostPoint(p, L, wp0.tick, wp0.layerF, wp0.cellF, wp0.width, NoteColor(NoteKind.Slide));
             }
-
-            DrawPlacementGhost(p, L);
 
             // §7.4-A 矩形選択中のドラッグ矩形
             if (rectSelecting)
@@ -1247,11 +1258,11 @@ namespace Muses.ChartTool
             int snapTicks = SnapTicks;
             int tick = SnapTickTo(Mathf.Max(0, L.YToTick(pos.y)), snapTicks);
 
-            // イベントレーンは現在のツールに関わらず常時クリックで追加できるので、
-            // ホバー時のゴーストもツール非依存で出す。
+            // editor-ui-rework-r4.md §6: イベントレーンのゴーストもEventツール限定にする
+            // （クリックでの追加をツール限定にしたのと対称）。
             if (L.rightMargin.Contains(pos))
             {
-                DrawEventGhost(p, L, pos, tick);
+                if (currentTool == EditorTool.Event) DrawEventGhost(p, L, pos, tick);
                 return;
             }
 
@@ -1290,10 +1301,19 @@ namespace Muses.ChartTool
                             // Slideになる＝Skyペインのみに描かれる。プレビューもそれに合わせる。
                             bool previewForceSky = !Mathf.Approximately(wp0.layerF, layerF);
                             float y0 = L.TickToY(wp0.tick), y1 = L.TickToY(tick);
-                            float x0 = L.NoteX(wp0.layerF, wp0.cellF + wp0.width * 0.5f, previewForceSky);
-                            float x1 = L.NoteX(layerF, cellF + defaultWidthCells * 0.5f, previewForceSky);
-                            var lineCol = new Color(col.r, col.g, col.b, 0.4f);
-                            FillRect(p, Rect.MinMaxRect(Mathf.Min(x0, x1) - 2, Mathf.Min(y0, y1), Mathf.Max(x0, x1) + 2, Mathf.Max(y0, y1)), lineCol);
+                            // editor-ui-rework-r4.md §1: 始点/終点を結ぶ帯は、確定後の描画
+                            // (DrawEndpointGlyph/FillQuad)と同じ「幅いっぱいの四隅を結ぶ四角形」にする
+                            // （旧実装はRect.MinMaxRectで塗っており、cellFが離れるほど巨大な矩形になっていた）。
+                            float x0a = L.NoteX(wp0.layerF, wp0.cellF, previewForceSky);
+                            float x0b = L.NoteX(wp0.layerF, wp0.cellF + wp0.width, previewForceSky);
+                            float x1a = L.NoteX(layerF, cellF, previewForceSky);
+                            float x1b = L.NoteX(layerF, cellF + defaultWidthCells, previewForceSky);
+                            var bandCol = new Color(col.r, col.g, col.b, 0.4f);
+                            FillQuad(p,
+                                new Vector2(Mathf.Min(x0a, x0b), y0), new Vector2(Mathf.Min(x1a, x1b), y1),
+                                new Vector2(Mathf.Max(x1a, x1b), y1), new Vector2(Mathf.Max(x0a, x0b), y0),
+                                bandCol);
+                            DrawGhostPoint(p, L, wp0.tick, wp0.layerF, wp0.cellF, wp0.width, col, previewForceSky);
                             DrawGhostPoint(p, L, tick, layerF, cellF, defaultWidthCells, col, previewForceSky);
                         }
                     }
@@ -1403,11 +1423,20 @@ namespace Muses.ChartTool
             int rawTick = Mathf.Max(0, L.YToTick(pos.y));
             int tick = SnapTickTo(rawTick, snapTicks);
 
-            // §7.3 イベントレーン: 空白をクリックしたら新規追加（既存チップのクリックは
-            // UpdateEventChipsが作るLabel要素自体が拾いStopPropagationするので、ここには来ない）。
+            // editor-ui-rework-r4.md §6: イベントレーンの空白クリックは、Eventツールを選んでいる
+            // ときだけ新規追加する（ノーツの配置ツールと同じ「選んだツールでだけ置ける」規則に揃える）。
+            // それ以外のツールでは選択解除のみ行う（既存チップのクリックはUpdateEventChipsが作る
+            // Label要素自体が拾いStopPropagationするので、ここには来ない）。
             if (L.rightMargin.Contains(pos))
             {
-                HandleEventLaneClick(L, pos, tick);
+                if (currentTool == EditorTool.Event)
+                {
+                    HandleEventLaneClick(L, pos, tick);
+                }
+                else if (!evt.shiftKey)
+                {
+                    ClearEventSelection();
+                }
                 evt.StopPropagation();
                 return;
             }
@@ -1552,15 +1581,21 @@ namespace Muses.ChartTool
                     if (hit.HasValue)
                     {
                         var hn = hit.Value;
-                        // §7.4-D 端ドラッグでの幅変更（単発ノーツのみ、Shift併用時は選択トグル優先）
-                        int edgeSign = hn.note.points.Count == 1 ? EdgeGrabSign(L, hn.note, pos) : 0;
+                        // editor-ui-rework-r4.md §4: 端ドラッグでの幅変更。Shift併用時は選択トグル優先。
+                        // 単発ノーツ限定という制約はmmw §5.2で選択が点単位(NoteRef)になった時点で
+                        // 前提が消えているため撤廃（Slideの各点も掴める）。既に選択済みグループの
+                        // 一員なら選択を維持し、グループ全体へ同じ差分を適用する（移動ドラッグと同じ規則）。
+                        int edgeSign = EdgeGrabSign(L, hn, pos);
                         if (edgeSign != 0 && !evt.shiftKey)
                         {
-                            SetSingleSelection(hn);
+                            if (!selection.Contains(hn)) SetSingleSelection(hn);
                             PushUndo(coalesce: false, "幅変更");
-                            resizingNote = hn.note;
+                            resizingActive = true;
                             resizingEdgeSign = edgeSign;
-                            resizeOriginWp = hn.note.points[0];
+                            resizeOriginByRef = new Dictionary<NoteRef, Waypoint>();
+                            foreach (var r in selection) resizeOriginByRef[r] = r.note.points[r.index];
+                            dragOriginRawCell = rawCell;
+                            dragLastValidCell = rawCell;
                             notesSheet.CapturePointer(evt.pointerId);
                             evt.StopPropagation();
                             return;
@@ -1855,13 +1890,15 @@ namespace Muses.ChartTool
             dirty = true;
         }
 
-        /// <summary>単発ノーツの左右端 ±4px を掴んでいるか。-1=左端, 0=対象外, +1=右端。</summary>
-        private static int EdgeGrabSign(SheetLayout L, Note note, Vector2 pos)
+        /// <summary>editor-ui-rework-r4.md §4: 指定した点の左右端 ±4px を掴んでいるか。
+        /// -1=左端, 0=対象外, +1=右端。単発ノーツ・Slideの各点いずれも同じ判定でよい
+        /// （帯のヒットテストではなく、常にその点自身の矩形で判定するため）。</summary>
+        private static int EdgeGrabSign(SheetLayout L, NoteRef r, Vector2 pos)
         {
-            if (note.points.Count != 1) return 0;
-            var wp = note.points[0];
-            float x0 = L.NoteX(wp.layerF, wp.cellF, forceSky: false);
-            float x1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky: false);
+            var wp = r.note.points[r.index];
+            bool forceSky = HasHeightVariation(r.note);
+            float x0 = L.NoteX(wp.layerF, wp.cellF, forceSky);
+            float x1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky);
             float left = Mathf.Min(x0, x1), right = Mathf.Max(x0, x1);
             const float grab = 4f;
             if (Mathf.Abs(pos.x - left) <= grab) return -1;
@@ -1917,23 +1954,32 @@ namespace Muses.ChartTool
                 return;
             }
 
-            if (resizingNote != null)
+            if (resizingActive)
             {
-                var (_, rawCellR) = L.PaneAt(pos.x);
-                float cellF = SnapCellTo(rawCellR, 1f);
-                var wp = resizeOriginWp;
-                if (resizingEdgeSign > 0)
+                // editor-ui-rework-r4.md §4: 選択中の全点に同じセルデルタを適用する（移動ドラッグと
+                // 同じ「ガター越えは直前の有効値を保持」規則、TryPaneAtを使う）。
+                var paneR = L.TryPaneAt(pos.x);
+                if (paneR.HasValue) dragLastValidCell = paneR.Value.cellF;
+                float cellStepR = selection.Exists(r => r.note.kind == NoteKind.Slide) ? 0.5f : 1f;
+                float delta = SnapCellTo(dragLastValidCell - dragOriginRawCell, cellStepR);
+
+                foreach (var r in selection)
                 {
-                    wp.width = Mathf.Max(0.1f, cellF - wp.cellF);
+                    if (!resizeOriginByRef.TryGetValue(r, out var origin)) continue;
+                    var wp = origin;
+                    if (resizingEdgeSign > 0)
+                    {
+                        wp.width = Mathf.Clamp(origin.width + delta, 0.1f, Cells - origin.cellF);
+                    }
+                    else
+                    {
+                        float rightEdge = origin.cellF + origin.width;
+                        float newCellF = Mathf.Clamp(origin.cellF + delta, 0f, rightEdge - 0.1f);
+                        wp.cellF = newCellF;
+                        wp.width = Mathf.Max(0.1f, rightEdge - newCellF);
+                    }
+                    r.note.points[r.index] = wp;
                 }
-                else
-                {
-                    float rightEdge = resizeOriginWp.cellF + resizeOriginWp.width;
-                    float newCellF = Mathf.Min(cellF, rightEdge - 0.1f);
-                    wp.cellF = newCellF;
-                    wp.width = Mathf.Max(0.1f, rightEdge - newCellF);
-                }
-                resizingNote.points[0] = wp;
                 dirty = true;
                 evt.StopPropagation();
                 return;
@@ -2037,9 +2083,10 @@ namespace Muses.ChartTool
                 return;
             }
 
-            if (resizingNote != null)
+            if (resizingActive)
             {
-                resizingNote = null;
+                resizingActive = false;
+                resizeOriginByRef = null;
                 if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
                 return;
             }
@@ -2526,6 +2573,14 @@ namespace Muses.ChartTool
                     break;
                 case EventKind.Meter:
                     if (selectedEventIndex < 0 || selectedEventIndex >= song.meters.Count) break;
+                    // editor-ui-rework-r4.md §10: 0小節目の拍子は削除不可（参照元と同じ）。
+                    // 消してもNormalizeが既定4/4を黙って補うため、ユーザーが設定した値だけが
+                    // 気づかれずに消える結果になる。
+                    if (song.meters[selectedEventIndex].bar == 0)
+                    {
+                        statusMessage = "0小節目の拍子は削除できません（変更のみ可能）";
+                        break;
+                    }
                     song.meters.RemoveAt(selectedEventIndex);
                     songMetaDirty = true;
                     MarkPreviewDirty();

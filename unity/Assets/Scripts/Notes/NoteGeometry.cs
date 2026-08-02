@@ -40,7 +40,7 @@ namespace Muses.Notes
         private delegate void PushFn(float u, float y, float time, float layerF, Color c, float nearD);
 
         public static NoteMeshData Build(StageConfig cfg, in Derived d, List<Note> notes,
-            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null)
+            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null, List<float> barTimes = null)
         {
             Derived dCopy = d; // in パラメータはローカル関数から直接キャプチャできない (CS1628)
             int cells = cfg.cells;
@@ -146,21 +146,34 @@ namespace Muses.Notes
             }
 
             // ビートライン（地上のみ）。note-spec.md §5.5: グループ0のX(t)に乗せる（複数グループには対応しない簡略化）。
+            // editor-ui-rework-r4.md §3: barTimesが渡されればそちら(=song.meters＋chart.bpmEventsから
+            // 求めた実際の小節頭の時刻)を使う。渡されなければ従来どおりcfg.bpmから4拍間隔で引く
+            // （GameControllerのデモ譜面は単一BPM・4/4なので回帰なし）。
             var beatTimeline = TimelineFor(0);
-            float b = 60f / cfg.bpm;
             float last = notes.Count > 0 ? ChartMath.NoteEnd(notes[notes.Count - 1]) : 0f;
             var beatPos = new List<Vector3>();
             var beatNear = new List<float>();
             var beatLayer = new List<float>();
-            for (float t = 0; t < last + 4f; t += b * 4f)
+
+            void PushBeatLine(float time)
             {
-                float x = beatTimeline.XAt(t);
+                float x = beatTimeline.XAt(time);
                 beatPos.Add(new Vector3(-1f, dCopy.zJudge * 0.0005f, x));
                 beatPos.Add(new Vector3(1f, dCopy.zJudge * 0.0005f, x));
                 beatNear.Add(dCopy.groundNear);
                 beatNear.Add(dCopy.groundNear);
                 beatLayer.Add(0f);
                 beatLayer.Add(0f);
+            }
+
+            if (barTimes != null)
+            {
+                foreach (var t in barTimes) PushBeatLine(t);
+            }
+            else
+            {
+                float b = 60f / cfg.bpm;
+                for (float t = 0; t < last + 4f; t += b * 4f) PushBeatLine(t);
             }
 
             return new NoteMeshData
