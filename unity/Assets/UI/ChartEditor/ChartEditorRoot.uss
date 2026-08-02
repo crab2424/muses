@@ -277,10 +277,15 @@
 }
 
 /* 参考画像と同じ「ラベル左・値右」の2カラム(§2.5: 現状は縦積みで間延びしている) */
+/* editor-ui-rework-r4.md §7 続報: heightを固定していると、ランタイム既定テーマの
+   TextField系コントロール(内部padding込みの必要高さ)がこの20pxに収まりきらず、
+   はみ出した分が次の行の不透明な背景に隠れて「文字が見えない」ように見えていた
+   （ユーザーが指摘した「入力枠が被っている」崩れと同一原因）。min-heightにして
+   コントロールの実際の必要高さぶん行が伸びるようにし、隠れを防ぐ。 */
 .prop-row {
     flex-direction: row;
     align-items: center;
-    height: 20px;
+    min-height: 20px;
     margin: 1px 4px 1px 4px;
 }
 
@@ -306,6 +311,18 @@
     color: var(--text);
     --unity-cursor-color: var(--text);
     --unity-selection-color: rgba(74, 158, 255, 0.45);
+}
+
+/* editor-ui-rework-r4.md §7 続報: colorは継承プロパティなので、上のルールで
+   .unity-base-field__input(コンテナ)へ当てても、既定のランタイムテーマが内部の
+   実テキスト要素(.unity-text-element)へ直接colorを明示していれば継承値は負ける
+   （継承は常に「その要素への明示指定」より優先度が低いため、上のルールの詳細度に関わらず
+   上書きされる）。実テキスト要素へ直接当てて確実に上書きする。 */
+.prop-row .unity-base-field__input .unity-text-element,
+.status-bar .unity-base-field__input .unity-text-element,
+.toolbar .unity-base-field__input .unity-text-element,
+.modal .unity-base-field__input .unity-text-element {
+    color: var(--text);
 }
 
 .prop-note {
