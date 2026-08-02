@@ -234,6 +234,11 @@ namespace Muses.ChartTool
         public bool Autoplay => autoplay;
         public RenderTexture Texture => rt;
 
+        /// <summary>editor-ui-rework-r3.md §6: プレビューへの判定線描画用。StageOverlayは
+        /// Screen.width/height基準でオフスクリーンRenderTextureには使えないため、UI側が
+        /// この設定値を直接読んでPainter2Dで描く。</summary>
+        public StageConfig Config => cfg;
+
         private float rate = 1f;
         public float Rate
         {

@@ -5,6 +5,7 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Chart;
+using Muses.Stage;
 
 namespace Muses.ChartTool
 {
@@ -223,7 +224,8 @@ namespace Muses.ChartTool
             AddMenu(bar, "再生", menu =>
             {
                 menu.AddItem(preview.IsPlaying ? "一時停止" : "再生", false, () => preview.TogglePlay());
-                menu.AddItem("先頭へ戻る", false, () => preview.Seek(0f));
+                // editor-ui-rework-r3.md §8: 停止中にpreview.Seekを呼ぶのでscrollTick/cursorTickも合わせる。
+                menu.AddItem("先頭へ戻る", false, () => { cursorTick = 0; scrollTick = 0; preview.Seek(0f); });
                 menu.AddSeparator("");
                 menu.AddItem("オートプレイ", preview.Autoplay, () => preview.SetAutoplay(!preview.Autoplay));
                 menu.AddItem("ノーツSE", preview.SePreview, () => preview.SePreview = !preview.SePreview);
@@ -386,6 +388,8 @@ namespace Muses.ChartTool
             previewSurface = new VisualElement();
             previewSurface.style.flexGrow = 1;
             previewSurface.RegisterCallback<GeometryChangedEvent>(_ => UpdatePreviewTexture());
+            // editor-ui-rework-r3.md §6: 判定線をRenderTexture(3D)の上にPainter2Dで重ねて描く。
+            previewSurface.generateVisualContent += GeneratePreviewOverlay;
 
             content.Add(notesSheet);
             content.Add(previewSurface);
@@ -560,6 +564,37 @@ namespace Muses.ChartTool
             if (r.width < 2f || r.height < 2f) return;
             var tex = preview.EnsureRenderTexture(Mathf.RoundToInt(r.width), Mathf.RoundToInt(r.height));
             previewSurface.style.backgroundImage = Background.FromRenderTexture(tex);
+        }
+
+        /// <summary>
+        /// editor-ui-rework-r3.md §6: プレビューへの判定線描画。判定線はNDC(u,v)だけで決まる
+        /// スクリーン空間の量なので3D投影の再計算は不要（Overlay/StageOverlay.DrawBandの
+        /// 判定線描画と同じ式）。RenderTextureはcontentRectちょうどのサイズで引き伸ばし無しに
+        /// 貼られる（UpdatePreviewTexture）ため、(u,v)→ローカル座標の写像だけで画素が一致する。
+        /// StageOverlay自体はScreen.width/height基準でオフスクリーンRenderTextureには使えないため
+        /// 流用せず、ここで簡略版を描く。
+        /// </summary>
+        private void GeneratePreviewOverlay(MeshGenerationContext mgc)
+        {
+            var r = previewSurface.contentRect;
+            if (r.width < 2f || r.height < 2f) return;
+            var cfg = preview.Config;
+            var p = mgc.painter2D;
+
+            float PxX(float u) => (u + 1f) / 2f * r.width;
+            // UI Toolkitはy下向き（StageOverlay.PxYのy-upと符号が逆）。
+            float PxY(float v) => (1f - v) / 2f * r.height;
+
+            void JudgeLine(float vJudge, uint colorHex)
+            {
+                float y = PxY(vJudge);
+                var col = StageGeometry.ColorFromHex(colorHex, 0.9f);
+                float x0 = PxX(-cfg.U), x1 = PxX(cfg.U);
+                FillRect(p, new Rect(Mathf.Min(x0, x1), y - 1f, Mathf.Abs(x1 - x0), 2f), col);
+            }
+
+            JudgeLine(cfg.vGroundJudge, StageColors.Ground);
+            JudgeLine(cfg.vSkyJudge, StageColors.Sky);
         }
 
         // ================= D: 右パネル(§2.5) =================
@@ -1158,14 +1193,23 @@ namespace Muses.ChartTool
             // §3: |◀ は曲頭へ（カーソルも0へ）、■ は停止してカーソル位置へ戻る（0ではない）、
             // ▶| は末尾へ（カーソルも末尾へ）。▶(再生/一時停止)はTogglePlayFromCursorが
             // 「停止中は必ずcursorTickから再生を始める」を担う。
-            transport.Add(MakeTransportButton("|◀", () => { cursorTick = 0; preview.Seek(0f); }));
-            transport.Add(MakeTransportButton("■", () => { preview.Pause(); preview.Seek(TickToSeconds(cursorTick)); }));
+            // editor-ui-rework-r3.md §8: 停止中にpreview.Seekを呼ぶ箇所はscrollTick(判定線)も
+            // 合わせる。合わせないとUpdate()の停止中同期(scrollTick→preview.Seek)と引っ張り合う。
+            transport.Add(MakeTransportButton("|◀", () => { cursorTick = 0; scrollTick = 0; preview.Seek(0f); }));
+            transport.Add(MakeTransportButton("■", () =>
+            {
+                preview.Pause();
+                preview.Seek(TickToSeconds(cursorTick));
+                scrollTick = cursorTick;
+            }));
             playButton = MakeTransportButton("▶", TogglePlayFromCursor);
             transport.Add(playButton);
             transport.Add(MakeTransportButton("▶|", () =>
             {
                 preview.Seek(preview.ChartEndSec);
-                cursorTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.ChartEndSec));
+                int endTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.ChartEndSec));
+                cursorTick = endTick;
+                scrollTick = endTick;
             }));
 
             // §2.6 / ユーザー指摘9: スナップは8個のボタン横並びをやめてドロップダウンに畳む
@@ -1205,8 +1249,14 @@ namespace Muses.ChartTool
                 if (suppressUiCallbacks) return;
                 if (Mathf.Abs(evt.newValue - preview.SongTime) > 0.05f) preview.Seek(evt.newValue);
                 // §3: 停止中にスクラブバーで動かした位置も「再生開始位置」として扱う。
+                // editor-ui-rework-r3.md §8: scrollTick(判定線)も合わせる（合わせないとUpdate()の
+                // 停止中同期がスクラブ直後に古いscrollTickへ引き戻してしまう）。
                 if (!preview.IsPlaying)
-                    cursorTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, evt.newValue));
+                {
+                    int t = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, evt.newValue));
+                    cursorTick = t;
+                    scrollTick = t;
+                }
             });
             scrubGroup.Add(scrubSlider);
 

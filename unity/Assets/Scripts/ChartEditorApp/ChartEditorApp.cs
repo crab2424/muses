@@ -249,6 +249,11 @@ namespace Muses.ChartTool
         // ガター上に来たフレームは直前の有効な値を使い続ける（無いとカーソルが盤面中央へ飛ぶ）。
         private float dragLastValidCell;
         private float dragLastValidLayer;
+        // editor-ui-rework-r3.md §4: シート本体のドラッグでlayerFを変えてよいのは、動かす対象の
+        // 全ノーツが「全点選択」されているときだけ（そうでなければforceSkyが反転してノーツ全体の
+        // 描画先ペインが飛ぶ）。falseの間はdragStartPaneLayerと異なるペインへ入っても無視する。
+        private bool dragCanChangeLayer;
+        private float dragStartPaneLayer;
         // editor-ui-rework-mmw.md §5.2-3: ドラッグは掴んだ「点」だけを動かす（ノーツ全体ではない）。
         private Dictionary<NoteRef, Waypoint> dragOriginByRef;
 
@@ -339,10 +344,27 @@ namespace Muses.ChartTool
                 }
             }
 
+            // editor-ui-rework-r3.md §8: 停止中はscrollTick(判定線位置)をプレビューの真の値として
+            // 同期する。判定線は再生中「今の時刻」を指しているので、停止中も同じ意味にする
+            // （ホイールで譜面をスクロールするとプレビューが追従する）。再生中はfollowPlaybackが
+            // 逆方向(preview.SongTime→scrollTick)に動かしているのでここでは何もしない。
+            if (!preview.IsPlaying)
+            {
+                float want = TickToSeconds(scrollTick);
+                if (Mathf.Abs(preview.SongTime - want) > 1e-3f) preview.Seek(want);
+            }
+
             // §3: 再生が止まった瞬間の時刻をカーソルへ書き戻す。参照元(EditorWindows.cpp:513-546)と
             // 同じく、再生中はpreview.SongTimeが真の値・停止中はcursorTickが真の値、と役割を切り替える。
+            // editor-ui-rework-r3.md §8: scrollTickも同時に合わせておく。followPlayback(再生に追従)が
+            // 無効な場合、再生中はscrollTickが更新されないため、そのままだと停止直後に上のブロックが
+            // 古いscrollTickへプレビューを引き戻してしまう（一時停止したのに時刻が飛ぶ）のを防ぐ。
             if (wasPlayingLastFrame && !preview.IsPlaying)
-                cursorTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.SongTime));
+            {
+                int stopTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.SongTime));
+                cursorTick = stopTick;
+                scrollTick = stopTick;
+            }
             wasPlayingLastFrame = preview.IsPlaying;
 
             HandleUndoRedoShortcuts();
@@ -865,10 +887,11 @@ namespace Muses.ChartTool
         }
 
         /// <summary>editor-ui-rework-r2.md §1: 中継点は常に存在を示す（markerによる非表示をやめる）。
-        /// Visible(コンボ点)は塗りつぶし、None/Invisible(コンボにならない)は輪郭のみで区別する。</summary>
-        private static void DrawWaypointGlyph(Painter2D p, float x, float y, WaypointMarker marker, Color color)
+        /// Visible(コンボ点)は塗りつぶし、None/Invisible(コンボにならない)は輪郭のみで区別する。
+        /// editor-ui-rework-r3.md §1: シート本体では点ではなく、始点/終点(DrawEndpointGlyph)と同じ
+        /// 「ノーツ幅いっぱいの帯」として描く（6x6の点は選択の黄枠に対して小さすぎ、widthも読めなかった）。</summary>
+        private static void DrawWaypointGlyph(Painter2D p, Rect r, WaypointMarker marker, Color color)
         {
-            var r = new Rect(x - 3, y - 3, 6, 6);
             if (marker == WaypointMarker.Visible) FillRect(p, r, color);
             else FillRectOutline(p, r, color, 1f);
         }
@@ -1006,8 +1029,10 @@ namespace Muses.ChartTool
                         {
                             var wp = note.points[i];
                             float y = L.TickToY(wp.tick);
-                            float x = L.NoteX(wp.layerF, wp.cellF, forceSky: true);
-                            DrawWaypointGlyph(p, x, y, wp.marker, new Color(1f, 1f, 1f, HeightAlpha(wp.layerF)));
+                            float wx0 = L.NoteX(wp.layerF, wp.cellF, forceSky: true);
+                            float wx1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky: true);
+                            var wr = Rect.MinMaxRect(Mathf.Min(wx0, wx1), y - 3, Mathf.Max(wx0, wx1), y + 3);
+                            DrawWaypointGlyph(p, wr, wp.marker, new Color(1f, 1f, 1f, HeightAlpha(wp.layerF)));
                         }
                     }
                     else
@@ -1035,8 +1060,10 @@ namespace Muses.ChartTool
                         {
                             var wp = note.points[i];
                             float y = L.TickToY(wp.tick);
-                            float x = L.NoteX(wp.layerF, wp.cellF, forceSky: false);
-                            DrawWaypointGlyph(p, x, y, wp.marker, Color.white);
+                            float wx0 = L.NoteX(wp.layerF, wp.cellF, forceSky: false);
+                            float wx1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky: false);
+                            var wr = Rect.MinMaxRect(Mathf.Min(wx0, wx1), y - 3, Mathf.Max(wx0, wx1), y + 3);
+                            DrawWaypointGlyph(p, wr, wp.marker, Color.white);
                         }
                     }
 
@@ -1136,7 +1163,10 @@ namespace Muses.ChartTool
             foreach (var note in chart.notes)
             {
                 if (selectedNotes.Contains(note)) continue;
-                DrawHeightCurve(p, L, note, new Color(1f, 1f, 1f, 0.28f), selected: false);
+                // editor-ui-rework-r3.md §2: 未選択も種別色で描く(色相=種別、αで選択状態)。
+                // 白一色だと同時押しで重なったときにどれがどの種別か当たりが付けられなかった。
+                var c = NoteColor(note.kind);
+                DrawHeightCurve(p, L, note, new Color(c.r, c.g, c.b, 0.28f), selected: false);
             }
 
             // 選択中を後に描くことで、重なっても選択中が手前に出る。
@@ -1399,6 +1429,18 @@ namespace Muses.ChartTool
                 case EditorTool.ExTap:
                 case EditorTool.Flick:
                 {
+                    // editor-ui-rework-r3.md §7: 配置ツールでも既存ノーツ/中継点(帯除く)の上を
+                    // クリックしたら暴発防止で選択に横取りする（ツールは切り替えない）。
+                    var hitExisting = HitTestPoint(L, pos);
+                    if (hitExisting.HasValue)
+                    {
+                        var hp = hitExisting.Value;
+                        if (evt.shiftKey) ToggleSelectionMembership(hp);
+                        else if (!selection.Contains(hp)) SetSingleSelection(hp);
+                        if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        break;
+                    }
+
                     if (layerF != 0f && layerF != 1f) break; // ガターには単発ノーツを置かない
                     float cellF = SnapCellTo(rawCell, 1f);
                     var kind = currentTool == EditorTool.Tap ? NoteKind.Tap
@@ -1445,47 +1487,60 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.Slide:
                 {
-                    // §5.3: 既存Slideの始点/中継点/終点をクリックした場合は新規配置ではなく点の操作
-                    // （ドラッグ=その点だけ移動、ドラッグせずクリック=easing巡回）。
-                    // 他種別のノーツや空白では従来どおり配置フローへ進む。
-                    var hitOnSlide = HitTestPoint(L, pos);
-                    if (hitOnSlide.HasValue && hitOnSlide.Value.note.kind == NoteKind.Slide)
+                    // editor-ui-rework-r3.md §7: 1点目待ち(pendingSlideStart==null)のときだけ
+                    // 既存ノーツへの暴発防止を行う。2点目待ちのときは既存ノーツの上でもSlideを
+                    // 完成させる（ユーザー確定。置きかけのSlideが不可視な既存ノーツの位置で
+                    // 完成できなくなるのを避ける）。
+                    if (pendingSlideStart == null)
                     {
-                        var hp = hitOnSlide.Value;
-                        if (!selection.Contains(hp)) SetSingleSelection(hp);
-                        BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
-                        // easingは始点/中継点(=次の区間を持つ点)にのみ意味がある。終点はドラッグのみ。
-                        easingCycleCandidate = hp.index < hp.note.points.Count - 1 ? hp : (NoteRef?)null;
+                        // §5.3: 既存Slideの始点/中継点/終点をクリックした場合は新規配置ではなく点の操作
+                        // （ドラッグ=その点だけ移動、ドラッグせずクリック=easing巡回）。
+                        // r3 §7: それ以外の種別の点の上も、新規配置ではなく選択に横取りする。
+                        var hit = HitTestPoint(L, pos);
+                        if (hit.HasValue)
+                        {
+                            var hp = hit.Value;
+                            if (hp.note.kind == NoteKind.Slide)
+                            {
+                                if (!selection.Contains(hp)) SetSingleSelection(hp);
+                                BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                                // easingは始点/中継点(=次の区間を持つ点)にのみ意味がある。終点はドラッグのみ。
+                                easingCycleCandidate = hp.index < hp.note.points.Count - 1 ? hp : (NoteRef?)null;
+                            }
+                            else
+                            {
+                                if (evt.shiftKey) ToggleSelectionMembership(hp);
+                                else if (!selection.Contains(hp)) SetSingleSelection(hp);
+                                if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                            }
+                            break;
+                        }
+
+                        float slideStartCellF = SnapCellTo(rawCell, 0.5f);
+                        pendingSlideStart = new Note
+                        {
+                            kind = NoteKind.Slide,
+                            points = new List<Waypoint> { NewWaypoint(tick, layerF, slideStartCellF, defaultWidthCells) },
+                        };
                         break;
                     }
 
                     float slideCellF = SnapCellTo(rawCell, 0.5f);
-                    if (pendingSlideStart == null)
+                    int startTick = pendingSlideStart.points[0].tick;
+                    if (tick > startTick)
                     {
-                        pendingSlideStart = new Note
-                        {
-                            kind = NoteKind.Slide,
-                            points = new List<Waypoint> { NewWaypoint(tick, layerF, slideCellF, defaultWidthCells) },
-                        };
+                        var completed = pendingSlideStart;
+                        completed.points.Add(NewWaypoint(tick, layerF, slideCellF, defaultWidthCells));
+                        PushUndo(coalesce: false, "Slide配置");
+                        chart.notes.Add(completed);
+                        pendingSlideStart = null;
+                        SetMultiSelection(AllPointRefs(completed));
+                        dirty = true;
+                        statusMessage = "Slideを配置しました";
                     }
                     else
                     {
-                        int startTick = pendingSlideStart.points[0].tick;
-                        if (tick > startTick)
-                        {
-                            var completed = pendingSlideStart;
-                            completed.points.Add(NewWaypoint(tick, layerF, slideCellF, defaultWidthCells));
-                            PushUndo(coalesce: false, "Slide配置");
-                            chart.notes.Add(completed);
-                            pendingSlideStart = null;
-                            SetMultiSelection(AllPointRefs(completed));
-                            dirty = true;
-                            statusMessage = "Slideを配置しました";
-                        }
-                        else
-                        {
-                            statusMessage = "Slideの終点は始点より後ろの位置をクリックしてください（1点目は維持中）";
-                        }
+                        statusMessage = "Slideの終点は始点より後ろの位置をクリックしてください（1点目は維持中）";
                     }
                     break;
                 }
@@ -1555,11 +1610,34 @@ namespace Muses.ChartTool
             dragLastValidLayer = layerF;
             dragStartScreenPos = pos;
             easingCycleCandidate = null;
+            // editor-ui-rework-r3.md §4: 選択中の各ノーツが「全点選択」されているときだけ層を
+            // 変えられる（Slideの一部の点だけを動かすと、forceSkyが反転してノーツ全体の描画先
+            // ペインが飛ぶため）。単発ノーツは点が1つなので常にtrue。
+            dragCanChangeLayer = AllSelectedNotesFullySelected();
+            dragStartPaneLayer = layerF;
             dragOriginByRef = new Dictionary<NoteRef, Waypoint>();
             foreach (var r in selection)
                 dragOriginByRef[r] = r.note.points[r.index];
             notesSheet.CapturePointer(evt.pointerId);
         }
+
+        /// <summary>editor-ui-rework-r3.md §4 規則3: 選択が複数ノーツにまたがる場合、1つでも
+        /// 「全点が選択されていないノーツ」を含むなら選択全体で層を固定する（安全側に倒す）。</summary>
+        private bool AllSelectedNotesFullySelected()
+        {
+            var countByNote = new Dictionary<Note, int>();
+            foreach (var r in selection)
+            {
+                countByNote.TryGetValue(r.note, out var c);
+                countByNote[r.note] = c + 1;
+            }
+            foreach (var kv in countByNote)
+                if (kv.Value != kv.Key.points.Count) return false;
+            return true;
+        }
+
+        /// <summary>layerFの値がGround側(&lt;0.5)/Sky側(&gt;=0.5)のどちらのペインに属すかで比較する。</summary>
+        private static bool SamePaneSide(float a, float b) => (a >= 0.5f) == (b >= 0.5f);
 
         /// <summary>§5.2-2: 始点/終点を削除するとSlide全体が消え、中継点の削除はその点だけが消える
         /// （参照元Editing.cpp:209-251の規則をそのまま踏襲）。単発ノーツはindex常に0なので全体削除。</summary>
@@ -1738,7 +1816,11 @@ namespace Muses.ChartTool
             heightDragStartScreenPos = pos;
             // §6.3: easingHは「この点から次の点まで」の意味を持つので、始点/中継点(次の区間を持つ点)
             // にのみ巡回対象を設定する。終点や単発ノーツの点はドラッグのみ。
-            heightEasingCycleCandidate = index < note.points.Count - 1 ? hit : (NoteRef?)null;
+            // editor-ui-rework-r3.md §3: easing巡回はSlideツールのときだけ（ドラッグでの層編集・
+            // クリックによる選択はツールに関わらず有効なまま）。シート本体のeasingCycleCandidateが
+            // Slideツールのcaseの中でしか設定されないのと対称にする。
+            heightEasingCycleCandidate = currentTool == EditorTool.Slide && index < note.points.Count - 1
+                ? hit : (NoteRef?)null;
             notesSheet.CapturePointer(evt.pointerId);
         }
 
@@ -1863,20 +1945,28 @@ namespace Muses.ChartTool
             int rawTick = L.YToTick(pos.y);
             // editor-ui-rework-r2.md §4: PaneAtはガター上で(0.5, Cells*0.5)という実在しない中間値を
             // 返すため、ドラッグ中にガターを通ると座標が飛ぶ。TryPaneAtで直前の有効値を保持する。
+            // editor-ui-rework-r3.md §4: 層を変えられないドラッグ(dragCanChangeLayer=false)では、
+            // 開始ペインと異なるペインに入っても無視する（Slideの一部の点だけドラッグしたときに
+            // forceSkyが反転してノーツ全体の描画先が飛ぶバグの対策。§4.1参照）。
             var pane = L.TryPaneAt(pos.x);
-            if (pane.HasValue) { dragLastValidLayer = pane.Value.layerF; dragLastValidCell = pane.Value.cellF; }
+            if (pane.HasValue && (dragCanChangeLayer || SamePaneSide(pane.Value.layerF, dragStartPaneLayer)))
+            {
+                dragLastValidLayer = pane.Value.layerF;
+                dragLastValidCell = pane.Value.cellF;
+            }
 
             int deltaTick = Mathf.RoundToInt((float)(rawTick - dragOriginRawTick) / snapTicks) * snapTicks;
             // 選択中にSlideの点が1つでもあれば0.5セル刻み、単発ノーツのみなら1セル刻み
             float cellStep = selection.Exists(r => r.note.kind == NoteKind.Slide) ? 0.5f : 1f;
             float rawDeltaCell = dragLastValidCell - dragOriginRawCell;
             // §7.4-B: ペインをまたいだら層(layerF)も更新する（従来はcellFの差分だけを見ており、
-            // Ground⇔Skyへドラッグしても層が変わらないバグがあった）。
+            // Ground⇔Skyへドラッグしても層が変わらないバグがあった）。ただしdragCanChangeLayerが
+            // falseのときはdragLastValidLayerが開始ペインから動かないため、差分は自然に0になる。
             float rawDeltaLayer = dragLastValidLayer - dragOriginRawLayer;
 
             // §4: スナップ＋盤面内クランプを点群全体に対して1回だけ適用する（ペーストと同じ規則）。
             float deltaCell = ResolveCellDelta(dragOriginByRef.Values, rawDeltaCell, cellStep);
-            float deltaLayer = ResolveLayerDelta(dragOriginByRef.Values, rawDeltaLayer);
+            float deltaLayer = dragCanChangeLayer ? ResolveLayerDelta(dragOriginByRef.Values, rawDeltaLayer) : 0f;
 
             // editor-ui-rework-mmw.md §5.2-3: 掴んだ「点」だけを動かす。ノーツ全体(他waypoint)は
             // 動かない — Slideの帯を一部分だけ調整できるようにするため。
@@ -2217,17 +2307,21 @@ namespace Muses.ChartTool
         private void EnterPasteMode(bool flip = false)
         {
             if (clipboard.Count == 0 || pasting) return;
-            if (!sheetHoverPos.HasValue)
+            var L = CurrentSheetLayout();
+            // editor-ui-rework-r3.md §4.1(a): PaneAtはレーン外(余白・ガター・高さレーン)で
+            // (layerF=0.5, cellF=Cells*0.5)という実在しない中間値を返す。TryPaneAtを使わずここで
+            // アンカーを取っていたため、レーン外でVを押すとアンカーがその中間値に固定され、
+            // 後でカーソルをペインへ入れた瞬間にゴーストが最大6セルぶん飛んでいた。
+            var pane = !sheetHoverPos.HasValue ? null : L.TryPaneAt(sheetHoverPos.Value.x);
+            if (!pane.HasValue)
             {
-                statusMessage = "貼り付け先にマウスを合わせてから再度お試しください";
+                statusMessage = "貼り付け先(Ground/Skyのレーン上)にマウスを合わせてから再度お試しください";
                 return;
             }
-            var L = CurrentSheetLayout();
-            var (layerF, cellF) = L.PaneAt(sheetHoverPos.Value.x);
-            pasteAnchorLayer = layerF;
-            pasteAnchorCell = cellF;
-            pasteLastValidLayer = layerF;
-            pasteLastValidCell = cellF;
+            pasteAnchorLayer = pane.Value.layerF;
+            pasteAnchorCell = pane.Value.cellF;
+            pasteLastValidLayer = pane.Value.layerF;
+            pasteLastValidCell = pane.Value.cellF;
             pasting = true;
             pasteFlip = flip;
             statusMessage = "貼り付け先をクリックして確定（Escでキャンセル）";
