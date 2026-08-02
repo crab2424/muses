@@ -158,6 +158,7 @@ namespace Muses.Gameplay
             }
         }
 
+        // editor-ui-rework-r3.md §5: cellFは全種別で左端基準（旧: Slideのみ中心基準）。
         private static bool CellOverlap(Waypoint a, Waypoint b) => a.cellF < b.cellF + b.width && b.cellF < a.cellF + a.width;
 
         /// <summary>note-spec.md §0.2。Slideの現在位置(帯)に接触点が包含されているかを連続座標で判定する。</summary>
@@ -172,7 +173,7 @@ namespace Muses.Gameplay
 
         private bool InBand(Contact c, float layerF, float cellF, float width) =>
             MathF.Abs(c.layerF - layerF) <= cfg.layerJudgeRadius &&
-            c.cellF >= cellF - width / 2f && c.cellF <= cellF + width / 2f;
+            c.cellF >= cellF && c.cellF <= cellF + width;
 
         /// <summary>
         /// EnterEvent がノーツ N の包含判定を満たすか。Tap/ExTap は離散セル(§0.2)、
@@ -184,7 +185,7 @@ namespace Muses.Gameplay
             if (n.kind == NoteKind.Slide)
             {
                 return MathF.Abs(e.layerF - wp.layerF) <= cfg.layerJudgeRadius &&
-                       e.cellF >= wp.cellF - wp.width / 2f && e.cellF <= wp.cellF + wp.width / 2f;
+                       e.cellF >= wp.cellF && e.cellF <= wp.cellF + wp.width;
             }
             var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
             if (layer != e.layer) return false;

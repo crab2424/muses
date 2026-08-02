@@ -68,9 +68,9 @@ namespace Muses.Chart
                     if (i > 0 && wp.tick <= note.points[i - 1].tick)
                         Add(issues, "V5", ValidationSeverity.Error, "Waypoint の tick が昇順ではありません", wp.tick);
 
-                    // NoteGeometry/Judge と同じ規則: Slide は cellF を中心、それ以外は左端として扱う。
-                    float lo = note.kind == NoteKind.Slide ? wp.cellF - wp.width / 2f : wp.cellF;
-                    float hi = note.kind == NoteKind.Slide ? wp.cellF + wp.width / 2f : wp.cellF + wp.width;
+                    // editor-ui-rework-r3.md §5: cellFは全種別で左端基準に統一（旧: Slideのみ中心基準）。
+                    float lo = wp.cellF;
+                    float hi = wp.cellF + wp.width;
                     if (lo < 0f || hi > cells)
                         Add(issues, "V6", ValidationSeverity.Warning, $"cellF範囲([{lo:0.##},{hi:0.##}]) が [0,{cells}] を外れています", wp.tick);
 
@@ -118,13 +118,12 @@ namespace Muses.Chart
                         Add(issues, "V2", ValidationSeverity.Warning, "comboStep 上書きを持つ Waypoint の marker が Visible ではありません", wp.tick);
         }
 
-        /// <summary>ノーツの (layer, cellFの範囲) を、種別ごとの基準に合わせて求める（NoteGeometry/Judgeと同じ規則:
-        /// Tap/ExTap/Flickは左端基準、Slideは中心基準）。先頭Waypointの値を使う。</summary>
+        /// <summary>ノーツの (layer, cellFの範囲) を求める。先頭Waypointの値を使う。
+        /// editor-ui-rework-r3.md §5: cellFは全種別で左端基準（NoteGeometry/Judgeと同じ規則）。</summary>
         private static (bool sky, float lo, float hi) FirstCellRange(Note n)
         {
             var wp = n.points[0];
             bool sky = wp.layerF > 0.5f;
-            if (n.kind == NoteKind.Slide) return (sky, wp.cellF - wp.width / 2f, wp.cellF + wp.width / 2f);
             return (sky, wp.cellF, wp.cellF + wp.width);
         }
 

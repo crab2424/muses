@@ -120,13 +120,13 @@ namespace Muses.Notes
                     PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, cSlide, timeline.XAt);
 
                     // note-spec.md §3: Visible中継点はTapと同じ形・別色で描く（コンボ点として扱われる、item11）。
-                    // Slideのcellは中心基準（PushSlideBandと同じ、Tapの左端基準とは異なる）。
+                    // editor-ui-rework-r3.md §5: cellFは全種別で左端基準に統一（旧: Slideのみ中心基準）。
                     foreach (var wp in n.points)
                     {
                         if (wp.marker != WaypointMarker.Visible) continue;
                         float y = YAt(wp.layerF, dCopy.skyHeight) + dCopy.zJudge * 0.012f; // 帯(0.01)より上にして隠れないようにする
-                        float u0 = UAt(wp.cellF - wp.width / 2f + 0.04f);
-                        float u1 = UAt(wp.cellF + wp.width / 2f - 0.04f);
+                        float u0 = UAt(wp.cellF + 0.04f);
+                        float u1 = UAt(wp.cellF + wp.width - 0.04f);
                         QuadThin(u0, u1, y, timeline.XAt(wp.time), wp.layerF, cSlideMarker, NearOf(wp.layerF));
                     }
                 }
@@ -181,7 +181,8 @@ namespace Muses.Notes
 
         /// <summary>
         /// Slide は層をまたぐため、頂点ごとに自分の layerF に応じた手前端を持たせる。
-        /// 幅もセル分数（cellF ± width/2）をuに変換して持たせ、ワールド単位に焼き込まない。
+        /// 幅もセル分数（cellF～cellF+width、editor-ui-rework-r3.md §5: 左端基準）をuに変換して
+        /// 持たせ、ワールド単位に焼き込まない。
         /// points.Length==2 の直線区間（旧Holdに相当）も同じコードパスで描ける。
         /// xOf は note-spec.md §5.5 の X(t)（このSlideが属するスクロールグループの表示位置関数）。
         /// 形状(cellF/layerF/width)の補間は実時間 time のまま行い、頂点に焼く「時刻」座標だけを xOf(time) に変える。
@@ -201,8 +202,9 @@ namespace Muses.Notes
                 return (cellF, yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, xOf(time), layerF, width);
             }
 
+            // side<0=左端(cellF) / side>0=右端(cellF+width)。editor-ui-rework-r3.md §5: 左端基準に統一。
             void Emit((float cellF, float y, float t, float layerF, float width) p, float side) =>
-                push(uAt(p.cellF + side * p.width / 2f), p.y, p.t, p.layerF, c, nearOf(p.layerF));
+                push(uAt(side < 0f ? p.cellF : p.cellF + p.width), p.y, p.t, p.layerF, c, nearOf(p.layerF));
 
             var prev = At(t0);
             for (int i = 1; i <= steps; i++)

@@ -1,4 +1,4 @@
-# muses ノーツ仕様（Phase 1 / 2026-08-02 改訂 rev.5）
+# muses ノーツ仕様（Phase 1 / 2026-08-02 改訂 rev.6）
 
 対象: **Tap / Ex Tap / Slide / Flick** と、Slide に付く**中継点**。
 目的は「今あるものを確定させる」ことに加えて、**今後ノーツ種別が増えても
@@ -27,6 +27,13 @@
 > 指定したくなったら構造体に昇格」を実施した形。`easing` は `cellF`/`width`、
 > `easingH` は `layerF` を独立に補間する。ファイル形式は `ease=` を横用のまま流用し、
 > 高さ用に `easeh=` を追加（省略時は `ease` を両軸に流用するため既存譜面は完全互換）。
+>
+> rev.6 の主な変更: **`cellF` の基準を全種別で左端に統一**（editor-ui-rework-r3.md §5）。
+> 従来 `Tap`/`Ex Tap`/`Flick` は左端、**`Slide` だけ中心**（`cellF ± width/2`）という
+> 実装間の食い違いがあり、エディタとプレビューでノーツの横位置が `width/2` ぶんずれる
+> 不具合の原因になっていた。`cellF` は常に「帯の左端」、`cellF + width` が右端。
+> §1.1 に明記（従来どこにも書かれていなかった）。保存済みの `.muses` 譜面は
+> リポジトリ内に存在しなかったため、移行はデモ譜面（`ChartBuilder`）のみで完結した。
 
 ---
 
@@ -140,7 +147,7 @@ Note {
 Waypoint {
   tick        : int             // 譜面先頭からの累積 tick（§5）
   layerF      : float           // 0=地上 … 1=空中（連続値）
-  cellF       : float           // セル境界インデックスの連続値
+  cellF       : float           // 帯の左端（連続値）。右端は cellF + width。全種別で共通の基準（rev.6）
   width       : float           // この点における帯の幅（セル数）
   easing      : Easing          // 「この点から次の点まで」の cellF/width（横方向）の補間種別。既定 Linear
   easingH     : Easing          // 「この点から次の点まで」の layerF（高さ方向）の補間種別。既定 Linear（rev.5）

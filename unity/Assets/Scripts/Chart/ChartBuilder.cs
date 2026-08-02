@@ -77,30 +77,34 @@ namespace Muses.Chart
                 }
 
                 // 16-19拍: 地上の幅広 Slide（旧Hold相当）+ 空中の3連符
+                // editor-ui-rework-r3.md §5: cellFは全種別で左端基準に統一（旧: Slideのみ中心基準）。
+                // 以下の座標は「中心基準だった値 - width/2」に変換し、見た目の位置を維持している。
+                float holdWidth = W(4);
                 chart.notes.Add(new Note
                 {
                     kind = NoteKind.Slide,
                     points = new List<Waypoint>
                     {
-                        WP(t0Beat + 16, 0f, C(4), W(4)),
-                        WP(t0Beat + 20, 0f, C(4), W(4)),
+                        WP(t0Beat + 16, 0f, C(4) - holdWidth / 2f, holdWidth),
+                        WP(t0Beat + 20, 0f, C(4) - holdWidth / 2f, holdWidth),
                     },
                 });
                 for (int i = 0; i < 6; i++)
                     chart.notes.Add(Tap1(t0Beat + 16 + i * 4f / 6f, Layer.Sky, C(i * 2), W(2)));
 
                 // 20-27拍: 層をまたぐ Slide（旧Arc相当）2本。旧実装は smoothstep 固定だったので easing=Smooth で見た目を維持
+                float archWidth = 1.2f * S;
                 chart.notes.Add(new Note
                 {
                     kind = NoteKind.Slide,
                     points = new List<Waypoint>
                     {
-                        WP(t0Beat + 20, 0f, F(1.5f), 1.2f * S, Easing.Smooth),
+                        WP(t0Beat + 20, 0f, F(1.5f) - archWidth / 2f, archWidth, Easing.Smooth),
                         // item11確認用: Visible中継点(白いマーカーで見た目確認)
-                        WP(t0Beat + 22, 0f, F(4.5f), 1.2f * S, Easing.Smooth, WaypointMarker.Visible),
-                        WP(t0Beat + 24, 1f, F(7.5f), 1.2f * S, Easing.Smooth),
-                        WP(t0Beat + 26, 1f, F(9.5f), 1.2f * S, Easing.Smooth, WaypointMarker.Visible),
-                        WP(t0Beat + 28, 0f, F(6.5f), 1.2f * S, Easing.Smooth),
+                        WP(t0Beat + 22, 0f, F(4.5f) - archWidth / 2f, archWidth, Easing.Smooth, WaypointMarker.Visible),
+                        WP(t0Beat + 24, 1f, F(7.5f) - archWidth / 2f, archWidth, Easing.Smooth),
+                        WP(t0Beat + 26, 1f, F(9.5f) - archWidth / 2f, archWidth, Easing.Smooth, WaypointMarker.Visible),
+                        WP(t0Beat + 28, 0f, F(6.5f) - archWidth / 2f, archWidth, Easing.Smooth),
                     },
                 });
                 chart.notes.Add(new Note
@@ -108,9 +112,9 @@ namespace Muses.Chart
                     kind = NoteKind.Slide,
                     points = new List<Waypoint>
                     {
-                        WP(t0Beat + 21, 1f, F(10.5f), 1.2f * S, Easing.Smooth),
-                        WP(t0Beat + 24, 0.5f, F(5.5f), 1.2f * S, Easing.Smooth),
-                        WP(t0Beat + 27, 0f, F(0.5f), 1.2f * S, Easing.Smooth),
+                        WP(t0Beat + 21, 1f, F(10.5f) - archWidth / 2f, archWidth, Easing.Smooth),
+                        WP(t0Beat + 24, 0.5f, F(5.5f) - archWidth / 2f, archWidth, Easing.Smooth),
+                        WP(t0Beat + 27, 0f, F(0.5f) - archWidth / 2f, archWidth, Easing.Smooth),
                     },
                 });
 
