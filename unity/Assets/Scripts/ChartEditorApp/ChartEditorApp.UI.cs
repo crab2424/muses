@@ -78,8 +78,6 @@ namespace Muses.ChartTool
         private IntegerField infoLevel;
         private TextField audioFile;
         private FloatField audioOffset;
-        private Toggle viewFollow;
-        private Slider viewJudgeLine;
         private Slider viewRate;
         private Toggle viewHeightLane;
         private Toggle viewEventLane;
@@ -142,6 +140,28 @@ namespace Muses.ChartTool
             BuildTabs();
             BuildRightPanel();
             BuildStatusBar();
+            BuildCommandTable();
+
+            // editor-ui-rework-r5.md §5.2: キー入力の受け口をuiRoot 1箇所へ統合する
+            // （旧: HandleUndoRedoShortcutsのInputSystemポーリング + notesSheet単体のKeyDownEvent
+            // の2系統に分かれており、右パネルの入力欄にフォーカスがある間はUndo/Redoがテキスト編集を
+            // 無視して譜面側へ誤爆する不具合があった）。TrickleDownで登録するので、パネル内の
+            // どの要素がフォーカスを持っていてもuiRootを経由する限り先にここへ届く。
+            uiRoot.focusable = true;
+            uiRoot.RegisterCallback<KeyDownEvent>(OnGlobalKeyDown, TrickleDown.TrickleDown);
+            // editor-ui-rework-r2.md §5: 矢印キーはKeyDownEventとは別にNavigationMoveEventを
+            // 発行し、既定でフォーカスを次のfocusable要素へ移してしまう。OnGlobalKeyDownの
+            // StopPropagationはKeyDownEventしか止められないため、これも別途潰す
+            // （旧実装はnotesSheet単体に登録していたが、受け口をuiRootへ統合したので同じ場所へ移した）。
+            uiRoot.RegisterCallback<NavigationMoveEvent>(evt =>
+            {
+                evt.PreventDefault();
+                evt.StopPropagation();
+            }, TrickleDown.TrickleDown);
+            // 起動直後、何もクリックしていない状態でもショートカットが効くようにする試み
+            // （UI Toolkitのランタイムパネルでフォーカスが無い状態でKeyDownEventが配送されるかは
+            // 実機で確認するまで信用しない。届かない場合はnotesSheet.Focus()等への切り戻しを検討）。
+            uiRoot.Focus();
 
             SyncModelToUi();
             RefreshValidationList();
@@ -211,11 +231,11 @@ namespace Muses.ChartTool
                 menu.AddItem("譜面プレビュー", selectedTabIndex == TabPreview,
                     () => SelectTab(TabPreview));
                 menu.AddSeparator("");
-                menu.AddItem("再生に追従", followPlayback, () =>
-                {
-                    followPlayback = !followPlayback;
-                    if (viewFollow != null) viewFollow.SetValueWithoutNotify(followPlayback);
-                });
+                // editor-ui-rework-r5.md §4.1: 「再生に追従」の設定コントロールは設定モーダルの
+                // タイムラインタブへ移設したため、ここはfollowPlaybackを直接書き換えるだけでよい
+                // （モーダルが開いていれば次に開いたときの表示に反映される。両方同時に開いて
+                // 見比べる操作は想定していない）。
+                menu.AddItem("再生に追従", followPlayback, () => followPlayback = !followPlayback);
                 menu.AddItem("高さレーン", showHeightLane, () =>
                 {
                     showHeightLane = !showHeightLane;
@@ -247,14 +267,16 @@ namespace Muses.ChartTool
                     validateOnSave = !validateOnSave;
                     validateOnSaveToggle?.SetValueWithoutNotify(validateOnSave);
                 });
+                menu.AddSeparator("");
+                menu.AddItem("設定...", false, ShowSettingsModal);
             });
 
             AddMenu(bar, "ヘルプ", menu =>
             {
-                menu.AddItem("ショートカット: Cmd/Ctrl+Z = 元に戻す", false, null);
-                menu.AddItem("ショートカット: Cmd/Ctrl+Shift+Z / Y = やり直す", false, null);
-                menu.AddItem("ショートカット: Delete = 選択ノーツを削除", false, null);
-                menu.AddItem("ショートカット: Cmd/Ctrl+C/X/V = コピー/切り取り/貼り付け", false, null);
+                // editor-ui-rework-r5.md §5: キーボードショートカットは変更可能になったため、
+                // 個別の割り当てをここに書き並べるとすぐ古くなる。設定タブへの案内のみ残す。
+                menu.AddItem("ショートカットキーの一覧・変更は「ツール > 設定」から", false, ShowSettingsModal);
+                menu.AddSeparator("");
                 menu.AddItem("Shift+ドラッグ = 追加選択 / Shift+クリック = 選択トグル", false, null);
                 menu.AddItem("右クリック = コンテキストメニュー", false, null);
                 menu.AddItem("高さレーン = 選択中ノーツの中継点を横ドラッグで層編集", false, null);
@@ -264,22 +286,135 @@ namespace Muses.ChartTool
             });
         }
 
-        /// <summary>
-        /// IMGUIにもUI Toolkitにもメニューバー部品は無いため、ボタン + GenericDropdownMenu で自前実装する
-        /// （§4.1 の表にあるとおり。GenericDropdownMenu はランタイムでも使える標準のポップアップ）。
-        /// 項目の活性状態は開くたびに変わるので、生成は毎回クリック時に行う。
-        /// </summary>
-        private void AddMenu(VisualElement bar, string title, Action<GenericDropdownMenu> build)
+        // ================= 自前メニュー(editor-ui-rework-r5.md §9) =================
+        //
+        // 旧実装はボタン + 標準GenericDropdownMenuだった。GenericDropdownMenu.DropDownは
+        // パネルルート直下に画面全体を覆うコンテナを作るため、その下にあるメニューバーの
+        // ボタンにPointerEnterEventが届かず「一度クリックしたら他のタブはホバーだけで
+        // 見られるようにしたい」が実現できなかった（公開APIに開いているメニューを閉じる
+        // 手段も無い）。overlayLayer(モーダルと同じ層)に自前でポップアップを出す方式に置き換える。
+        // AddItem/AddDisabledItem/AddSeparatorの呼び出し側(BuildMenuBar)はシグネチャを
+        // 揃えているので無変更で移行できる。
+
+        private class EditorMenuItem
         {
+            public string label;
+            public bool isChecked;
+            public bool disabled;
+            public bool isSeparator;
+            public Action action;
+        }
+
+        private class EditorMenu
+        {
+            public readonly List<EditorMenuItem> items = new();
+            public void AddItem(string label, bool isChecked, Action action) =>
+                items.Add(new EditorMenuItem { label = label, isChecked = isChecked, action = action });
+            public void AddDisabledItem(string label, bool isChecked) =>
+                items.Add(new EditorMenuItem { label = label, isChecked = isChecked, disabled = true });
+            public void AddSeparator(string _) => items.Add(new EditorMenuItem { isSeparator = true });
+        }
+
+        private readonly List<Button> menuBarButtons = new();
+        private int openMenuIndex = -1;
+        private VisualElement openMenuPopup;
+        private VisualElement openMenuScrim;
+
+        /// <summary>項目の活性状態は開くたびに変わるので、生成は毎回開くときに行う。</summary>
+        private void AddMenu(VisualElement bar, string title, Action<EditorMenu> build)
+        {
+            int index = menuBarButtons.Count;
             var btn = new Button { text = title };
             btn.AddToClassList("menu-btn");
             btn.clicked += () =>
             {
-                var menu = new GenericDropdownMenu();
-                build(menu);
-                menu.DropDown(btn.worldBound, btn, DropdownMenuSizeMode.Auto);
+                if (openMenuIndex == index) CloseMenu();
+                else OpenMenu(index, btn, build);
             };
+            // §9: 既にどれかのメニューが開いている間だけ、ホバーで即座に切り替える
+            // （閉じている状態でのホバーでは開かない＝「一度クリックしたら」の意図）。
+            btn.RegisterCallback<PointerEnterEvent>(_ =>
+            {
+                if (openMenuIndex >= 0 && openMenuIndex != index) OpenMenu(index, btn, build);
+            });
             bar.Add(btn);
+            menuBarButtons.Add(btn);
+        }
+
+        private void OpenMenu(int index, Button btn, Action<EditorMenu> build)
+        {
+            CloseMenu();
+            openMenuIndex = index;
+            foreach (var b in menuBarButtons) b.EnableInClassList("menu-btn--open", false);
+            btn.EnableInClassList("menu-btn--open", true);
+
+            var menu = new EditorMenu();
+            build(menu);
+
+            // §9: スクリム(「外側クリックで閉じる」用の当たり判定)とポップアップ本体は別要素にする。
+            // ポップアップをスクリムの子にすると、ポップアップ自身へのPointerDownEventがスクリムまで
+            // バブリングしてクリックの途中でメニューごと消え、項目のclickedが発火しなくなる
+            // （Buttonのclickedはpointer up側の合成イベントのため、down時点で要素が消えると成立しない）。
+            // 兄弟にして、ポップアップを後から追加することで重なり順を手前にする。
+            //
+            // 重要: スクリムはメニューバー行(btn.worldBound.yMaxより上)を覆わない。ここを画面全体で
+            // 覆うと、GenericDropdownMenuで問題になったのと同じくメニューバーの他のボタンに
+            // PointerEnterEventが届かなくなり、ホバー切替が実現できない。
+            var bound = btn.worldBound;
+            openMenuScrim = new VisualElement();
+            openMenuScrim.style.position = Position.Absolute;
+            openMenuScrim.style.left = 0;
+            openMenuScrim.style.top = bound.yMax;
+            openMenuScrim.style.right = 0;
+            openMenuScrim.style.bottom = 0;
+            openMenuScrim.RegisterCallback<PointerDownEvent>(_ => CloseMenu());
+            overlayLayer.Add(openMenuScrim);
+
+            var popup = new VisualElement();
+            popup.AddToClassList("menu-popup");
+            popup.style.position = Position.Absolute;
+            popup.style.left = bound.x;
+            popup.style.top = bound.yMax;
+            // ポップアップ自身へのクリックがスクリムまで抜けて即クローズしないようにする。
+            popup.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
+
+            foreach (var item in menu.items)
+            {
+                if (item.isSeparator)
+                {
+                    var sep = new VisualElement();
+                    sep.AddToClassList("menu-popup-sep");
+                    popup.Add(sep);
+                    continue;
+                }
+
+                var row = new Button(() =>
+                {
+                    if (!item.disabled) item.action?.Invoke();
+                    CloseMenu();
+                })
+                { text = (item.isChecked ? "✓ " : "") + item.label };
+                row.AddToClassList("menu-popup-item");
+                row.SetEnabled(!item.disabled);
+                popup.Add(row);
+            }
+
+            overlayLayer.Add(popup);
+            openMenuPopup = popup;
+        }
+
+        private void CloseMenu()
+        {
+            openMenuIndex = -1;
+            openMenuScrim?.RemoveFromHierarchy();
+            openMenuScrim = null;
+            // popupはscrimの子ではなくoverlayLayerの兄弟として追加している（§9のコメント参照:
+            // ポップアップ自身へのクリックがスクリムまでバブリングして即クローズするのを防ぐため）。
+            // そのためscrimを消すだけではpopupが消えず、ホバーで切り替えるたびに古いポップアップが
+            // overlayLayerに積み重なって残ってしまっていた（バグ）。ここで明示的に取り除く。
+            openMenuPopup?.RemoveFromHierarchy();
+            openMenuPopup = null;
+            foreach (var b in menuBarButtons) b.EnableInClassList("menu-btn--open", false);
         }
 
         // ================= A: ツールバー(§2.2) =================
@@ -317,7 +452,7 @@ namespace Muses.ChartTool
             var widthLabel = new Label("幅");
             widthLabel.AddToClassList("field-label");
             var widthField = new FloatField { value = defaultWidthCells };
-            widthField.style.width = 54;
+            widthField.AddToClassList("tb-field");
             widthField.RegisterValueChangedCallback(evt => defaultWidthCells = Mathf.Max(0.5f, evt.newValue));
             widthGroup.Add(widthLabel);
             widthGroup.Add(widthField);
@@ -388,16 +523,8 @@ namespace Muses.ChartTool
             notesSheet.RegisterCallback<PointerUpEvent>(OnSheetPointerUp);
             notesSheet.RegisterCallback<PointerLeaveEvent>(OnSheetPointerLeave);
             notesSheet.RegisterCallback<WheelEvent>(OnSheetWheel);
-            notesSheet.RegisterCallback<KeyDownEvent>(OnSheetKeyDown);
-            // editor-ui-rework-r2.md §5: 矢印キーはKeyDownEventとは別にNavigationMoveEventを
-            // 発行し、既定でフォーカスを次のfocusable要素へ移す。OnSheetKeyDownのStopPropagation
-            // はKeyDownEventしか止められないため、これを止めないと数回に1回しかカーソルが
-            // 動かない（フォーカスが一巡してnotesSheetに戻るまで反応しない）不具合になる。
-            notesSheet.RegisterCallback<NavigationMoveEvent>(evt =>
-            {
-                evt.PreventDefault();
-                evt.StopPropagation();
-            });
+            // editor-ui-rework-r5.md §5.2: キー入力の受け口はuiRoot側の1本(OnGlobalKeyDown)へ
+            // 統合したため、notesSheet固有のKeyDownEventハンドラは無くなった（BuildUIExtras参照）。
 
             previewSurface = new VisualElement();
             previewSurface.AddToClassList("preview-surface");
@@ -434,12 +561,13 @@ namespace Muses.ChartTool
             PlaceSheetLabel(ref used, "Ground", L.ground.x + 4f, L.rect.y + 2f);
             PlaceSheetLabel(ref used, "Sky", L.sky.x + 4f, L.rect.y + 2f);
 
-            // §7.5 高さレーン（折りたたみ中は幅0なので見出しも出さない）
-            if (L.heightLane.width > 0f)
+            // §7.5 高さレーン。editor-ui-rework-r5.md §8: 幅は常に予約されるため、
+            // 見出しの表示可否はshowHeightLaneを直接見る。
+            if (showHeightLane)
                 PlaceSheetLabel(ref used, "高さ G→S", L.heightLane.x + 4f, L.rect.y + 2f);
 
-            // editor-ui-rework-r4.md §5: イベントレーンを畳んでいる間(幅0)は見出しも出さない。
-            if (L.rightMargin.width > 0f)
+            // editor-ui-rework-r5.md §8: 同上、showEventLaneを直接見る。
+            if (showEventLane)
             {
                 var (bpmCol, meterCol, scrollCol) = EventColumns(L.rightMargin);
                 PlaceSheetLabel(ref used, "BPM", bpmCol.x + 2f, L.rect.y + 2f);
@@ -458,18 +586,19 @@ namespace Muses.ChartTool
                 if (addr.beat != 1 || addr.tick != 0) continue;
                 float y = L.TickToY(t);
                 if (y < L.rect.y - 4f || y > L.rect.yMax + 4f) continue;
-                // 余白レーン(§7.2)に退避したので、小節線と同じ高さに縦中央揃えで置ける
-                // （旧実装はGroundレーン内に重ねていたためノーツと被らないよう線の上に逃がしていた）。
-                PlaceSheetLabel(ref used, addr.bar.ToString(), L.leftMargin.x + 4f, y - 7f);
+                // editor-ui-rework-r5.md §8: 左余白の幅はウィンドウ幅次第で変わる（中央揃えの
+                // オフセットを含むため）ので、左詰めではなくレーンの左端(ground.xMin)に
+                // 右詰めで貼り付ける。
+                PlaceSheetLabelRight(ref used, addr.bar.ToString(), L.leftMargin.xMax - 4f, y - 7f);
             }
 
             for (int i = used; i < sheetLabels.Count; i++)
                 sheetLabels[i].style.display = DisplayStyle.None;
         }
 
-        private void PlaceSheetLabel(ref int used, string text, float x, float y)
+        private Label AcquireSheetLabel(ref int used)
         {
-            if (used >= MaxSheetLabels) return;
+            if (used >= MaxSheetLabels) return null;
             while (sheetLabels.Count <= used)
             {
                 var created = new Label();
@@ -482,8 +611,29 @@ namespace Muses.ChartTool
 
             var lbl = sheetLabels[used++];
             lbl.style.display = DisplayStyle.Flex;
+            return lbl;
+        }
+
+        private void PlaceSheetLabel(ref int used, string text, float x, float y)
+        {
+            var lbl = AcquireSheetLabel(ref used);
+            if (lbl == null) return;
             if (lbl.text != text) lbl.text = text;
             lbl.style.left = x;
+            lbl.style.right = StyleKeyword.Auto;
+            lbl.style.top = y;
+        }
+
+        /// <summary>editor-ui-rework-r5.md §8.3: 右詰め版。左詰めのPlaceSheetLabelと同じプールを
+        /// 使い回すため、leftとrightの両方を毎回明示的に設定し直す（前フレーム/前用途で
+        /// 反対側のスタイルが残っていると、両方指定された状態でレイアウトが崩れるため）。</summary>
+        private void PlaceSheetLabelRight(ref int used, string text, float rightEdgeX, float y)
+        {
+            var lbl = AcquireSheetLabel(ref used);
+            if (lbl == null) return;
+            if (lbl.text != text) lbl.text = text;
+            lbl.style.left = StyleKeyword.Auto;
+            lbl.style.right = Mathf.Max(0f, notesSheet.contentRect.width - rightEdgeX);
             lbl.style.top = y;
         }
 
@@ -498,8 +648,9 @@ namespace Muses.ChartTool
         {
             var L = CurrentSheetLayout();
             if (L.rect.width < 2f || L.rect.height < 2f) return;
-            // editor-ui-rework-r4.md §5: イベントレーンを畳んでいる間(幅0)はチップを1つも出さない。
-            if (L.rightMargin.width <= 0f)
+            // editor-ui-rework-r4.md §5: イベントレーンを畳んでいる間はチップを1つも出さない。
+            // editor-ui-rework-r5.md §8: 幅は常に予約されるので、判定はshowEventLaneを直接見る。
+            if (!showEventLane)
             {
                 for (int i = 0; i < eventChipLabels.Count; i++) eventChipLabels[i].style.display = DisplayStyle.None;
                 return;
@@ -645,12 +796,11 @@ namespace Muses.ChartTool
             note.AddToClassList("prop-note");
             audioHost.Add(note);
 
+            // editor-ui-rework-r5.md §4.1: 「再生に追従」「ページ送りスクロール」「判定線位置」は
+            // 設定モーダルのタイムラインタブへ移設した。ここに残すのは再生パラメータ（再生速度）・
+            // 操作（小節へ移動）・高さ/イベントレーン（依頼で明示的に除外された2項目）。
             var viewHost = uiRoot.Q<VisualElement>("view-host");
             viewHost.Clear();
-            viewFollow = AddToggleRow(viewHost, "再生に追従", v => followPlayback = v);
-            // MikuMikuWorld移植候補: 再生追従のPage/Smooth切替（EditorWindows.cpp:531-540のScrollMode）。
-            AddToggleRow(viewHost, "ページ送りスクロール", v => scrollFollowMode = v ? ScrollFollowMode.Page : ScrollFollowMode.Smooth);
-            viewJudgeLine = AddSliderRow(viewHost, "判定線位置", 0f, 1f, v => judgeLineFrac = v);
             viewRate = AddSliderRow(viewHost, "再生速度", 0.25f, 2f, v => preview.Rate = v);
             // §7.5 高さレーン。既定は折りたたみ（幅0）で、必要なときだけ開く。
             viewHeightLane = AddToggleRow(viewHost, "高さレーン", v => showHeightLane = v);
@@ -671,6 +821,10 @@ namespace Muses.ChartTool
             jumpRow.Add(jumpField);
             jumpRow.Add(jumpBtn);
             viewHost.Add(jumpRow);
+
+            var openSettingsBtn = new Button(ShowSettingsModal) { text = "設定を開く..." };
+            openSettingsBtn.AddToClassList("tb-btn");
+            viewHost.Add(openSettingsBtn);
 
             statsText = uiRoot.Q<Label>("stats-text");
 
@@ -1224,22 +1378,11 @@ namespace Muses.ChartTool
             // 「停止中は必ずcursorTickから再生を始める」を担う。
             // editor-ui-rework-r3.md §8: 停止中にpreview.Seekを呼ぶ箇所はscrollTick(判定線)も
             // 合わせる。合わせないとUpdate()の停止中同期(scrollTick→preview.Seek)と引っ張り合う。
-            transport.Add(MakeTransportButton("|◀", () => { cursorTick = 0; scrollTick = 0; preview.Seek(0f); }));
-            transport.Add(MakeTransportButton("■", () =>
-            {
-                preview.Pause();
-                preview.Seek(TickToSeconds(cursorTick));
-                scrollTick = cursorTick;
-            }));
+            transport.Add(MakeTransportButton("|◀", GoToStart));
+            transport.Add(MakeTransportButton("■", StopAtCursor));
             playButton = MakeTransportButton("▶", TogglePlayFromCursor);
             transport.Add(playButton);
-            transport.Add(MakeTransportButton("▶|", () =>
-            {
-                preview.Seek(preview.ChartEndSec);
-                int endTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.ChartEndSec));
-                cursorTick = endTick;
-                scrollTick = endTick;
-            }));
+            transport.Add(MakeTransportButton("▶|", GoToEnd));
 
             // §2.6 / ユーザー指摘9: スナップは8個のボタン横並びをやめてドロップダウンに畳む
             var snapGroup = uiRoot.Q<VisualElement>("status-snap");
@@ -1261,7 +1404,7 @@ namespace Muses.ChartTool
             var zoomGroup = uiRoot.Q<VisualElement>("status-zoom");
             zoomGroup.Clear();
             zoomGroup.Add(MakeTransportButton("−", () => SetZoom(pxPerBeat - 8f)));
-            zoomSlider = new Slider(8f, 240f) { value = pxPerBeat };
+            zoomSlider = new Slider(ZoomMinPxPerBeat, ZoomMaxPxPerBeat) { value = pxPerBeat };
             zoomSlider.AddToClassList("zoom-slider");
             zoomSlider.RegisterValueChangedCallback(evt => { if (!suppressUiCallbacks) SetZoom(evt.newValue); });
             zoomGroup.Add(zoomSlider);
@@ -1308,7 +1451,7 @@ namespace Muses.ChartTool
 
         private void SetZoom(float value)
         {
-            pxPerBeat = Mathf.Clamp(value, 8f, 240f);
+            pxPerBeat = Mathf.Clamp(value, ZoomMinPxPerBeat, ZoomMaxPxPerBeat);
         }
 
         // ================= 毎フレームの表示同期 =================
@@ -1350,15 +1493,13 @@ namespace Muses.ChartTool
                 }
 
                 // スライダー/トグル/ドロップダウンは入力途中という状態が無いので毎フレーム追従させる。
-                // ノーツシート側のCtrl+ホイール(拡大縮小)やメニューの「再生に追従」もここで反映される。
-                viewFollow.SetValueWithoutNotify(followPlayback);
-                viewJudgeLine.SetValueWithoutNotify(judgeLineFrac);
+                // ノーツシート側のCtrl+ホイール(拡大縮小)もここで反映される。
                 viewRate.SetValueWithoutNotify(preview.Rate);
                 viewHeightLane.SetValueWithoutNotify(showHeightLane);
                 viewEventLane.SetValueWithoutNotify(showEventLane);
                 if (snapDropdown.index != snapIndex) snapDropdown.index = snapIndex;
                 zoomSlider.SetValueWithoutNotify(pxPerBeat);
-                zoomLabel.text = $"{pxPerBeat / 28f:0.00}x";
+                zoomLabel.text = $"{pxPerBeat / ZoomBasePxPerBeat:0.00}x";
                 playButton.text = preview.IsPlaying ? "❙❙" : "▶";
 
                 float scrubMax = Mathf.Max(10f, preview.ChartEndSec + 2f);
@@ -1587,6 +1728,268 @@ namespace Muses.ChartTool
             modal?.parent?.RemoveFromHierarchy();
         }
 
+        // ================= 設定モーダル(editor-ui-rework-r5.md) =================
+
+        private VisualElement settingsBody;
+        private int settingsTabIndex;
+        private Button settingsGeneralTabBtn, settingsTimelineTabBtn, settingsShortcutTabBtn;
+
+        /// <summary>editor-ui-rework-r5.md §2.1: モーダル＋横タブ3枚。中身は「一般」「タイムライン」
+        /// 「ショートカットキー」で、各コントロールは既存フィールド(followPlayback等)へ直接バインドする
+        /// （設定専用のコピーを持たず、変更した瞬間に即時反映される。EditorSettingsは永続化専用）。</summary>
+        private void ShowSettingsModal()
+        {
+            var modal = ShowModal("設定");
+            modal.AddToClassList("settings-modal");
+
+            var tabHeader = new VisualElement();
+            tabHeader.AddToClassList("tab-header");
+            settingsGeneralTabBtn = new Button(() => SelectSettingsTab(0)) { text = "一般" };
+            settingsTimelineTabBtn = new Button(() => SelectSettingsTab(1)) { text = "タイムライン" };
+            settingsShortcutTabBtn = new Button(() => SelectSettingsTab(2)) { text = "ショートカットキー" };
+            settingsGeneralTabBtn.AddToClassList("tab-header-btn");
+            settingsTimelineTabBtn.AddToClassList("tab-header-btn");
+            settingsShortcutTabBtn.AddToClassList("tab-header-btn");
+            tabHeader.Add(settingsGeneralTabBtn);
+            tabHeader.Add(settingsTimelineTabBtn);
+            tabHeader.Add(settingsShortcutTabBtn);
+            modal.Add(tabHeader);
+
+            settingsBody = new ScrollView();
+            settingsBody.AddToClassList("settings-body");
+            modal.Add(settingsBody);
+
+            var footer = new VisualElement();
+            footer.AddToClassList("modal-row");
+            var resetBtn = new Button(ResetCurrentSettingsTab) { text = "このタブを既定に戻す" };
+            resetBtn.AddToClassList("tb-btn");
+            var closeBtn = new Button(() => { SaveSettingsFromLiveFields(); CloseModal(modal); }) { text = "閉じる" };
+            closeBtn.AddToClassList("tb-btn");
+            footer.Add(resetBtn);
+            footer.Add(closeBtn);
+            modal.Add(footer);
+
+            SelectSettingsTab(0);
+        }
+
+        private void SelectSettingsTab(int index)
+        {
+            settingsTabIndex = index;
+            settingsGeneralTabBtn.EnableInClassList("tab-header-btn--selected", index == 0);
+            settingsTimelineTabBtn.EnableInClassList("tab-header-btn--selected", index == 1);
+            settingsShortcutTabBtn.EnableInClassList("tab-header-btn--selected", index == 2);
+            settingsBody.Clear();
+            switch (index)
+            {
+                case 0: BuildGeneralSettingsTab(settingsBody); break;
+                case 1: BuildTimelineSettingsTab(settingsBody); break;
+                case 2: BuildShortcutSettingsTab(settingsBody); break;
+            }
+        }
+
+        private void ResetCurrentSettingsTab()
+        {
+            switch (settingsTabIndex)
+            {
+                case 0:
+                    autosaveEnabled = true;
+                    autosaveMinutes = 5;
+                    frameRateMode = 0;
+                    uiScale = 1f;
+                    ApplyFrameRateSetting();
+                    ApplyUiScale();
+                    break;
+                case 1:
+                    followPlayback = true;
+                    scrollFollowMode = ScrollFollowMode.Smooth;
+                    judgeLineFrac = 1f;
+                    laneDivisions = 4;
+                    invertScroll = false;
+                    laneWidthPx = 46f;
+                    break;
+                case 2:
+                    keyBindings = EditorSettings.DefaultKeyBindings();
+                    break;
+            }
+            SelectSettingsTab(settingsTabIndex);
+        }
+
+        // ---- 一般タブ(§3) ----
+
+        private void BuildGeneralSettingsTab(VisualElement parent)
+        {
+            var autosaveToggle = AddToggleRow(parent, "自動保存", v => autosaveEnabled = v);
+            autosaveToggle.SetValueWithoutNotify(autosaveEnabled);
+
+            var intervalField = AddIntRow(parent, "自動保存の間隔(分)", v => autosaveMinutes = Mathf.Clamp(v, 1, 60));
+            intervalField.SetValueWithoutNotify(autosaveMinutes);
+
+            var frameRateDropdown = new DropdownField
+            {
+                choices = new List<string> { "VSync", "60fps", "120fps", "無制限" },
+                index = frameRateMode,
+            };
+            frameRateDropdown.RegisterValueChangedCallback(_ =>
+            {
+                frameRateMode = frameRateDropdown.index;
+                ApplyFrameRateSetting();
+            });
+            MakePropRow(parent, "フレームレート制限", frameRateDropdown);
+
+            var uiScaleSlider = AddSliderRow(parent, "エディタ画面倍率", 0.75f, 2f, v => { uiScale = v; ApplyUiScale(); });
+            uiScaleSlider.SetValueWithoutNotify(uiScale);
+        }
+
+        // ---- タイムラインタブ(§4) ----
+
+        private void BuildTimelineSettingsTab(VisualElement parent)
+        {
+            var followToggle = AddToggleRow(parent, "再生に追従", v => followPlayback = v);
+            followToggle.SetValueWithoutNotify(followPlayback);
+
+            var pageToggle = AddToggleRow(parent, "ページ送りスクロール",
+                v => scrollFollowMode = v ? ScrollFollowMode.Page : ScrollFollowMode.Smooth);
+            pageToggle.SetValueWithoutNotify(scrollFollowMode == ScrollFollowMode.Page);
+
+            var judgeLineSlider = AddSliderRow(parent, "判定線位置", 0f, 1f, v => judgeLineFrac = v);
+            judgeLineSlider.SetValueWithoutNotify(judgeLineFrac);
+
+            // editor-ui-rework-r5.md §4.2: 12(Cells)の約数のみを許容する。非約数だと強調線が
+            // セル境界からずれてしまう。
+            var divisionChoices = new List<int> { 1, 2, 3, 4, 6, 12 };
+            var divisionDropdown = new DropdownField
+            {
+                choices = divisionChoices.ConvertAll(d => d.ToString()),
+                index = Mathf.Max(0, divisionChoices.IndexOf(laneDivisions)),
+            };
+            divisionDropdown.RegisterValueChangedCallback(_ =>
+            {
+                laneDivisions = divisionChoices[Mathf.Clamp(divisionDropdown.index, 0, divisionChoices.Count - 1)];
+            });
+            MakePropRow(parent, "縦線の分割数", divisionDropdown);
+
+            var invertToggle = AddToggleRow(parent, "スクロール方向を反転", v => invertScroll = v);
+            invertToggle.SetValueWithoutNotify(invertScroll);
+
+            var laneWidthField = AddFloatRow(parent, "レーン幅(px)", v => laneWidthPx = Mathf.Clamp(v, 20f, 100f));
+            laneWidthField.SetValueWithoutNotify(laneWidthPx);
+        }
+
+        // ---- ショートカットキータブ(§5.4) ----
+
+        /// <summary>キャプチャ中(「＋」を押して次のキー入力待ち)のコマンドID。nullなら非キャプチャ中。
+        /// OnGlobalKeyDown(ChartEditorApp.Commands.cs)はこれが非nullの間、通常のディスパッチを
+        /// 止めて素通りさせる（既存コマンドに割り当て済みのキーを新規登録しようとしたときに、
+        /// 先にそのコマンドが実行されてキャプチャへ届かなくなるのを防ぐ）。</summary>
+        private string capturingCommandId;
+
+        private void BuildShortcutSettingsTab(VisualElement parent)
+        {
+            if (commands == null) BuildCommandTable();
+            capturingCommandId = null;
+
+            string lastCategory = null;
+            foreach (var cmd in commands)
+            {
+                if (cmd.category != lastCategory)
+                {
+                    lastCategory = cmd.category;
+                    var header = new Label(cmd.category);
+                    header.AddToClassList("settings-section-title");
+                    parent.Add(header);
+                }
+                BuildShortcutRow(parent, cmd.id, cmd.label);
+            }
+        }
+
+        private void BuildShortcutRow(VisualElement parent, string commandId, string label)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("prop-row");
+            var lbl = new Label(label);
+            lbl.AddToClassList("prop-label");
+            row.Add(lbl);
+
+            var chipsHost = new VisualElement();
+            chipsHost.style.flexDirection = FlexDirection.Row;
+            chipsHost.style.flexWrap = Wrap.Wrap;
+            chipsHost.style.flexGrow = 1;
+            row.Add(chipsHost);
+
+            var binding = keyBindings.Find(b => b.commandId == commandId);
+            if (binding == null)
+            {
+                binding = new KeyBinding(commandId);
+                keyBindings.Add(binding);
+            }
+
+            foreach (var chord in binding.chords)
+            {
+                // ユーザー要望「複数登録できると良い」: chip自体をクリックで削除できるようにする。
+                var chip = new Button(() =>
+                {
+                    binding.chords.Remove(chord);
+                    SelectSettingsTab(settingsTabIndex);
+                })
+                { text = chord + " ×" };
+                chip.AddToClassList("tb-btn");
+                chipsHost.Add(chip);
+            }
+
+            var addBtn = new Button(() => BeginCapture(commandId)) { text = "＋" };
+            addBtn.AddToClassList("tb-btn");
+            chipsHost.Add(addBtn);
+            if (capturingCommandId == commandId) addBtn.text = "キーを押してください(Escで中止)";
+
+            var resetBtn = new Button(() =>
+            {
+                var defaults = EditorSettings.DefaultKeyBindings().Find(b => b.commandId == commandId);
+                binding.chords = defaults != null ? new List<KeyChord>(defaults.chords) : new List<KeyChord>();
+                SelectSettingsTab(settingsTabIndex);
+            })
+            { text = "既定" };
+            resetBtn.AddToClassList("tb-btn");
+            row.Add(resetBtn);
+
+            parent.Add(row);
+        }
+
+        private static bool ChordEquals(KeyChord a, KeyChord b) =>
+            a.key == b.key && a.primary == b.primary && a.shift == b.shift && a.alt == b.alt;
+
+        /// <summary>editor-ui-rework-r5.md §5.4: 次のKeyDownEventを1回だけ捕まえてchordとして登録する。
+        /// 競合(他コマンドが同じchordを既に持つ)は後勝ち — 見つけ次第そちらから外す。</summary>
+        private void BeginCapture(string commandId)
+        {
+            capturingCommandId = commandId;
+
+            void Handler(KeyDownEvent evt)
+            {
+                uiRoot.UnregisterCallback<KeyDownEvent>(Handler, TrickleDown.TrickleDown);
+                capturingCommandId = null;
+                evt.StopPropagation();
+                evt.PreventDefault();
+
+                if (evt.keyCode != KeyCode.Escape)
+                {
+                    var chord = new KeyChord(evt.keyCode, evt.commandKey || evt.ctrlKey, evt.shiftKey, evt.altKey);
+                    foreach (var b in keyBindings)
+                    {
+                        if (b.commandId == commandId) continue;
+                        b.chords.RemoveAll(c => ChordEquals(c, chord));
+                    }
+                    var target = keyBindings.Find(b => b.commandId == commandId);
+                    if (target != null && !target.chords.Exists(c => ChordEquals(c, chord)))
+                        target.chords.Add(chord);
+                }
+
+                // 競合で他コマンドから外れた場合の表示更新も含め、タブ全体を作り直す。
+                SelectSettingsTab(settingsTabIndex);
+            }
+
+            uiRoot.RegisterCallback<KeyDownEvent>(Handler, TrickleDown.TrickleDown);
+        }
+
         /// <summary>
         /// editor-ui-rework-r4.md §9: 音源ファイル等、ChartEditorApp内部の状態
         /// （chartFilePathBuffer・OpenChartFromPath等）に依存しない汎用のファイル選択モーダル。
@@ -1768,8 +2171,8 @@ namespace Muses.ChartTool
 
         private void RememberBrowseDir()
         {
-            PlayerPrefs.SetString("ChartEditor_LastDir", browseDir);
-            PlayerPrefs.Save();
+            settings.browseDir = browseDir;
+            EditorSettingsStore.Save(settings);
         }
 
         private void ShowRestoreModal()

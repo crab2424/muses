@@ -53,6 +53,28 @@ namespace Muses.ChartTool
         private float lastPreviewRebuildRealtime = -999f;
         private bool wasPlayingLastFrame;
 
+        // ---- editor-ui-rework-r5.md §1 設定の永続化 ----
+        // 「設定」の値はこのオブジェクトではなく、各機能の既存フィールド(followPlayback等)を
+        // 真の値として使い続ける（設定モーダルもそこへ直接バインドする）。settingsはAwakeでの
+        // 初期値の供給元、およびSaveSettingsFromLiveFieldsでの書き出し先としてのみ使う。
+        private EditorSettings settings;
+
+        // ---- §3 一般タブ ----
+        private int frameRateMode; // 0=VSync, 1=60fps, 2=120fps, 3=無制限
+        private float uiScale = 1f;
+        // editor-ui-rework-r5.md §3.4: PanelSettingsアセット自体は書き換えず、
+        // Instantiateしたコピーに差し替えてreferenceResolutionだけを倍率で操作する。
+        private UIDocument uiDocument;
+        private PanelSettings panelSettingsInstance;
+        private Vector2Int basePanelReferenceResolution = new(1600, 900);
+
+        // ---- §4 タイムラインタブ ----
+        private int laneDivisions = 4;
+        private bool invertScroll;
+
+        // ---- §5 ショートカット ----
+        private List<KeyBinding> keyBindings = new();
+
         // ---- §4 検証 ----
         private List<ValidationIssue> validationIssues = new();
         private bool validateOnSave = true;
@@ -71,7 +93,10 @@ namespace Muses.ChartTool
         private float lastUndoPushRealtime = -999f;
 
         // ---- §6 自動保存 ----
-        private const float AutosaveIntervalSec = 5f * 60f;
+        // editor-ui-rework-r5.md §3.1: 間隔と有効/無効を設定タブから変更できるようフィールド化
+        // （旧実装はconstだった）。
+        private bool autosaveEnabled = true;
+        private int autosaveMinutes = 5;
         private float lastAutosaveRealtime = -999f;
         private bool showRestorePrompt;
         private string restoreAutosavePath;
@@ -92,7 +117,13 @@ namespace Muses.ChartTool
         // ---- 表示/編集状態 ----
         private int snapIndex = 3; // 1/16 既定
         private float defaultWidthCells = 1f;
-        private float pxPerBeat = 28f;
+        // editor-ui-rework-r5.md §7(c): ズームの基準値・範囲をここへ集約する。
+        // 従来はSetZoom/OnSheetWheel/スライダー生成の3箇所にpxPerBeatの初期値(28f)や
+        // クランプ範囲(8f,240f)が重複していた。
+        private const float ZoomBasePxPerBeat = 28f;
+        private const float ZoomMinPxPerBeat = 8f;
+        private const float ZoomMaxPxPerBeat = 240f;
+        private float pxPerBeat = ZoomBasePxPerBeat;
         private int scrollTick;
 
         // ---- §3 再生位置カーソル（橙色）----
@@ -105,13 +136,18 @@ namespace Muses.ChartTool
         // ノーツシート左右の余白。左=小節番号の退避先、右=イベントレーン(§7.3)用に確保。
         // editor-ui-redesign.md §7.2: 将来設定画面から変更できるようインスタンスフィールドにしている
         // （constにしない）。
+        // editor-ui-rework-r5.md §8: これらの幅は表示/非表示に関わらず常に確保する
+        // （SheetLayoutが常にこの幅ぶんの空間を予約し、レーン群を中央に配置するため）。
         private float sheetMarginLeft = 44f;
         private float sheetMarginRight = 104f;
         // editor-ui-rework-r4.md §5: 高さレーン(showHeightLane)と同じ形の折りたたみ。
         // 既定は表示（現状維持）。3種(BPM/拍子/ソフラン)は等分割の列で種別を兼ねているため
         // まとめて1つのトグルにする（個別に消すと列位置が動き「どの列が何か」が変わってしまう）。
+        // editor-ui-rework-r5.md §8: 「畳む」の意味が変わった。以前は幅を0にして隣のレーンへ
+        // 幅を明け渡していたが、今は幅は常に予約したまま中身（チップ・区切り線）だけを隠す
+        // （畳んでもノーツの見かけの位置が動かないようにするため）。SheetLayoutからは
+        // showEventLane/showHeightLaneを直接参照し、幅の有無では判定しない。
         private bool showEventLane = true;
-        private float EventLaneW => showEventLane ? sheetMarginRight : 0f;
 
         // タイムライン追従: ノーツシート内で「現在時刻」を固定表示する高さ(0=上端,1=下端)。
         // scrollTickはこの位置に置かれるtickとして扱う（judgeLineFracが1.0なら従来どおり下端固定）。
@@ -299,11 +335,16 @@ namespace Muses.ChartTool
 
         // ---- §7.5 高さレーン（Ground/Sky を跨ぐ Slide の layerF を専用軸で編集する） ----
         // 横軸1本に cellF と layerF が混ざる CombinedX では遷移中の高さが読めないため、
-        // 高さ専用の軸を Sky とイベントレーンの間に立てる。既定は折りたたみ（幅0）で、
+        // 高さ専用の軸を Sky とイベントレーンの間に立てる。既定は折りたたみで、
         // 「表示」メニューか右パネルの表示設定からトグルする。
+        // editor-ui-rework-r5.md §8: 幅は常に予約する（showEventLaneと同じ理由）。
         private bool showHeightLane;
         private float heightLaneWidth = 100f;
-        private float HeightLaneW => showHeightLane ? heightLaneWidth : 0f;
+
+        // editor-ui-rework-r5.md §8.3: レーン(Ground/Sky)のセル1つあたりの幅。固定pxにして
+        // レーン群をキャンバス中央へ配置する（従来は左右の余白を引いた残り全部を均等割りしていた）。
+        // 既定46pxはウィンドウ幅1290pxでの旧方式の実測セル幅に合わせてあり、既定では見た目が変わらない。
+        private float laneWidthPx = 46f;
 
         // 高さレーン上での waypoint ドラッグ（layerF の直接編集）
         private Note heightDragNote;
@@ -321,8 +362,79 @@ namespace Muses.ChartTool
         private void Awake()
         {
             preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader);
-            browseDir = PlayerPrefs.GetString("ChartEditor_LastDir", Application.persistentDataPath);
-            if (!Directory.Exists(browseDir)) browseDir = Application.persistentDataPath;
+
+            settings = EditorSettingsStore.Load();
+            browseDir = !string.IsNullOrEmpty(settings.browseDir) && Directory.Exists(settings.browseDir)
+                ? settings.browseDir : Application.persistentDataPath;
+            followPlayback = settings.followPlayback;
+            scrollFollowMode = settings.pageScroll ? ScrollFollowMode.Page : ScrollFollowMode.Smooth;
+            judgeLineFrac = settings.judgeLineFrac;
+            laneWidthPx = settings.laneWidthPx;
+            laneDivisions = settings.laneDivisions;
+            invertScroll = settings.invertScroll;
+            autosaveEnabled = settings.autosaveEnabled;
+            autosaveMinutes = settings.autosaveMinutes;
+            frameRateMode = settings.frameRateMode;
+            uiScale = settings.uiScale;
+            keyBindings = settings.keyBindings;
+
+            uiDocument = GetComponent<UIDocument>();
+            if (uiDocument != null && uiDocument.panelSettings != null)
+            {
+                basePanelReferenceResolution = uiDocument.panelSettings.referenceResolution;
+                panelSettingsInstance = Instantiate(uiDocument.panelSettings);
+                uiDocument.panelSettings = panelSettingsInstance;
+            }
+
+            ApplyFrameRateSetting();
+            ApplyUiScale();
+            CheckUntitledAutosaveRestore();
+        }
+
+        /// <summary>editor-ui-rework-r5.md §3.2: VSyncとtargetFrameRateは排他
+        /// （vSyncCount!=0のときtargetFrameRateは無視される）ので、選択肢ごとに両方を明示する。
+        /// 既定はVSync（[[muses-unity-port-progress]]の発熱記録どおり、無制限は実害があるため）。</summary>
+        private void ApplyFrameRateSetting()
+        {
+            switch (frameRateMode)
+            {
+                case 1: QualitySettings.vSyncCount = 0; Application.targetFrameRate = 60; break;
+                case 2: QualitySettings.vSyncCount = 0; Application.targetFrameRate = 120; break;
+                case 3: QualitySettings.vSyncCount = 0; Application.targetFrameRate = -1; break;
+                default: QualitySettings.vSyncCount = 1; Application.targetFrameRate = -1; break;
+            }
+        }
+
+        /// <summary>editor-ui-rework-r5.md §3.4: referenceResolutionを割ることで全体を等倍スケールする
+        /// （小さくするほどUIは大きく見える）。PanelSettings.referenceResolutionはVector2Intなので
+        /// 丸めてから代入する。</summary>
+        private void ApplyUiScale()
+        {
+            if (panelSettingsInstance == null) return;
+            float scale = Mathf.Max(0.1f, uiScale);
+            panelSettingsInstance.referenceResolution = new Vector2Int(
+                Mathf.RoundToInt(basePanelReferenceResolution.x / scale),
+                Mathf.RoundToInt(basePanelReferenceResolution.y / scale));
+        }
+
+        /// <summary>editor-ui-rework-r5.md §1: 現在のライブ値をsettingsへ写してファイルへ書き出す。
+        /// 設定モーダルを閉じたとき・OnDestroyで呼ぶ（値そのものは変更した瞬間に即時反映するので、
+        /// ここでの書き出しはディスクへの永続化だけが目的）。</summary>
+        private void SaveSettingsFromLiveFields()
+        {
+            settings.browseDir = browseDir;
+            settings.followPlayback = followPlayback;
+            settings.pageScroll = scrollFollowMode == ScrollFollowMode.Page;
+            settings.judgeLineFrac = judgeLineFrac;
+            settings.laneWidthPx = laneWidthPx;
+            settings.laneDivisions = laneDivisions;
+            settings.invertScroll = invertScroll;
+            settings.autosaveEnabled = autosaveEnabled;
+            settings.autosaveMinutes = autosaveMinutes;
+            settings.frameRateMode = frameRateMode;
+            settings.uiScale = uiScale;
+            settings.keyBindings = keyBindings;
+            EditorSettingsStore.Save(settings);
         }
 
         private void Update()
@@ -378,31 +490,13 @@ namespace Muses.ChartTool
             }
             wasPlayingLastFrame = preview.IsPlaying;
 
-            HandleUndoRedoShortcuts();
             TickAutosave();
             SyncModelToUi();
         }
 
-        private void HandleUndoRedoShortcuts()
-        {
-            var kb = UnityEngine.InputSystem.Keyboard.current;
-            if (kb == null) return;
-            bool cmdOrCtrl = kb.leftCommandKey.isPressed || kb.rightCommandKey.isPressed
-                              || kb.leftCtrlKey.isPressed || kb.rightCtrlKey.isPressed;
-            if (!cmdOrCtrl) return;
-            bool shift = kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed;
-            if (kb.zKey.wasPressedThisFrame)
-            {
-                if (shift) Redo(); else Undo();
-            }
-            else if (kb.yKey.wasPressedThisFrame)
-            {
-                Redo();
-            }
-        }
-
         private void OnDestroy()
         {
+            if (settings != null) SaveSettingsFromLiveFields();
             preview?.Dispose();
         }
 
@@ -442,8 +536,8 @@ namespace Muses.ChartTool
                 statusMessage = "読み込み完了";
                 uiNeedsPropertyRefresh = true;
                 browseDir = dir;
-                PlayerPrefs.SetString("ChartEditor_LastDir", dir);
-                PlayerPrefs.Save();
+                settings.browseDir = dir;
+                EditorSettingsStore.Save(settings);
                 preview.Rebuild(song, chart, dir);
                 lastPreviewRebuildRealtime = Time.unscaledTime;
                 CheckAutosaveRestore(path);
@@ -567,13 +661,20 @@ namespace Muses.ChartTool
 
         // ---------- §6 自動保存 ----------
 
+        /// <summary>editor-ui-rework-r5.md §3.1 Q4: chartPathが空(=一度も保存していない新規譜面)は
+        /// 保存先を持たないため自動保存の対象外だった穴。persistentDataPath直下の固定ファイル名に
+        /// 書くことで、新規譜面も自動保存の対象にする。</summary>
+        private static string UntitledAutosavePath => Path.Combine(Application.persistentDataPath, "untitled.muses.autosave");
+
         private void TickAutosave()
         {
-            if (!dirty || string.IsNullOrEmpty(chartPath)) return;
-            if (Time.unscaledTime - lastAutosaveRealtime < AutosaveIntervalSec) return;
+            if (!autosaveEnabled || !dirty) return;
+            float intervalSec = Mathf.Max(1, autosaveMinutes) * 60f;
+            if (Time.unscaledTime - lastAutosaveRealtime < intervalSec) return;
+            string path = string.IsNullOrEmpty(chartPath) ? UntitledAutosavePath : chartPath + ".autosave";
             try
             {
-                ChartSerializer.WriteChart(chartPath + ".autosave", header, chart, song);
+                ChartSerializer.WriteChart(path, header, chart, song);
                 lastAutosaveRealtime = Time.unscaledTime;
             }
             catch (Exception ex)
@@ -590,6 +691,15 @@ namespace Muses.ChartTool
             if (File.GetLastWriteTimeUtc(autosavePath) <= File.GetLastWriteTimeUtc(path)) return;
             showRestorePrompt = true;
             restoreAutosavePath = autosavePath;
+        }
+
+        /// <summary>起動直後に1回だけ呼ぶ。保存先を持たない新規譜面の自動保存ファイルが
+        /// 残っていれば復元を提案する（CheckAutosaveRestoreと違い、比較対象の正規ファイルが無い）。</summary>
+        private void CheckUntitledAutosaveRestore()
+        {
+            if (!File.Exists(UntitledAutosavePath)) return;
+            showRestorePrompt = true;
+            restoreAutosavePath = UntitledAutosavePath;
         }
 
         private void RestoreFromAutosave()
@@ -662,6 +772,33 @@ namespace Muses.ChartTool
             }
         }
 
+        // editor-ui-rework-r3.md §8: 停止中にpreview.Seekを呼ぶ箇所はscrollTick(判定線)も
+        // 合わせる。合わせないとUpdate()の停止中同期(scrollTick→preview.Seek)と引っ張り合う。
+        // editor-ui-rework-r5.md §5.2: ステータスバーのトランスポートボタンとコマンドテーブルの
+        // 両方から呼べるようメソッドへ切り出した。
+
+        private void GoToStart()
+        {
+            cursorTick = 0;
+            scrollTick = 0;
+            preview.Seek(0f);
+        }
+
+        private void StopAtCursor()
+        {
+            preview.Pause();
+            preview.Seek(TickToSeconds(cursorTick));
+            scrollTick = cursorTick;
+        }
+
+        private void GoToEnd()
+        {
+            preview.Seek(preview.ChartEndSec);
+            int endTick = Mathf.Max(0, ChartFormat.SecondsToTick(chart.bpmEvents, preview.ChartEndSec));
+            cursorTick = endTick;
+            scrollTick = endTick;
+        }
+
         // ---------- §4 検証 ----------
 
         /// <summary>editor-spec.md §4。常時実行はしない。[検証]ボタン・保存時にのみ呼ぶ。</summary>
@@ -691,10 +828,13 @@ namespace Muses.ChartTool
         private readonly struct SheetLayout
         {
             // rect: ノーツシート全体（背景塗りつぶし用）。leftMargin/rightMargin: レーン外の余白
-            // （左=小節番号の退避先、右=イベントレーン §7.3）。heightLane は §7.5 の高さレーンで、
-            // 折りたたみ時は幅0（＝存在しないのと同じ扱いになる）。
-            // editor-ui-redesign.md §7.2 どおり、帯の大きさは今後設定画面から変更できるよう
-            // ChartEditorApp側のフィールド(sheetMarginLeft/sheetMarginRight/heightLaneWidth)経由で渡す。
+            // （左=小節番号の退避先、右=イベントレーン §7.3）。heightLane は §7.5 の高さレーン。
+            // editor-ui-rework-r5.md §8.3: leftMargin〜rightMarginまでの幅(contentW)は表示/非表示の
+            // トグルに関わらず常に確保し、キャンバス中央に配置する（参照元と同じ「固定pxレーン+
+            // 中央配置」方式）。畳んだときに中身を描くかどうかはShowXxxフィールドを直接見て
+            // 呼び出し側（GenerateNotesSheet等）が判断し、この構造体自体はジオメトリだけを持つ。
+            // 収まらないほどウィンドウが狭いときは中央寄せをやめ、レーン幅(laneWidthPx)を
+            // 縮めて全体を収める（従来どおりの伸縮フォールバック）。
             public readonly Rect rect, leftMargin, ground, gutter, sky, heightLane, rightMargin;
             public readonly float pxPerTick, judgeLineY;
             private readonly int scrollTick;
@@ -703,22 +843,35 @@ namespace Muses.ChartTool
             private const float HeightLanePad = 8f;
 
             public SheetLayout(Rect rect, float pxPerBeat, int scrollTick, float judgeLineFrac,
-                float marginLeft, float marginRight, float heightLaneW)
+                float marginLeft, float marginRight, float heightLaneW, float laneWidthPx)
             {
                 this.rect = rect;
                 this.scrollTick = scrollTick;
 
                 const float gutterW = 26f;
-                leftMargin = new Rect(rect.x, rect.y, marginLeft, rect.height);
-                rightMargin = new Rect(rect.xMax - marginRight, rect.y, marginRight, rect.height);
-                heightLane = new Rect(rightMargin.xMin - heightLaneW, rect.y, heightLaneW, rect.height);
+                float fixedW = marginLeft + gutterW + heightLaneW + marginRight;
+                float desiredPaneW = Mathf.Max(0f, laneWidthPx) * Cells;
+                float desiredContentW = fixedW + desiredPaneW * 2f;
 
+                float offsetX, paneW;
+                if (desiredContentW <= rect.width)
+                {
+                    offsetX = (rect.width - desiredContentW) * 0.5f;
+                    paneW = desiredPaneW;
+                }
+                else
+                {
+                    offsetX = 0f;
+                    paneW = Mathf.Max(0f, rect.width - fixedW) * 0.5f;
+                }
+
+                leftMargin = new Rect(rect.x + offsetX, rect.y, marginLeft, rect.height);
                 float lanesX = leftMargin.xMax;
-                float lanesW = Mathf.Max(0f, heightLane.xMin - lanesX - gutterW);
-                float paneW = lanesW * 0.5f;
                 ground = new Rect(lanesX, rect.y, paneW, rect.height);
                 gutter = new Rect(ground.xMax, rect.y, gutterW, rect.height);
                 sky = new Rect(gutter.xMax, rect.y, paneW, rect.height);
+                heightLane = new Rect(sky.xMax, rect.y, heightLaneW, rect.height);
+                rightMargin = new Rect(heightLane.xMax, rect.y, marginRight, rect.height);
 
                 pxPerTick = pxPerBeat / ChartData.TicksPerBeat;
                 judgeLineY = rect.y + rect.height * Mathf.Clamp01(judgeLineFrac);
@@ -782,8 +935,10 @@ namespace Muses.ChartTool
         private SheetLayout CurrentSheetLayout()
         {
             var r = notesSheet.contentRect;
+            // editor-ui-rework-r5.md §8: 幅は表示/非表示に関わらず常に渡す。
+            // 中身を描くかどうかは呼び出し側がshowEventLane/showHeightLaneを直接見て判断する。
             return new SheetLayout(new Rect(0f, 0f, r.width, r.height), pxPerBeat, scrollTick, judgeLineFrac,
-                sheetMarginLeft, EventLaneW, HeightLaneW);
+                sheetMarginLeft, sheetMarginRight, heightLaneWidth, laneWidthPx);
         }
 
         private int SnapTicks => Mathf.Max(1, SongAddr.TicksPerBeatUnit(SnapDenominators[snapIndex]));
@@ -921,18 +1076,28 @@ namespace Muses.ChartTool
             var p = mgc.painter2D;
             var rect = L.rect;
 
-            FillRect(p, rect, new Color(0.16f, 0.16f, 0.16f));
+            // editor-ui-rework-r5.md §8: leftMargin〜rightMarginの範囲(content)が常にレーン一式の
+            // 実寸で、rectの残り（左右の余り）はキャンバス色に落として「ここはレーン外」と示す。
+            FillRect(p, rect, new Color(0.09f, 0.09f, 0.1f));
+            var content = Rect.MinMaxRect(L.leftMargin.x, rect.y, L.rightMargin.xMax, rect.yMax);
+            FillRect(p, content, new Color(0.16f, 0.16f, 0.16f));
             FillRect(p, L.leftMargin, new Color(0.12f, 0.12f, 0.12f));
             FillRect(p, L.rightMargin, new Color(0.12f, 0.12f, 0.12f));
             FillRect(p, L.gutter, new Color(0.1f, 0.1f, 0.1f));
 
-            // §7.3 イベントレーンの3列(BPM/拍子/ソフラン)の区切り線
-            var (_, meterCol, scrollCol) = EventColumns(L.rightMargin);
-            FillRect(p, new Rect(meterCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
-            FillRect(p, new Rect(scrollCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+            // §7.3 イベントレーンの3列(BPM/拍子/ソフラン)の区切り線。
+            // editor-ui-rework-r5.md §8: 幅は常に予約されているので、中身(区切り線)の
+            // 表示はshowEventLaneで直接ゲートする（幅0で自動的に消えなくなったため）。
+            if (showEventLane)
+            {
+                var (_, meterCol, scrollCol) = EventColumns(L.rightMargin);
+                FillRect(p, new Rect(meterCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                FillRect(p, new Rect(scrollCol.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+            }
 
-            // §7.5 高さレーンの下地（折りたたみ中は幅0なので何も描かれない）
-            if (L.heightLane.width > 0f)
+            // §7.5 高さレーンの下地（editor-ui-rework-r5.md §8: 折りたたみ中も幅は予約されるため、
+            // 表示条件はshowHeightLaneを直接見る）
+            if (showHeightLane)
             {
                 FillRect(p, L.heightLane, new Color(0.13f, 0.13f, 0.16f));
                 FillRect(p, new Rect(L.heightLane.x, rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
@@ -944,11 +1109,17 @@ namespace Muses.ChartTool
 
             float lanesXMin = L.ground.xMin, lanesXMax = L.sky.xMax;
 
-            // セル境界線
+            // セル境界線。editor-ui-rework-r5.md §4.2: laneDivisions(12の約数)ごとに強調線を出す
+            // （旧実装は13本すべて同じ薄さで、どこが何セル目か数えないと分からなかった）。
+            int divStep = Mathf.Max(1, Cells / Mathf.Max(1, laneDivisions));
             for (int c = 0; c <= Cells; c++)
             {
-                FillRect(p, new Rect(SheetLayout.CellX(L.ground, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
-                FillRect(p, new Rect(SheetLayout.CellX(L.sky, c), rect.y, 1, rect.height), new Color(1, 1, 1, 0.08f));
+                bool outer = c == 0 || c == Cells;
+                bool divLine = !outer && c % divStep == 0;
+                float w = outer || divLine ? 2f : 1f;
+                Color col = outer ? new Color(1, 1, 1, 0.30f) : divLine ? new Color(1, 1, 1, 0.18f) : new Color(1, 1, 1, 0.08f);
+                FillRect(p, new Rect(SheetLayout.CellX(L.ground, c) - (w - 1f) * 0.5f, rect.y, w, rect.height), col);
+                FillRect(p, new Rect(SheetLayout.CellX(L.sky, c) - (w - 1f) * 0.5f, rect.y, w, rect.height), col);
             }
 
             // 小節/拍/スナップ線
@@ -1106,9 +1277,10 @@ namespace Muses.ChartTool
 
             DrawHeightLane(p, L);
 
-            // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（右パネルの「表示設定」）
+            // 判定線(追従の同期位置)。judgeLineFracで高さを変更可能（設定モーダルのタイムラインタブ、
+            // editor-ui-rework-r5.md §4.1で右パネルから移設）。
             // 高さレーンも同じ時間軸なので、判定線はそちらまで伸ばす。
-            float judgeXMax = L.heightLane.width > 0f ? L.heightLane.xMax : lanesXMax;
+            float judgeXMax = showHeightLane ? L.heightLane.xMax : lanesXMax;
             FillRect(p, new Rect(lanesXMin, L.judgeLineY - 1, judgeXMax - lanesXMin, 2), new Color(1f, 0.25f, 0.25f, 0.9f));
 
             // §3 再生位置カーソル(橙)。判定線と見た目は同じ太さだが色で区別し、時間軸上の
@@ -1167,7 +1339,7 @@ namespace Muses.ChartTool
         /// </summary>
         private void DrawHeightLane(Painter2D p, SheetLayout L)
         {
-            if (L.heightLane.width <= 0f) return;
+            if (!showHeightLane) return;
 
             var selectedNotes = new HashSet<Note>(SelectedNotesDistinct());
 
@@ -1260,14 +1432,17 @@ namespace Muses.ChartTool
 
             // editor-ui-rework-r4.md §6: イベントレーンのゴーストもEventツール限定にする
             // （クリックでの追加をツール限定にしたのと対称）。
+            // editor-ui-rework-r5.md §8: rightMarginは表示/非表示に関わらず常に実寸を持つため、
+            // ノーツ配置ゴーストはここでは常に出さない（showEventLaneはゴーストの中身だけを判定）。
             if (L.rightMargin.Contains(pos))
             {
-                if (currentTool == EditorTool.Event) DrawEventGhost(p, L, pos, tick);
+                if (showEventLane && currentTool == EditorTool.Event) DrawEventGhost(p, L, pos, tick);
                 return;
             }
 
-            // §7.5 高さレーンは既存waypointの編集専用でノーツを配置しないため、ゴーストは出さない。
-            if (L.heightLane.width > 0f && L.heightLane.Contains(pos)) return;
+            // §7.5 高さレーンは既存waypointの編集専用でノーツを配置しないため、ゴーストは出さない
+            // （表示/非表示に関わらず、この帯の実寸内は常にノーツ配置の対象外にする）。
+            if (L.heightLane.Contains(pos)) return;
 
             var (layerF, rawCell) = L.PaneAt(pos.x);
 
@@ -1427,9 +1602,12 @@ namespace Muses.ChartTool
             // ときだけ新規追加する（ノーツの配置ツールと同じ「選んだツールでだけ置ける」規則に揃える）。
             // それ以外のツールでは選択解除のみ行う（既存チップのクリックはUpdateEventChipsが作る
             // Label要素自体が拾いStopPropagationするので、ここには来ない）。
+            // editor-ui-rework-r5.md §8: showEventLaneを明示的にゲートしないと、Eventツール選択中に
+            // ユーザーが表示設定でレーンを畳んだ場合に見えないレーンへ追加できてしまう
+            // （幅が常に予約されるようになったため、rightMargin.Containsだけでは判定できない）。
             if (L.rightMargin.Contains(pos))
             {
-                if (currentTool == EditorTool.Event)
+                if (showEventLane && currentTool == EditorTool.Event)
                 {
                     HandleEventLaneClick(L, pos, tick);
                 }
@@ -1443,9 +1621,12 @@ namespace Muses.ChartTool
 
             // §7.5 高さレーン: 選択中ノーツの waypoint を掴んで layerF をドラッグ編集する。
             // ノーツの配置ではなく既存の値の編集なので、どのツールを選んでいても同じ挙動にする。
-            if (L.heightLane.width > 0f && L.heightLane.Contains(pos))
+            // editor-ui-rework-r5.md §8: 帯の実寸は常に予約されるため、まずクリックを常に
+            // ここで奪ってから（レーン外のノーツ配置に流さない）、showHeightLaneのときだけ
+            // 実際の編集処理を呼ぶ。
+            if (L.heightLane.Contains(pos))
             {
-                HandleHeightLanePointerDown(L, pos, evt);
+                if (showHeightLane) HandleHeightLanePointerDown(L, pos, evt);
                 evt.StopPropagation();
                 return;
             }
@@ -1714,8 +1895,10 @@ namespace Muses.ChartTool
         {
             var L = CurrentSheetLayout();
             var pos = (Vector2)evt.localPosition;
+            // editor-ui-rework-r5.md §8: どちらの帯も実寸が常に予約されるため、表示/非表示に
+            // 関わらずこの範囲内での右クリックはノーツのコンテキストメニュー対象外にする。
             if (L.rightMargin.Contains(pos)) { evt.StopPropagation(); return; }
-            if (L.heightLane.width > 0f && L.heightLane.Contains(pos)) { evt.StopPropagation(); return; }
+            if (L.heightLane.Contains(pos)) { evt.StopPropagation(); return; }
 
             // §5.2: 選択反応は点にのみ。帯は「ここに中継点を追加」の対象だけを別途探す。
             var hit = HitTestPoint(L, pos);
@@ -2140,12 +2323,18 @@ namespace Muses.ChartTool
         {
             if (evt.ctrlKey || evt.commandKey)
             {
-                pxPerBeat = Mathf.Clamp(pxPerBeat - evt.delta.y * 2f, 8f, 240f);
+                // editor-ui-rework-r5.md §4.3: ズームの向きはスクロール反転設定と独立
+                // （ナチュラルスクロール環境でもズームは「上で拡大」を好む人が多いため連動させない）。
+                pxPerBeat = Mathf.Clamp(pxPerBeat - evt.delta.y * 2f, ZoomMinPxPerBeat, ZoomMaxPxPerBeat);
             }
             else
             {
                 // トラックパッドでは delta が小数で連続的に来るため、端数を持ち越して1スナップ単位に量子化する
-                sheetScrollAccum += evt.delta.y;
+                // editor-ui-rework-r5.md §4.3: invertScroll設定で符号を反転。Shift+ホイールは参照元
+                // (EditorWindows.cpp:79)にならい4倍速でスクロールする（おまけ、設定不要）。
+                float delta = invertScroll ? -evt.delta.y : evt.delta.y;
+                if (evt.shiftKey) delta *= 4f;
+                sheetScrollAccum += delta;
                 int steps = (int)sheetScrollAccum;
                 sheetScrollAccum -= steps;
                 if (steps != 0) scrollTick = Mathf.Max(0, scrollTick + steps * SnapTicks);
@@ -2153,65 +2342,32 @@ namespace Muses.ChartTool
             evt.StopPropagation();
         }
 
-        private void OnSheetKeyDown(KeyDownEvent evt)
+        // editor-ui-rework-r5.md §5.2: 旧OnSheetKeyDown(notesSheet専用のKeyDownEventハンドラ)は
+        // ここにあったコピー/カット/ペースト/Escape/↑↓/Deleteの分岐をすべてコマンドテーブル
+        // （ChartEditorApp.Commands.cs）とOnGlobalKeyDown(uiRoot側)へ移して廃止した。
+        // MoveCursorBySnap/DeleteSelectionOrEventはそこから呼ばれる。
+
+        /// <summary>↑↓キーでのカーソル移動＋自動スクロール（ScoreEditor.cpp:292-304のnextTick/
+        /// previousTick相当）。停止中のみ有効（再生中はpreview.SongTimeが真の値のため動かさない）。</summary>
+        private void MoveCursorBySnap(int direction)
         {
-            // §7.4-C コピー/カット/ペースト（OS クリップボード連携はせず内部クリップボードのみ）
-            bool cmdOrCtrl = evt.commandKey || evt.ctrlKey;
-            if (cmdOrCtrl && evt.keyCode == KeyCode.C && selection.Count > 0)
-            {
-                CopySelectionToClipboard();
-                evt.StopPropagation();
-                return;
-            }
-            if (cmdOrCtrl && evt.keyCode == KeyCode.X && selection.Count > 0)
-            {
-                CopySelectionToClipboard();
-                DeleteSelection();
-                evt.StopPropagation();
-                return;
-            }
-            if (cmdOrCtrl && evt.keyCode == KeyCode.V && clipboard.Count > 0)
-            {
-                // §1: 即挿入せずペーストモードに入る（カーソル追従→クリックで確定）。
-                EnterPasteMode();
-                evt.StopPropagation();
-                return;
-            }
+            int snapTicks = SnapTicks;
+            int baseTick = SnapTickTo(cursorTick, snapTicks);
+            cursorTick = direction > 0 ? baseTick + snapTicks : Mathf.Max(0, baseTick - snapTicks);
+            EnsureCursorVisible();
+        }
 
-            if (pasting && evt.keyCode == KeyCode.Escape)
-            {
-                CancelPaste();
-                evt.StopPropagation();
-                return;
-            }
+        /// <summary>Deleteコマンドの実処理。選択中の点があればノーツ側、無ければイベント側を削除する。</summary>
+        private void DeleteSelectionOrEvent()
+        {
+            if (selection.Count > 0) DeleteSelection();
+            else if (selectedEventKind != EventKind.None) DeleteSelectedEvent();
+        }
 
-            // MikuMikuWorld移植候補: ↑↓キーでのカーソル移動＋自動スクロール
-            // （ScoreEditor.cpp:292-304のnextTick/previousTick相当）。停止中のみ（再生中は
-            // preview.SongTimeが真の値のため動かさない）。
-            if (!pasting && !preview.IsPlaying && (evt.keyCode == KeyCode.UpArrow || evt.keyCode == KeyCode.DownArrow))
-            {
-                int snapTicks = SnapTicks;
-                int baseTick = SnapTickTo(cursorTick, snapTicks);
-                cursorTick = evt.keyCode == KeyCode.UpArrow ? baseTick + snapTicks : Mathf.Max(0, baseTick - snapTicks);
-                EnsureCursorVisible();
-                evt.StopPropagation();
-                return;
-            }
-
-            if (evt.keyCode != KeyCode.Delete && evt.keyCode != KeyCode.Backspace) return;
-
-            if (selection.Count > 0)
-            {
-                DeleteSelection();
-                evt.StopPropagation();
-                return;
-            }
-
-            if (selectedEventKind != EventKind.None)
-            {
-                DeleteSelectedEvent();
-                evt.StopPropagation();
-            }
+        /// <summary>すべて選択（editor-ui-rework-r5.md §5.2(1): 参照元にはあるがmusesは未実装だった）。</summary>
+        private void SelectAllNotes()
+        {
+            SetMultiSelection(AllPointRefsForNotes(chart.notes));
         }
 
         // ---------- §7.4-A/C 選択の削除・複製 ----------

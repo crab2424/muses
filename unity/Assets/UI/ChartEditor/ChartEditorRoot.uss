@@ -90,7 +90,7 @@
 /* ---------- A: メニューバー(§2.1) ---------- */
 
 .menu-bar {
-    height: 24px;
+    min-height: 24px;
     background-color: var(--bg-panel);
     padding-left: 2px;
 }
@@ -111,10 +111,54 @@
     background-color: var(--bg-control-hover);
 }
 
+/* editor-ui-rework-r5.md §9: 開いている間はホバー切替の対象であることを視覚的に示す。 */
+.menu-btn--open {
+    background-color: var(--bg-control-hover);
+}
+
+/* §9: 自前メニューのポップアップ(GenericDropdownMenuの代替)。 */
+.menu-popup {
+    background-color: var(--bg-overlay);
+    border-width: 1px;
+    border-color: var(--border);
+    border-radius: 4px;
+    padding: 3px;
+    min-width: 200px;
+}
+
+.menu-popup-item {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    -unity-text-align: middle-left;
+    margin: 0;
+    padding: 4px 10px 4px 10px;
+    font-size: var(--font-sm);
+    color: var(--text);
+}
+
+.menu-popup-item:hover {
+    background-color: var(--bg-control-hover);
+}
+
+.menu-popup-item:disabled {
+    opacity: 0.4;
+}
+
+.menu-popup-sep {
+    height: 1px;
+    margin: 3px 4px;
+    background-color: var(--border);
+}
+
 /* ---------- A: ツールバー(§2.2) ---------- */
 
 .toolbar {
-    height: var(--band-h);
+    min-height: var(--band-h);
+}
+
+/* editor-ui-rework-r5.md §6/§7: ツールバーの「幅」欄がstyle.width直書きだったのをUSSへ寄せる */
+.tb-field {
+    width: 54px;
 }
 
 .tb-btn {
@@ -386,7 +430,7 @@
 /* ---------- C: ステータスバー(§2.6) ---------- */
 
 .status-bar {
-    height: var(--band-h);
+    min-height: var(--band-h);
     border-bottom-width: 0;
     border-top-width: 1px;
     border-top-color: var(--border);
@@ -413,8 +457,11 @@
     min-width: 96px;
 }
 
+/* editor-ui-rework-r5.md §7(b): バンドがmin-heightで伸びうる以上、スライダーの高さも
+   明示して溝とつまみのずれを防ぐ。 */
 .zoom-slider {
     width: 110px;
+    height: 16px;
     margin: 0 4px 0 4px;
 }
 
@@ -428,6 +475,7 @@
 
 .status-scrub > .unity-slider {
     flex-grow: 1;
+    height: 16px;
     margin: 0 8px 0 8px;
 }
 
@@ -459,6 +507,25 @@
     border-radius: 4px;
     padding: 8px;
     min-width: 420px;
+}
+
+/* editor-ui-rework-r5.md §2.1: 設定モーダルは中身のタブ数が多いので固定サイズにする。 */
+.settings-modal {
+    min-width: 560px;
+    max-width: 560px;
+    height: 460px;
+}
+
+.settings-body {
+    flex-grow: 1;
+    margin-top: 4px;
+}
+
+.settings-section-title {
+    -unity-font-style: bold;
+    color: var(--text-dim);
+    font-size: var(--font-sm);
+    margin: 8px 4px 2px 4px;
 }
 
 .modal-title {

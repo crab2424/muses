@@ -40,7 +40,7 @@
                     <ui:Foldout text="音源" name="fold-audio" value="false" class="section">
                         <ui:VisualElement name="audio-host" />
                     </ui:Foldout>
-                    <ui:Foldout text="表示設定" name="fold-view" value="false" class="section">
+                    <ui:Foldout text="表示" name="fold-view" value="false" class="section">
                         <ui:VisualElement name="view-host" />
                     </ui:Foldout>
                     <ui:Foldout text="プリセット" name="fold-preset" value="false" class="section">
