@@ -586,6 +586,58 @@ Inspector で `StageController` の cfg を1つでも触った瞬間にプレビ
 
 ---
 
+## 実装ログ（2026-08-03、同セッション内）
+
+§8 の実装順どおり §4.1 → §4.3 → §2 → §1 → §3 → §5 の順で全項目実装した。
+Unity headless バッチビルド（`BuildChartEditor.BuildMac`）でコンパイル成功・ビルド成功を確認し、
+実機（ビルド後の standalone app）を computer-use 経由で操作して主要項目を実際に動かして確認した。
+
+- **§4.1**: `PreviewSystem` に `AudioLoadState` を追加。`lastLoadedAudioPath` の更新を**成功後のみ**に変更し、
+  失敗時は `FailedLoadRetryCooldownSec`(1.5秒)のクールダウンだけ挟んで自動再試行するようにした
+  （設計は「毎Rebuildで無条件再試行」だったが、`ChartEditorApp.Update`の`dirty`が保存されるまでtrueの
+  ままなので無条件だと0.3秒おきにUnityWebRequestを打ち続けてしまうと気づき、実装時にクールダウンを追加）。
+  Opus検出はファイル先頭64バイトに`"OpusHead"`文字列があるかで判定（同期I/O、`File.OpenRead`）。
+  右パネル「音源」セクションに状態ラベル・「再読み込み」ボタン・全体/BGM/SE音量スライダーを追加。
+  `ChartValidator`にV12（オフセットが音源長を超える警告）を追加。
+- **§4.3**: 音量は`AudioListener.volume`(全体)・`musicSource.volume`(BGM)・SE再生時の乗算(SE)の3層。
+  `EditorSettings`に`masterVolume`/`bgmVolume`/`seVolume`(既定0.8/1.0/1.0)を追加し、`PreviewSystem`の
+  プロパティ経由でAwake時に反映、設定保存時に書き戻す。
+- **§2**: `CellFFromCenter`ヘルパーを追加し、配置系9箇所（ゴースト6・実配置3種）の`SnapCellTo(rawCell,...)`
+  を置き換えた。ドラッグ・端ドラッグ・貼り付けは対象外のまま（差分ベースのため中心の概念が無い）。
+- **§1**: `ChangeWidth`/`ChangeSelectedWidth`を実装。選択中は`widthAnchorCenter`（選択時点の中心）を
+  記憶し、常にそこを基準に左端を計算し直す。無効化は`SyncSelectedNoteFromSelection`・`ClearSelection`・
+  `BeginPointDrag`・端ドラッグ開始時の4箇所（設計どおり）。ツールバーの「幅」欄を毎フレーム
+  `SetValueWithoutNotify`で追従させる処理を追加（既存コードは初期値設定のみで、ショートカットによる
+  変更を表示に反映する仕組みが無かったため）。
+  **実装時に見つけた別バグ**: `EditorSettingsStore.Load()`は`keyBindings`をJSONから丸ごと上書きする
+  実装だったため、既存の`editor-settings.json`を持つ環境（実機テスト時に該当）では新規追加した
+  `NoteWidthGrow`/`NoteWidthShrink`の既定キーが一切効かなかった（無言で死ぬ）。これは今後どのコマンドを
+  追加しても再発する構造的な穴だったため、`Load()`に「未知のcommandIdの既定だけを補うマージ処理」を
+  追加して恒久的に直した（既存の割り当てはそのまま、新規コマンドだけ既定が入る）。
+- **§3**: `BeginCapture`を「競合が無ければ即割り当て／競合があれば確認モーダル」に変更。
+  `ShowKeyConflictModal`（新規）が`overlayLayer`上に競合コマンド名を列挙し、「割り当てる」で
+  `AssignChord`実行、「やめる」で無変更のままモーダルを閉じるだけ。`OnGlobalKeyDown`の先頭に
+  `overlayLayer.childCount > 0`ならreturnする分岐を追加し、モーダル表示中は譜面側コマンドを
+  一切発火させないようにした（設計どおり）。実機で「Space」を`幅を広げる`に割り当てようとして
+  重複モーダルが出ること、「やめる」を選ぶと両方の割り当てが変化しないことを確認済み。
+- **§5**: `SeClipSet`（tap/exTap/slide/flick/tick/metronome の6フィールド）を新設し、
+  `ChartEditorApp`のSerializeFieldから`PreviewSystem`へ渡す。`PlayNoteSe`/`TickMetronome`を
+  ノーツ種別に応じたクリップ選択＋フォールバック（未設定はTapへ、Tap自体も未設定なら合成クリックへ）
+  に書き換えた。`Assets/Audio/SE/`フォルダを新設（README同梱）。**素材はユーザー側でまだ未用意
+  のため、フォールバックのみ動作確認**（合成クリックが今までどおり鳴ることを前提としたコード上の
+  確認に留まる。専用クリップを割り当てての実機確認は素材が揃ってから）。
+
+**実機確認で見つけて対応した不具合（2件、いずれも上記の記載に統合済み）**:
+1. `EditorSettingsStore.Load()`のkeyBindings丸ごと上書き（§1参照、恒久修正）。
+2. `TryLoadAudio`の失敗キャッシュ無し設計をそのまま実装すると0.3秒おきに再試行される
+   （§4.1参照、クールダウンで緩和）。
+
+**未確認のまま残る項目**: §4の実際の音源再生（Vorbis変換ファイルをsong.musesと同じフォルダに
+置いての確認、Opus検出の実物確認）は、ユーザーが音源を用意してから。§5のSE専用クリップの
+実際の音の確認も同様に素材待ち。
+
+---
+
 ## 関連
 
 - `memory/editor-ui-rework-r5.md` — 前段（設定画面・コマンドテーブル・自前メニュー）。実機確認済み。

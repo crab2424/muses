@@ -49,6 +49,10 @@ namespace Muses.ChartTool
         [SerializeField] private Shader noteShader;
         [SerializeField] private Shader beatLineShader;
 
+        // editor-ui-rework-r6.md §5.2 案A: Assets/Audio/SE/ に置いたクリップをここで参照する。
+        // 未設定のまま(null)でも合成クリック音にフォールバックするので、素材が揃う前でも動く。
+        [SerializeField] private SeClipSet seClips = new();
+
         private PreviewSystem preview;
         private float lastPreviewRebuildRealtime = -999f;
         private bool wasPlayingLastFrame;
@@ -188,7 +192,66 @@ namespace Muses.ChartTool
         private Note selectedNote;
         private Note pendingSlideStart;
 
-        private void SyncSelectedNoteFromSelection() => selectedNote = selection.Count == 1 ? selection[0].note : null;
+        private void SyncSelectedNoteFromSelection()
+        {
+            selectedNote = selection.Count == 1 ? selection[0].note : null;
+            InvalidateWidthAnchor();
+        }
+
+        // ---- §1 幅ショートカット(editor-ui-rework-r6.md §1.4) ----
+        // 選択した時点の各点の中心(cellF+width/2)を記憶し、幅を変えても中心が動かないようにする。
+        // 選択の変更・ドラッグ移動・端ドラッグ・Undo/Redo・貼り付けのいずれでも破棄する
+        // （破棄しないと、選択後に位置が変わったのに古い中心を基準に幅を変えてしまう）。
+        private Dictionary<NoteRef, float> widthAnchorCenter;
+        private void InvalidateWidthAnchor() => widthAnchorCenter = null;
+
+        private static bool IsPlacementTool(EditorTool tool) =>
+            tool is EditorTool.Tap or EditorTool.ExTap or EditorTool.Slide or EditorTool.Flick;
+
+        /// <summary>editor-ui-rework-r6.md §1。← で拡大(sign=+1) / → で縮小(sign=-1)。選択があれば
+        /// 選択中の点(中継点含む)の幅を、無ければ配置ツールの既定幅を変える（選択優先、§9 Q2）。</summary>
+        private void ChangeWidth(int sign)
+        {
+            if (selection.Count > 0)
+            {
+                ChangeSelectedWidth(sign);
+                return;
+            }
+            if (!IsPlacementTool(currentTool)) return;
+            float step = currentTool == EditorTool.Slide ? 0.5f : 1f;
+            // §9 Q1: 「0を除く」＝幅0にはしない。最小はstepと同値。
+            defaultWidthCells = Mathf.Clamp(defaultWidthCells + sign * step, step, Cells);
+        }
+
+        /// <summary>§1.4。選択した時点の中心(cellF+width/2)を widthAnchorCenter に記憶しておき、
+        /// 常にそこを基準に左端を決め直す。連打しても中心が横に流れない。</summary>
+        private void ChangeSelectedWidth(int sign)
+        {
+            float step = selection.Exists(r => r.note.kind == NoteKind.Slide) ? 0.5f : 1f;
+            if (widthAnchorCenter == null)
+            {
+                widthAnchorCenter = new Dictionary<NoteRef, float>();
+                foreach (var r in selection)
+                {
+                    var wp = r.note.points[r.index];
+                    widthAnchorCenter[r] = wp.cellF + wp.width * 0.5f;
+                }
+            }
+
+            PushUndo(coalesce: true, "幅を変更");
+            foreach (var r in selection)
+            {
+                if (!widthAnchorCenter.TryGetValue(r, out var center)) continue;
+                var wp = r.note.points[r.index];
+                // §9 Q1: 最小幅はstepと同値（幅0にはしない）。
+                float newWidth = Mathf.Clamp(wp.width + sign * step, step, Cells);
+                float newCellF = Mathf.Clamp(SnapCellTo(center - newWidth * 0.5f, step), 0f, Cells - newWidth);
+                wp.width = newWidth;
+                wp.cellF = newCellF;
+                r.note.points[r.index] = wp;
+            }
+            dirty = true;
+        }
 
         /// <summary>selectionが参照する重複無しのNote集合。高さレーン・コピー等、点ではなくノーツ単位で
         /// 動作すべき機能はこちらを使う（参照元Editing.cpp:31-59の「一部でも選択されていれば全体を対象にする」
@@ -254,6 +317,7 @@ namespace Muses.ChartTool
         {
             selection.Clear();
             selectedNote = null;
+            InvalidateWidthAnchor();
             // 高さレーンのドラッグは選択中ノーツにしか掛からない。Undo等でchartごと差し替わったとき、
             // 消えたNoteへの参照を掴んだままにしないようここでも切る。
             heightDragNote = null;
@@ -361,7 +425,7 @@ namespace Muses.ChartTool
 
         private void Awake()
         {
-            preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader);
+            preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader, seClips);
 
             settings = EditorSettingsStore.Load();
             browseDir = !string.IsNullOrEmpty(settings.browseDir) && Directory.Exists(settings.browseDir)
@@ -377,6 +441,9 @@ namespace Muses.ChartTool
             frameRateMode = settings.frameRateMode;
             uiScale = settings.uiScale;
             keyBindings = settings.keyBindings;
+            preview.MasterVolume = settings.masterVolume;
+            preview.BgmVolume = settings.bgmVolume;
+            preview.SeVolume = settings.seVolume;
 
             uiDocument = GetComponent<UIDocument>();
             if (uiDocument != null && uiDocument.panelSettings != null)
@@ -434,6 +501,9 @@ namespace Muses.ChartTool
             settings.frameRateMode = frameRateMode;
             settings.uiScale = uiScale;
             settings.keyBindings = keyBindings;
+            settings.masterVolume = preview.MasterVolume;
+            settings.bgmVolume = preview.BgmVolume;
+            settings.seVolume = preview.SeVolume;
             EditorSettingsStore.Save(settings);
         }
 
@@ -813,7 +883,7 @@ namespace Muses.ChartTool
             ChartFormat.ResolveTimes(chart);
             ChartFormat.ResolveSlideComboPoints(chart);
 
-            validationIssues = ChartValidator.Validate(chart, Cells, preview.AudioLengthSec);
+            validationIssues = ChartValidator.Validate(chart, Cells, preview.AudioLengthSec, song.offsetSec);
             RefreshValidationList();
             if (foldValidation != null) foldValidation.value = true;
         }
@@ -1453,7 +1523,7 @@ namespace Muses.ChartTool
                 case EditorTool.Flick:
                 {
                     if (layerF != 0f && layerF != 1f) return; // ガターには単発ノーツを置けない
-                    float cellF = SnapCellTo(rawCell, 1f);
+                    float cellF = CellFFromCenter(rawCell, defaultWidthCells, 1f);
                     var kind = currentTool == EditorTool.Tap ? NoteKind.Tap
                         : currentTool == EditorTool.ExTap ? NoteKind.ExTap : NoteKind.Flick;
                     DrawGhostPoint(p, L, tick, layerF, cellF, defaultWidthCells, NoteColor(kind));
@@ -1461,7 +1531,7 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.Slide:
                 {
-                    float cellF = SnapCellTo(rawCell, 0.5f);
+                    float cellF = CellFFromCenter(rawCell, defaultWidthCells, 0.5f);
                     var col = NoteColor(NoteKind.Slide);
                     if (pendingSlideStart == null)
                     {
@@ -1501,8 +1571,8 @@ namespace Muses.ChartTool
                         int nStart = selectedNote.points[0].tick, nEnd = selectedNote.points[^1].tick;
                         if (tick > nStart && tick < nEnd)
                         {
-                            float cellF = SnapCellTo(rawCell, 0.5f);
                             float width = InterpAtTick(selectedNote, tick).width;
+                            float cellF = CellFFromCenter(rawCell, width, 0.5f);
                             bool forceSky = HasHeightVariation(selectedNote);
                             // 高さ情報を持つSlideはSkyペインのみに描くため、マウスのペイン位置(layerF)は
                             // 意味を持たない。既存カーブを補間したlayerFを初期値にし、必要なら高さレーンで
@@ -1652,7 +1722,7 @@ namespace Muses.ChartTool
                     }
 
                     if (layerF != 0f && layerF != 1f) break; // ガターには単発ノーツを置かない
-                    float cellF = SnapCellTo(rawCell, 1f);
+                    float cellF = CellFFromCenter(rawCell, defaultWidthCells, 1f);
                     var kind = currentTool == EditorTool.Tap ? NoteKind.Tap
                         : currentTool == EditorTool.ExTap ? NoteKind.ExTap : NoteKind.Flick;
                     var note = new Note
@@ -1670,12 +1740,12 @@ namespace Muses.ChartTool
                 {
                     if (selectedNote is { kind: NoteKind.Slide })
                     {
-                        float cellF = SnapCellTo(rawCell, 0.5f);
                         int insertAt = selectedNote.points.FindIndex(pt => pt.tick > tick);
                         if (insertAt < 0) insertAt = selectedNote.points.Count;
                         if (insertAt > 0 && insertAt < selectedNote.points.Count)
                         {
                             float width = InterpAtTick(selectedNote, tick).width;
+                            float cellF = CellFFromCenter(rawCell, width, 0.5f);
                             float insertLayer = ResolveInsertLayer(selectedNote, tick, layerF);
                             PushUndo(coalesce: false, "中継点を追加");
                             selectedNote.points.Insert(insertAt, NewWaypoint(tick, insertLayer, cellF, width));
@@ -1726,7 +1796,7 @@ namespace Muses.ChartTool
                             break;
                         }
 
-                        float slideStartCellF = SnapCellTo(rawCell, 0.5f);
+                        float slideStartCellF = CellFFromCenter(rawCell, defaultWidthCells, 0.5f);
                         pendingSlideStart = new Note
                         {
                             kind = NoteKind.Slide,
@@ -1735,7 +1805,7 @@ namespace Muses.ChartTool
                         break;
                     }
 
-                    float slideCellF = SnapCellTo(rawCell, 0.5f);
+                    float slideCellF = CellFFromCenter(rawCell, defaultWidthCells, 0.5f);
                     int startTick = pendingSlideStart.points[0].tick;
                     if (tick > startTick)
                     {
@@ -1770,6 +1840,7 @@ namespace Muses.ChartTool
                         if (edgeSign != 0 && !evt.shiftKey)
                         {
                             if (!selection.Contains(hn)) SetSingleSelection(hn);
+                            InvalidateWidthAnchor();
                             PushUndo(coalesce: false, "幅変更");
                             resizingActive = true;
                             resizingEdgeSign = edgeSign;
@@ -1817,6 +1888,7 @@ namespace Muses.ChartTool
         /// Select/Slide両ツールの点ドラッグ開始処理を共通化。</summary>
         private void BeginPointDrag(int rawTick, float rawCell, float layerF, Vector2 pos, PointerDownEvent evt)
         {
+            InvalidateWidthAnchor();
             PushUndo(coalesce: false, "移動"); // ドラッグ開始時点(変更前)を1手として記録する
             draggingNote = true;
             dragOriginRawTick = rawTick;
@@ -2045,11 +2117,11 @@ namespace Muses.ChartTool
         private void InsertWaypointInto(Note note, SheetLayout L, Vector2 pos, int tick)
         {
             var (layerF, rawCell) = L.PaneAt(pos.x);
-            float cellF = SnapCellTo(rawCell, 0.5f);
             int insertAt = note.points.FindIndex(pt => pt.tick > tick);
             if (insertAt < 0) insertAt = note.points.Count;
             if (insertAt <= 0 || insertAt >= note.points.Count) return;
             float width = InterpAtTick(note, tick).width;
+            float cellF = CellFFromCenter(rawCell, width, 0.5f);
             float insertLayer = ResolveInsertLayer(note, tick, layerF);
             PushUndo(coalesce: false, "中継点を追加");
             note.points.Insert(insertAt, NewWaypoint(tick, insertLayer, cellF, width));
@@ -2756,6 +2828,14 @@ namespace Muses.ChartTool
 
         private static float SnapCellTo(float rawCell, float step) =>
             Mathf.Round(rawCell / step) * step;
+
+        /// <summary>editor-ui-rework-r6.md §2.2。カーソル位置(rawCell)に幅widthのノーツの中心が
+        /// 来るような左端cellFを返す（参照元 ScoreEditor::laneFromCenterPos, ScoreEditor.cpp:229、
+        /// のfloat版）。新しく置く点の位置決めにのみ使う。ドラッグ移動・端ドラッグ・貼り付けの
+        /// ような「差分(delta)」を扱う箇所は対象外（中心の概念が無いため置き換えない）。
+        /// cellF自体は左端基準のまま（譜面データ・描画・判定は一切変えない）。</summary>
+        private static float CellFFromCenter(float rawCell, float width, float step) =>
+            Mathf.Clamp(SnapCellTo(rawCell - width * 0.5f, step), 0f, Cells - width);
 
         /// <summary>editor-ui-rework-r2.md §4: 点群をcellF方向へrawDeltaだけ動かすときの、
         /// スナップ済みかつ盤面(0〜Cells)に収まる実効deltaを返す。クランプは点群全体で1回だけ

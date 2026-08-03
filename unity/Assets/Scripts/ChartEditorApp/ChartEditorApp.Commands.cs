@@ -92,6 +92,11 @@ namespace Muses.ChartTool
                     () => snapIndex = Mathf.Min(snapIndex + 1, SnapDenominators.Length - 1)),
                 new(CommandIds.SnapCoarser, "カーソル・表示", "スナップを粗く",
                     () => snapIndex = Mathf.Max(snapIndex - 1, 0)),
+
+                new(CommandIds.NoteWidthGrow, "ノーツ", "幅を広げる", () => ChangeWidth(+1),
+                    () => selection.Count > 0 || IsPlacementTool(currentTool)),
+                new(CommandIds.NoteWidthShrink, "ノーツ", "幅を狭める", () => ChangeWidth(-1),
+                    () => selection.Count > 0 || IsPlacementTool(currentTool)),
             };
         }
 
@@ -121,6 +126,12 @@ namespace Muses.ChartTool
                 evt.StopPropagation();
                 return;
             }
+
+            // editor-ui-rework-r6.md §3.3(2): モーダル表示中(設定/ファイル参照/自動保存復元/
+            // キー重複確認等、いずれもoverlayLayerの子として出る)は譜面側のコマンドを一切
+            // 発火させない。旧実装はこれが無く、ファイル参照モーダルを開いた状態でSpaceを押すと
+            // 再生が始まる、数字キーでツールが切り替わる、といった穴があった。
+            if (overlayLayer.childCount > 0) return;
 
             bool primary = evt.commandKey || evt.ctrlKey;
             bool textFocused = IsTextInputFocused();

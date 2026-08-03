@@ -24,7 +24,7 @@ namespace Muses.Chart
     /// </summary>
     public static class ChartValidator
     {
-        public static List<ValidationIssue> Validate(ChartData chart, int cells = 12, float audioLengthSec = -1f)
+        public static List<ValidationIssue> Validate(ChartData chart, int cells = 12, float audioLengthSec = -1f, float offsetSec = 0f)
         {
             var issues = new List<ValidationIssue>();
 
@@ -36,6 +36,7 @@ namespace Muses.Chart
             ValidateScrollDuplicates(chart, issues); // V9
             ValidateAudioLength(chart, audioLengthSec, issues); // V10
             ValidateTotalCombo(chart, issues); // V11
+            ValidateOffset(audioLengthSec, offsetSec, issues); // V12
 
             return issues;
         }
@@ -214,6 +215,17 @@ namespace Muses.Chart
             }
             if (end > audioLengthSec)
                 Add(issues, "V10", ValidationSeverity.Info, $"譜面末尾({end:0.0}s)が音源長({audioLengthSec:0.0}s)を超えています", endTick);
+        }
+
+        /// <summary>editor-ui-rework-r6.md §4.1(f) / §9 Q4。offsetSecが音源長を超えていると
+        /// PreviewClock.Seekが終端へクランプされて常に無音になる(PreviewClock.cs:97)。
+        /// 音源が無い(audioLengthSec&lt;=0)場合は判定できないので未チェック扱い。</summary>
+        private static void ValidateOffset(float audioLengthSec, float offsetSec, List<ValidationIssue> issues)
+        {
+            if (audioLengthSec <= 0f) return;
+            if (offsetSec > audioLengthSec)
+                Add(issues, "V12", ValidationSeverity.Warning,
+                    $"オフセット({offsetSec:0.0}s)が音源長({audioLengthSec:0.0}s)を超えています（このままでは無音になります）", 0);
         }
 
         /// <summary>note-spec.md §7。スコア式のN(総コンボ点数)を情報として表示する。</summary>

@@ -23,12 +23,40 @@ namespace Muses.ChartTool
     /// 前提にしないぶん、シェーダ3種（Stage/Note/BeatLine）だけは ChartEditorApp の Inspector で
     /// 割り当ててもらう必要がある（既存のゲームシーンで既にユーザーがやっている操作と同じ）。
     /// </summary>
+    /// <summary>editor-ui-rework-r6.md §4.1(b)。音源読み込みの結果状態。右パネルの音源セクションが
+    /// これを見て状態ラベルを出す（旧実装はDebug.LogWarningのみでUIに何も出なかった）。</summary>
+    public enum AudioLoadState
+    {
+        None,
+        Loading,
+        Ok,
+        NotFound,
+        DecodeFailed,
+        Unsupported,
+    }
+
+    /// <summary>editor-ui-rework-r6.md §5.2 案A。ノーツ種別ごとのSE素材。ChartEditorAppの
+    /// SerializeFieldとして持ち、PreviewSystemへそのまま渡す（既存のシェーダ3種と同じ配線
+    /// パターン）。ゲーム本体からも同じアセットを参照できる（Assets/Audio/SE/に置く前提）。
+    /// 未設定のクリップはnullのままでよい（PreviewSystem側でフォールバックする）。</summary>
+    [Serializable]
+    public class SeClipSet
+    {
+        public AudioClip tap;
+        public AudioClip exTap;
+        public AudioClip slide;
+        public AudioClip flick;
+        public AudioClip tick;
+        public AudioClip metronome;
+    }
+
     public class PreviewSystem
     {
         private readonly MonoBehaviour host;
         private readonly Shader stageShader;
         private readonly Shader noteShader;
         private readonly Shader beatLineShader;
+        private readonly SeClipSet seClips;
         private readonly StageConfig cfg = StageConfig.Default();
 
         // ---- rig ----
@@ -58,17 +86,48 @@ namespace Muses.ChartTool
         private string lastLoadedAudioPath;
         private int seCoroutineToken;
 
+        /// <summary>editor-ui-rework-r6.md §4.1。読み込み結果の状態とメッセージ(探したフルパス・
+        /// エラー文)。UI側(音源セクション)がそのまま表示する。</summary>
+        public AudioLoadState LoadState { get; private set; } = AudioLoadState.None;
+        public string LoadMessage { get; private set; } = "";
+
+        // ---- 音量(editor-ui-rework-r6.md §4.3) ----
+        // AudioMixerは使わず素のAudioSource.volume/AudioListener.volumeを掛ける方式(設計どおり)。
+        // 既定値は参照元(MikuMikuWorld ScoreEditor.cpp:37-39)に合わせて0.8/1.0/1.0。
+        private float seVolume = 1f;
+
+        /// <summary>アプリ全体の音量。AudioListener.volumeはグローバルだが、エディタは
+        /// スタンドアロンの単独アプリなので副作用は無い。</summary>
+        public float MasterVolume
+        {
+            get => AudioListener.volume;
+            set => AudioListener.volume = Mathf.Clamp01(value);
+        }
+
+        public float BgmVolume
+        {
+            get => musicSource.volume;
+            set => musicSource.volume = Mathf.Clamp01(value);
+        }
+
+        public float SeVolume
+        {
+            get => seVolume;
+            set => seVolume = Mathf.Clamp01(value);
+        }
+
         // ---- render throttle (editor-spec.md §2.2: 再生中のみ更新、停止中は差分があるときだけ) ----
         private bool sceneDirty = true;
         private float lastRenderRealtime = -999f;
         private const float RenderIntervalSec = 1f / 60f;
 
-        public PreviewSystem(MonoBehaviour host, Shader stageShader, Shader noteShader, Shader beatLineShader)
+        public PreviewSystem(MonoBehaviour host, Shader stageShader, Shader noteShader, Shader beatLineShader, SeClipSet seClips = null)
         {
             this.host = host;
             this.stageShader = stageShader;
             this.noteShader = noteShader;
             this.beatLineShader = beatLineShader;
+            this.seClips = seClips ?? new SeClipSet();
             BuildRig();
         }
 
@@ -203,18 +262,77 @@ namespace Muses.ChartTool
             return result;
         }
 
+        // editor-ui-rework-r6.md §4.1(a): 失敗(NotFound/Unsupported/DecodeFailed)はキャッシュしない
+        // ので、chartが未保存(dirty)の間はUpdate()から0.3秒おきに呼ばれ続ける(ChartEditorApp.Update
+        // の"dirty"はsave/loadでしかfalseに戻らない既存仕様)。失敗の再試行にクールダウンを設けて
+        // 無駄なUnityWebRequestの発行を防ぐ。成功済み(LoadState==Ok)のパスは無条件にスキップする。
+        private const float FailedLoadRetryCooldownSec = 1.5f;
+        private float lastLoadAttemptRealtime = -999f;
+
+        /// <summary>editor-ui-rework-r6.md §4.1(e)。「再読み込み」ボタンから呼ぶ。次のTryLoadAudioで
+        /// 強制的に再読み込みさせる(成功済みキャッシュも含めて破棄する)。</summary>
+        public void ForceReloadAudio()
+        {
+            lastLoadedAudioPath = null;
+            lastLoadAttemptRealtime = -999f;
+        }
+
         private void TryLoadAudio(string audioDir)
         {
-            if (string.IsNullOrEmpty(song.audio) || string.IsNullOrEmpty(audioDir)) return;
+            if (string.IsNullOrEmpty(song.audio) || string.IsNullOrEmpty(audioDir))
+            {
+                LoadState = AudioLoadState.None;
+                LoadMessage = "";
+                return;
+            }
             string path = Path.Combine(audioDir, song.audio);
-            if (path == lastLoadedAudioPath) return;
-            lastLoadedAudioPath = path;
+            if (path == lastLoadedAudioPath && LoadState == AudioLoadState.Ok) return;
+            if (path != lastAttemptedPath) lastLoadAttemptRealtime = -999f; // パスが変われば即座に試す
+            lastAttemptedPath = path;
+            if (Time.unscaledTime - lastLoadAttemptRealtime < FailedLoadRetryCooldownSec) return;
+            lastLoadAttemptRealtime = Time.unscaledTime;
+
             if (!File.Exists(path))
             {
                 musicSource.clip = null;
+                LoadState = AudioLoadState.NotFound;
+                LoadMessage = $"見つかりません: {path}";
                 return;
             }
+
+            // editor-ui-rework-r6.md §0.1/§4.1(c): UnityはOgg Vorbisしかデコードできず、
+            // Opusコンテナ(近年のffmpegがoutput.oggに既定で選ぶ)は読めても無音になる/失敗するだけで
+            // 原因が分からない。ヘッダ先頭を読んで先に弾き、はっきりした案内を出す。
+            if (LooksLikeOpus(path))
+            {
+                LoadState = AudioLoadState.Unsupported;
+                LoadMessage = "Opus形式は再生できません。Vorbisに変換してください（例: ffmpeg -i 元ファイル -c:a libvorbis -q:a 6 出力ファイル）";
+                return;
+            }
+
+            LoadState = AudioLoadState.Loading;
+            LoadMessage = "";
             host.StartCoroutine(LoadAudioCoroutine(path));
+        }
+
+        private string lastAttemptedPath;
+
+        /// <summary>Oggコンテナの先頭ページ内に"OpusHead"シグネチャがあるかどうか。
+        /// 数十バイト読むだけなので同期I/Oで十分。</summary>
+        private static bool LooksLikeOpus(string path)
+        {
+            try
+            {
+                using var fs = File.OpenRead(path);
+                var buf = new byte[64];
+                int read = fs.Read(buf, 0, buf.Length);
+                string header = System.Text.Encoding.ASCII.GetString(buf, 0, read);
+                return header.Contains("OpusHead");
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private IEnumerator LoadAudioCoroutine(string path)
@@ -227,6 +345,8 @@ namespace Muses.ChartTool
 
             if (www.result != UnityWebRequest.Result.Success)
             {
+                LoadState = AudioLoadState.DecodeFailed;
+                LoadMessage = $"読み込みに失敗しました ({path}): {www.error}";
                 Debug.LogWarning($"PreviewSystem: 音源の読み込みに失敗しました ({path}): {www.error}");
                 yield break;
             }
@@ -241,6 +361,10 @@ namespace Muses.ChartTool
             musicSource.clip = clip;
             clock.Seek(at);
             if (wasRunning) clock.Play();
+            // editor-ui-rework-r6.md §4.1(a): 成功後にのみキャッシュを確定する。
+            lastLoadedAudioPath = path;
+            LoadState = AudioLoadState.Ok;
+            LoadMessage = path;
             MarkDirty();
         }
 
@@ -345,19 +469,35 @@ namespace Muses.ChartTool
             foreach (var note in chart.notes)
             {
                 float t = note.points[0].time;
-                if (t > prevOffset && t <= curOffset) PlayScheduledSe(0.6f, t - cur);
+                if (t > prevOffset && t <= curOffset) PlayScheduledSe(ClipForNoteHead(note.kind), 0.6f, t - cur);
                 if (note.kind == NoteKind.Slide)
                     foreach (var ct in note.comboTimes)
-                        if (ct > prevOffset && ct <= curOffset) PlayScheduledSe(0.25f, ct - cur);
+                        if (ct > prevOffset && ct <= curOffset) PlayScheduledSe(TickClip, 0.25f, ct - cur);
             }
         }
 
-        private void PlayScheduledSe(float volume, float delaySeconds)
+        /// <summary>editor-ui-rework-r6.md §5.3。ノーツ種別ごとの専用クリップが無ければ
+        /// Tap用クリップへ、それも無ければ実行時合成のクリック音へフォールバックする。
+        /// 素材が1つも無くても今までどおり動く。</summary>
+        private AudioClip ClipForNoteHead(NoteKind kind) => kind switch
+        {
+            NoteKind.Tap => seClips.tap != null ? seClips.tap : seClip,
+            NoteKind.ExTap => seClips.exTap != null ? seClips.exTap : TapOrSynth,
+            NoteKind.Slide => seClips.slide != null ? seClips.slide : TapOrSynth,
+            NoteKind.Flick => seClips.flick != null ? seClips.flick : TapOrSynth,
+            _ => seClip,
+        };
+
+        private AudioClip TapOrSynth => seClips.tap != null ? seClips.tap : seClip;
+        private AudioClip TickClip => seClips.tick != null ? seClips.tick : seClip;
+        private AudioClip MetronomeClip => seClips.metronome != null ? seClips.metronome : seClip;
+
+        private void PlayScheduledSe(AudioClip clip, float volume, float delaySeconds)
         {
             var src = sePool[sePoolIndex];
             sePoolIndex = (sePoolIndex + 1) % SePoolSize;
-            src.clip = seClip;
-            src.volume = volume;
+            src.clip = clip;
+            src.volume = volume * seVolume;
             src.PlayScheduled(AudioSettings.dspTime + Mathf.Max(0f, delaySeconds));
         }
 
@@ -371,7 +511,7 @@ namespace Muses.ChartTool
             if (nextMetronomeBeat < cur - beatSec * 2f) nextMetronomeBeat = cur; // 大きくシークしたら追いつかせる
             while (nextMetronomeBeat <= cur)
             {
-                if (nextMetronomeBeat > prev - 1e-4f) seSource.PlayOneShot(seClip, 0.4f);
+                if (nextMetronomeBeat > prev - 1e-4f) seSource.PlayOneShot(MetronomeClip, 0.4f * seVolume);
                 nextMetronomeBeat += beatSec;
             }
         }

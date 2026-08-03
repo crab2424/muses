@@ -48,6 +48,10 @@ namespace Muses.ChartTool
         public const string ZoomOut = "zoom.out";
         public const string SnapFiner = "snap.finer";
         public const string SnapCoarser = "snap.coarser";
+
+        // editor-ui-rework-r6.md §1.5。
+        public const string NoteWidthGrow = "note.widthGrow";
+        public const string NoteWidthShrink = "note.widthShrink";
     }
 
     /// <summary>1つのキーの組み合わせ。primaryはmacOSではCmd・それ以外ではCtrlを指す
@@ -142,6 +146,14 @@ namespace Muses.ChartTool
         // ---- ショートカット ----
         public List<KeyBinding> keyBindings = new();
 
+        // ---- 音源(editor-ui-rework-r6.md §4.3) ----
+        // song.musesではなくこちらに持つ: 音量は譜面の属性ではなくエディタの設定なので、
+        // 音量を変えただけで譜面ファイルがdirtyになるのは間違い。既定値は参照元
+        // (MikuMikuWorld ScoreEditor.cpp:37-39)に合わせて0.8/1.0/1.0。
+        public float masterVolume = 0.8f;
+        public float bgmVolume = 1f;
+        public float seVolume = 1f;
+
         // ---- ファイルダイアログ ----
         /// <summary>editor-ui-rework-r5.md §1 Q1: 従来PlayerPrefsだった最後に開いたフォルダも
         /// 設定ファイルへ統合する。</summary>
@@ -190,6 +202,10 @@ namespace Muses.ChartTool
             new KeyBinding(CommandIds.ZoomOut, new KeyChord(KeyCode.Minus, primary: true)),
             new KeyBinding(CommandIds.SnapFiner, new KeyChord(KeyCode.RightBracket)),
             new KeyBinding(CommandIds.SnapCoarser, new KeyChord(KeyCode.LeftBracket)),
+
+            // editor-ui-rework-r6.md §1.5: 既定は拡大=←、縮小=→（ユーザー指定どおり）。
+            new KeyBinding(CommandIds.NoteWidthGrow, new KeyChord(KeyCode.LeftArrow)),
+            new KeyBinding(CommandIds.NoteWidthShrink, new KeyChord(KeyCode.RightArrow)),
         };
     }
 
@@ -221,8 +237,16 @@ namespace Muses.ChartTool
                 Debug.LogWarning($"EditorSettings: 読み込みに失敗したため既定値を使います: {ex.Message}");
             }
 
-            if (settings.keyBindings == null || settings.keyBindings.Count == 0)
-                settings.keyBindings = EditorSettings.DefaultKeyBindings();
+            settings.keyBindings ??= new List<KeyBinding>();
+            // editor-ui-rework-r6.md §1.5: JsonUtility.FromJsonOverwriteはkeyBindingsを丸ごと
+            // 置き換えるため、後からコマンドを追加しても既存のeditor-settings.jsonには
+            // その既定バインドが無く、そのままだと一切効かない（新コマンドが無音で死ぬ）。
+            // 既存の割り当てを壊さず、まだ無いcommandIdの既定だけを補う。
+            var existingIds = new HashSet<string>();
+            foreach (var b in settings.keyBindings) existingIds.Add(b.commandId);
+            foreach (var def in EditorSettings.DefaultKeyBindings())
+                if (!existingIds.Contains(def.commandId))
+                    settings.keyBindings.Add(def);
 
             return settings;
         }

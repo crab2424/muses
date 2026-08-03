@@ -78,6 +78,9 @@ namespace Muses.ChartTool
         private IntegerField infoLevel;
         private TextField audioFile;
         private FloatField audioOffset;
+        private Label audioStatusLabel;
+        private Slider masterVolumeSlider, bgmVolumeSlider, seVolumeSlider;
+        private FloatField widthField;
         private Slider viewRate;
         private Toggle viewHeightLane;
         private Toggle viewEventLane;
@@ -451,7 +454,7 @@ namespace Muses.ChartTool
             widthGroup.Clear();
             var widthLabel = new Label("幅");
             widthLabel.AddToClassList("field-label");
-            var widthField = new FloatField { value = defaultWidthCells };
+            widthField = new FloatField { value = defaultWidthCells };
             widthField.AddToClassList("tb-field");
             widthField.RegisterValueChangedCallback(evt => defaultWidthCells = Mathf.Max(0.5f, evt.newValue));
             widthGroup.Add(widthLabel);
@@ -795,6 +798,24 @@ namespace Muses.ChartTool
             var note = new Label("タイトル〜オフセットは song.muses の内容です。保存時に譜面と一緒に書き戻します。");
             note.AddToClassList("prop-note");
             audioHost.Add(note);
+
+            // editor-ui-rework-r6.md §4.1(d)(e): 読み込み結果の状態表示と再読み込みボタン。
+            // 旧実装は失敗がDebug.LogWarningのみでUIに一切出ず、原因不明のまま「鳴らない」だけが見えていた。
+            var statusRow = new VisualElement();
+            statusRow.AddToClassList("prop-row");
+            audioStatusLabel = new Label("");
+            audioStatusLabel.AddToClassList("prop-note");
+            statusRow.Add(audioStatusLabel);
+            var reloadBtn = new Button(() => { preview.ForceReloadAudio(); MarkPreviewDirty(); }) { text = "再読み込み" };
+            reloadBtn.AddToClassList("tb-btn");
+            statusRow.Add(reloadBtn);
+            audioHost.Add(statusRow);
+
+            // editor-ui-rework-r6.md §4.3: 全体/BGM/SEの3段音量。song.musesではなくEditorSettings
+            // (preview.MasterVolume等)に永続化する(音量は譜面の属性ではないため)。
+            masterVolumeSlider = AddSliderRow(audioHost, "全体音量", 0f, 1f, v => preview.MasterVolume = v);
+            bgmVolumeSlider = AddSliderRow(audioHost, "BGM音量", 0f, 1f, v => preview.BgmVolume = v);
+            seVolumeSlider = AddSliderRow(audioHost, "SE音量", 0f, 1f, v => preview.SeVolume = v);
 
             // editor-ui-rework-r5.md §4.1: 「再生に追従」「ページ送りスクロール」「判定線位置」は
             // 設定モーダルのタイムラインタブへ移設した。ここに残すのは再生パラメータ（再生速度）・
@@ -1490,10 +1511,20 @@ namespace Muses.ChartTool
                     infoCharter.SetValueWithoutNotify(header.charter ?? "");
                     audioFile.SetValueWithoutNotify(song.audio ?? "");
                     audioOffset.SetValueWithoutNotify(song.offsetSec);
+                    masterVolumeSlider.SetValueWithoutNotify(preview.MasterVolume);
+                    bgmVolumeSlider.SetValueWithoutNotify(preview.BgmVolume);
+                    seVolumeSlider.SetValueWithoutNotify(preview.SeVolume);
                 }
+
+                // editor-ui-rework-r6.md §4.1: 読み込みは非同期(コルーチン)で終わるタイミングが
+                // 読めないため、他のスライダー類と同じく毎フレーム追従させる。
+                audioStatusLabel.text = AudioLoadStatusText();
 
                 // スライダー/トグル/ドロップダウンは入力途中という状態が無いので毎フレーム追従させる。
                 // ノーツシート側のCtrl+ホイール(拡大縮小)もここで反映される。
+                // editor-ui-rework-r6.md §1.5: ←→ショートカットでdefaultWidthCellsが変わるので、
+                // ツールバーの「幅」欄もスライダー類と同じく毎フレーム追従させる。
+                widthField.SetValueWithoutNotify(defaultWidthCells);
                 viewRate.SetValueWithoutNotify(preview.Rate);
                 viewHeightLane.SetValueWithoutNotify(showHeightLane);
                 viewEventLane.SetValueWithoutNotify(showEventLane);
@@ -1933,6 +1964,10 @@ namespace Muses.ChartTool
                 })
                 { text = chord + " ×" };
                 chip.AddToClassList("tb-btn");
+                // editor-ui-rework-r6.md §3.3(3)。通常は確認モーダルを経由するので重複は起きないが、
+                // 手で編集したeditor-settings.jsonを読み込んだ場合には起こりうるため、気づける
+                // 印だけ低コストで残しておく（色のみ、専用USSは追加しない）。
+                if (IsChordDuplicated(commandId, chord)) chip.style.color = new Color(1f, 0.85f, 0.4f);
                 chipsHost.Add(chip);
             }
 
@@ -1957,8 +1992,20 @@ namespace Muses.ChartTool
         private static bool ChordEquals(KeyChord a, KeyChord b) =>
             a.key == b.key && a.primary == b.primary && a.shift == b.shift && a.alt == b.alt;
 
-        /// <summary>editor-ui-rework-r5.md §5.4: 次のKeyDownEventを1回だけ捕まえてchordとして登録する。
-        /// 競合(他コマンドが同じchordを既に持つ)は後勝ち — 見つけ次第そちらから外す。</summary>
+        private bool IsChordDuplicated(string commandId, KeyChord chord)
+        {
+            foreach (var b in keyBindings)
+            {
+                if (b.commandId == commandId) continue;
+                if (b.chords.Exists(c => ChordEquals(c, chord))) return true;
+            }
+            return false;
+        }
+
+        /// <summary>editor-ui-rework-r5.md §5.4 / editor-ui-rework-r6.md §3: 次のKeyDownEventを
+        /// 1回だけ捕まえてchordとして登録する。競合(他コマンドが同じchordを既に持つ)がある場合は
+        /// 黙って後勝ちにはせず、確認モーダルを挟んでから「割り当てる／やめる」を選ばせる
+        /// （r5時点は後勝ちだったが、無言で外れると気づけないというユーザー指摘を受けて変更）。</summary>
         private void BeginCapture(string commandId)
         {
             capturingCommandId = commandId;
@@ -1970,24 +2017,85 @@ namespace Muses.ChartTool
                 evt.StopPropagation();
                 evt.PreventDefault();
 
-                if (evt.keyCode != KeyCode.Escape)
+                if (evt.keyCode == KeyCode.Escape)
                 {
-                    var chord = new KeyChord(evt.keyCode, evt.commandKey || evt.ctrlKey, evt.shiftKey, evt.altKey);
-                    foreach (var b in keyBindings)
-                    {
-                        if (b.commandId == commandId) continue;
-                        b.chords.RemoveAll(c => ChordEquals(c, chord));
-                    }
-                    var target = keyBindings.Find(b => b.commandId == commandId);
-                    if (target != null && !target.chords.Exists(c => ChordEquals(c, chord)))
-                        target.chords.Add(chord);
+                    SelectSettingsTab(settingsTabIndex);
+                    return;
                 }
 
-                // 競合で他コマンドから外れた場合の表示更新も含め、タブ全体を作り直す。
-                SelectSettingsTab(settingsTabIndex);
+                var chord = new KeyChord(evt.keyCode, evt.commandKey || evt.ctrlKey, evt.shiftKey, evt.altKey);
+                var conflicts = new List<KeyBinding>();
+                foreach (var b in keyBindings)
+                {
+                    if (b.commandId == commandId) continue;
+                    if (b.chords.Exists(c => ChordEquals(c, chord))) conflicts.Add(b);
+                }
+
+                if (conflicts.Count == 0)
+                {
+                    AssignChord(commandId, chord);
+                    SelectSettingsTab(settingsTabIndex);
+                }
+                else
+                {
+                    // §3.2: 「両方に残す」は提供しない（OnGlobalKeyDownは最初に一致した
+                    // コマンドだけを実行するため、二重登録は片方だけが動く説明不能な状態になる）。
+                    ShowKeyConflictModal(chord, commandId, conflicts);
+                }
             }
 
             uiRoot.RegisterCallback<KeyDownEvent>(Handler, TrickleDown.TrickleDown);
+        }
+
+        private void AssignChord(string commandId, KeyChord chord)
+        {
+            foreach (var b in keyBindings)
+            {
+                if (b.commandId == commandId) continue;
+                b.chords.RemoveAll(c => ChordEquals(c, chord));
+            }
+            var target = keyBindings.Find(b => b.commandId == commandId);
+            if (target != null && !target.chords.Exists(c => ChordEquals(c, chord)))
+                target.chords.Add(chord);
+        }
+
+        /// <summary>editor-ui-rework-r6.md §3.2。既存のShowModal/CloseModal基盤（overlayLayerの子）
+        /// をそのまま使う。「やめる」を選んだ場合は何も変更しない。</summary>
+        private void ShowKeyConflictModal(KeyChord chord, string commandId, List<KeyBinding> conflicts)
+        {
+            var modal = ShowModal("キーの重複");
+
+            var msg = new Label($"{chord} は既に次のコマンドに割り当てられています:");
+            msg.AddToClassList("prop-note");
+            modal.Add(msg);
+
+            foreach (var b in conflicts)
+            {
+                var cmd = FindCommand(b.commandId);
+                var line = new Label(cmd.HasValue ? $"・{cmd.Value.category} > {cmd.Value.label}" : $"・{b.commandId}");
+                line.AddToClassList("prop-note");
+                modal.Add(line);
+            }
+
+            var note = new Label("「割り当てる」を選ぶと、上のコマンドからは外されます。");
+            note.AddToClassList("prop-note");
+            modal.Add(note);
+
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            var assignBtn = new Button(() =>
+            {
+                AssignChord(commandId, chord);
+                CloseModal(modal);
+                SelectSettingsTab(settingsTabIndex);
+            })
+            { text = "割り当てる" };
+            assignBtn.AddToClassList("tb-btn");
+            var cancelBtn = new Button(() => CloseModal(modal)) { text = "やめる" };
+            cancelBtn.AddToClassList("tb-btn");
+            row.Add(assignBtn);
+            row.Add(cancelBtn);
+            modal.Add(row);
         }
 
         /// <summary>
@@ -2229,6 +2337,18 @@ namespace Muses.ChartTool
             preview.Rebuild(song, chart, audioDir);
             lastPreviewRebuildRealtime = Time.unscaledTime;
         }
+
+        /// <summary>editor-ui-rework-r6.md §4.1(d)。音源セクションの状態ラベル。</summary>
+        private string AudioLoadStatusText() => preview.LoadState switch
+        {
+            AudioLoadState.None => "",
+            AudioLoadState.Loading => "読み込み中…",
+            AudioLoadState.Ok => "✓ 再生可能",
+            AudioLoadState.NotFound => "⚠ " + preview.LoadMessage,
+            AudioLoadState.Unsupported => "⚠ " + preview.LoadMessage,
+            AudioLoadState.DecodeFailed => "⚠ " + preview.LoadMessage,
+            _ => "",
+        };
 
         private void SyncAfterFileOperation()
         {
