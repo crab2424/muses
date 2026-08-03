@@ -180,6 +180,7 @@ namespace Muses.ChartTool
             AddMenu(bar, "ファイル", menu =>
             {
                 menu.AddItem("新規", false, NewChart);
+                menu.AddItem("新規曲...", false, ShowNewSongWizard);
                 menu.AddItem("開く...", false, () => ShowFileModal(saveMode: false));
                 menu.AddSeparator("");
                 menu.AddItem("保存", false, SaveChartToPath);
@@ -427,6 +428,7 @@ namespace Muses.ChartTool
             var fileGroup = uiRoot.Q<VisualElement>("toolbar-file");
             fileGroup.Clear();
             fileGroup.Add(MakeToolbarButton("新規", NewChart));
+            fileGroup.Add(MakeToolbarButton("新規曲", ShowNewSongWizard));
             fileGroup.Add(MakeToolbarButton("開く", () => ShowFileModal(saveMode: false)));
             fileGroup.Add(MakeToolbarButton("保存", SaveChartToPath));
 
@@ -809,6 +811,16 @@ namespace Muses.ChartTool
             var reloadBtn = new Button(() => { preview.ForceReloadAudio(); MarkPreviewDirty(); }) { text = "再読み込み" };
             reloadBtn.AddToClassList("tb-btn");
             statusRow.Add(reloadBtn);
+            // editor-ui-rework-r7.md §3.2: 曲フォルダがどこにあるか分からない、への直接対策。
+            var openFolderBtn = new Button(() =>
+            {
+                string dir = string.IsNullOrEmpty(songPath) ? null : Path.GetDirectoryName(songPath);
+                if (dir == null) { statusMessage = "先に譜面を保存してください（曲フォルダが決まっていません）"; return; }
+                OpenInFinder(dir);
+            })
+            { text = "曲フォルダをFinderで開く" };
+            openFolderBtn.AddToClassList("tb-btn");
+            statusRow.Add(openFolderBtn);
             audioHost.Add(statusRow);
 
             // editor-ui-rework-r6.md §4.3: 全体/BGM/SEの3段音量。song.musesではなくEditorSettings
@@ -1721,21 +1733,175 @@ namespace Muses.ChartTool
                 statusValidation.text = $"検証 E{errors} W{warnings} I{infos}";
         }
 
-        /// <summary>editor-ui-rework-r4.md §9: 音源は必ずsong.musesと同じフォルダから
-        /// 相対パス(ファイル名のみ)で解決される（PreviewSystem.TryLoadAudio）。別フォルダの
-        /// ファイルを選んだ場合は選べてしまうが読み込めないので、その場で警告する。
-        /// 拡張子は*.oggに絞る（UnityWebRequestMultimedia.GetAudioClipがOGG決め打ちのため、
-        /// 他形式を選べても読めない）。</summary>
+        /// <summary>editor-ui-rework-r7.md §3.3: 音源は必ずsong.musesと同じフォルダから
+        /// 相対パス(ファイル名のみ)で解決される（PreviewSystem.TryLoadAudio）ため、別フォルダの
+        /// ファイルを選んだ場合は曲フォルダへコピーする（旧実装は「読み込めません」と警告して
+        /// 終わるだけだった）。拡張子はogg/wav/mp3（editor-ui-rework-r7.md Q6でwav/mp3にも対応）。</summary>
         private void PickAudioFile()
         {
-            ShowFilePickerModal("音源ファイルを選択", "*.ogg", picked =>
+            string songDir = string.IsNullOrEmpty(songPath) ? null : Path.GetDirectoryName(songPath);
+            if (songDir == null)
             {
-                string songDir = string.IsNullOrEmpty(songPath) ? null : Path.GetDirectoryName(songPath);
+                statusMessage = "先に譜面を保存してください（曲フォルダが決まっていません）";
+                return;
+            }
+
+            ShowFilePickerModal("音源ファイルを選択", new[] { "*.ogg", "*.wav", "*.mp3" }, picked =>
+            {
                 string pickedDir = Path.GetDirectoryName(picked);
-                if (songDir != null && !string.Equals(pickedDir, songDir, StringComparison.OrdinalIgnoreCase))
-                    statusMessage = "音源はsong.musesと同じフォルダに置く必要があります（選択したファイルは読み込めません）";
-                audioFile.value = Path.GetFileName(picked); // RegisterValueChangedCallback経由でsong.audioに反映される
+                if (string.Equals(pickedDir, songDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    audioFile.value = Path.GetFileName(picked); // RegisterValueChangedCallback経由でsong.audioに反映される
+                    return;
+                }
+                ImportAudioFile(picked, songDir);
             });
+        }
+
+        /// <summary>editor-ui-rework-r7.md §3.3。曲フォルダ外の音源を選んだときのコピー処理。
+        /// Opus(拡張子.oggだが中身はOpus)はコピー前に弾く（今回ユーザーが踏んだ罠を、
+        /// ファイル選択の時点で潰すため）。</summary>
+        private void ImportAudioFile(string sourcePath, string songDir)
+        {
+            string ext = Path.GetExtension(sourcePath);
+            if (string.Equals(ext, ".ogg", StringComparison.OrdinalIgnoreCase) && PreviewSystem.LooksLikeOpus(sourcePath))
+            {
+                statusMessage = "この音源はOpusです。Vorbisに変換してからインポートしてください（例: ffmpeg -i 元ファイル -c:a libvorbis -q:a 6 出力ファイル）";
+                return;
+            }
+
+            string fileName = Path.GetFileName(sourcePath);
+            string destPath = Path.Combine(songDir, fileName);
+
+            void DoCopy()
+            {
+                try
+                {
+                    File.Copy(sourcePath, destPath, overwrite: true);
+                    audioFile.value = fileName;
+                    statusMessage = $"音源を曲フォルダへコピーしました: {fileName}";
+                }
+                catch (Exception ex)
+                {
+                    statusMessage = "音源のコピーに失敗しました: " + ex.Message;
+                }
+            }
+
+            if (File.Exists(destPath))
+            {
+                ShowConfirmModal("音源の上書き",
+                    $"曲フォルダに既に \"{fileName}\" があります。上書きしますか？\n（他の難易度譜面がこの音源を参照している場合、その内容も変わります）",
+                    "上書きする", DoCopy);
+            }
+            else
+            {
+                ShowConfirmModal("音源のコピー",
+                    $"\"{fileName}\" を曲フォルダ ({songDir}) にコピーしますか？",
+                    "コピーする", DoCopy);
+            }
+        }
+
+        /// <summary>editor-ui-rework-r7.md §3.3。汎用の確認モーダル。ShowKeyConflictModal
+        /// （r6の重複確認）と同じ骨格を、任意のメッセージ/確定ボタン/コールバックへ一般化した。</summary>
+        private void ShowConfirmModal(string title, string message, string confirmLabel, Action onConfirm)
+        {
+            var modal = ShowModal(title);
+
+            var msg = new Label(message);
+            msg.AddToClassList("prop-note");
+            msg.style.whiteSpace = WhiteSpace.Normal;
+            modal.Add(msg);
+
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            var confirmBtn = new Button(() => { CloseModal(modal); onConfirm(); }) { text = confirmLabel };
+            confirmBtn.AddToClassList("tb-btn");
+            var cancelBtn = new Button(() => CloseModal(modal)) { text = "キャンセル" };
+            cancelBtn.AddToClassList("tb-btn");
+            row.Add(confirmBtn);
+            row.Add(cancelBtn);
+            modal.Add(row);
+        }
+
+        /// <summary>editor-ui-rework-r7.md §3.2。「曲フォルダ」設定用のフォルダ専用ブラウザ。
+        /// ShowFilePickerModalと似た骨格だがファイル一覧を出さず、「このフォルダを選択」ボタンで
+        /// 現在地を確定する。メインのファイルブラウザ(browseDir)とは独立した現在地を持つ
+        /// （設定変更のためにファイルブラウザの最後の場所を潰さないため）。</summary>
+        private void ShowFolderPickerModal(string title, string startDir, Action<string> onPick)
+        {
+            var modal = ShowModal(title);
+            string current = !string.IsNullOrEmpty(startDir) && Directory.Exists(startDir) ? startDir : songsRoot;
+
+            var pathLabel = new Label(current);
+            pathLabel.AddToClassList("prop-note");
+            modal.Add(pathLabel);
+
+            var list = new ScrollView();
+            list.AddToClassList("browse-list");
+            modal.Add(list);
+
+            var row = new VisualElement();
+            row.AddToClassList("modal-row");
+            modal.Add(row);
+
+            void Rebuild()
+            {
+                pathLabel.text = current;
+                list.Clear();
+
+                var parent = Directory.GetParent(current);
+                if (parent != null)
+                {
+                    var up = new Button(() => { current = parent.FullName; Rebuild(); }) { text = ".. (上へ)" };
+                    up.AddToClassList("browse-item");
+                    up.AddToClassList("browse-item--dir");
+                    list.Add(up);
+                }
+
+                try
+                {
+                    foreach (var dir in Directory.GetDirectories(current).OrderBy(d => d))
+                    {
+                        string captured = dir;
+                        var b = new Button(() => { current = captured; Rebuild(); }) { text = "[ " + Path.GetFileName(dir) + " ]" };
+                        b.AddToClassList("browse-item");
+                        b.AddToClassList("browse-item--dir");
+                        list.Add(b);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var err = new Label("読み取りエラー: " + ex.Message);
+                    err.AddToClassList("prop-note");
+                    list.Add(err);
+                }
+            }
+
+            var selectBtn = new Button(() => { CloseModal(modal); onPick(current); }) { text = "このフォルダを選択" };
+            selectBtn.AddToClassList("tb-btn");
+            var cancelBtn = new Button(() => CloseModal(modal)) { text = "キャンセル" };
+            cancelBtn.AddToClassList("tb-btn");
+            row.Add(selectBtn);
+            row.Add(cancelBtn);
+
+            Rebuild();
+        }
+
+        /// <summary>editor-ui-rework-r7.md §3.2/§3.3。macOSのFinderでフォルダを開く。
+        /// ベストエフォート（失敗しても実害はないのでtry-catchで握りつぶす）。</summary>
+        private static void OpenInFinder(string path)
+        {
+            try
+            {
+                if (Application.platform == RuntimePlatform.OSXPlayer || Application.platform == RuntimePlatform.OSXEditor)
+                    System.Diagnostics.Process.Start("open", $"\"{path}\"");
+                else
+                    Application.OpenURL("file://" + path.Replace("\\", "/"));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"OpenInFinder: 開けませんでした ({path}): {ex.Message}");
+            }
         }
 
         // ================= モーダル(ファイル参照 / 自動保存の復元) =================
@@ -1869,6 +2035,28 @@ namespace Muses.ChartTool
 
             var uiScaleSlider = AddSliderRow(parent, "エディタ画面倍率", 0.75f, 2f, v => { uiScale = v; ApplyUiScale(); });
             uiScaleSlider.SetValueWithoutNotify(uiScale);
+
+            // editor-ui-rework-r7.md §3.2: 曲プロジェクト群の置き場所。既定はFinderから見える
+            // ~/Documents/muses/songs/（従来はFinder既定で非表示の~/Library/...下だった）。
+            var songsRootField = new VisualElement();
+            songsRootField.style.flexDirection = FlexDirection.Row;
+            var songsRootLabel = new Label(songsRoot);
+            songsRootLabel.AddToClassList("prop-note");
+            songsRootLabel.style.flexGrow = 1;
+            songsRootField.Add(songsRootLabel);
+            var changeBtn = new Button(() => ShowFolderPickerModal("曲フォルダを選択", songsRoot, picked =>
+            {
+                songsRoot = picked;
+                songsRootLabel.text = songsRoot;
+                Directory.CreateDirectory(songsRoot);
+            }))
+            { text = "変更..." };
+            changeBtn.AddToClassList("tb-btn");
+            songsRootField.Add(changeBtn);
+            var openBtn = new Button(() => OpenInFinder(songsRoot)) { text = "Finderで開く" };
+            openBtn.AddToClassList("tb-btn");
+            songsRootField.Add(openBtn);
+            MakePropRow(parent, "曲フォルダ", songsRootField);
         }
 
         // ---- タイムラインタブ(§4) ----
@@ -2105,7 +2293,12 @@ namespace Muses.ChartTool
         /// （.musesの開く/別名保存専用）と同じ自前ブラウザの骨格を、拡張子フィルタと
         /// コールバックだけを受け取る形に切り出した。
         /// </summary>
-        private void ShowFilePickerModal(string title, string pattern, Action<string> onPick)
+        private void ShowFilePickerModal(string title, string pattern, Action<string> onPick) =>
+            ShowFilePickerModal(title, new[] { pattern }, onPick);
+
+        /// <summary>editor-ui-rework-r7.md §3.3/Q6: 複数拡張子（*.ogg/*.wav/*.mp3等）を1つの
+        /// 一覧にまとめて出すための多パターン版。</summary>
+        private void ShowFilePickerModal(string title, string[] patterns, Action<string> onPick)
         {
             var modal = ShowModal(title);
 
@@ -2146,7 +2339,9 @@ namespace Muses.ChartTool
                         list.Add(b);
                     }
 
-                    foreach (var file in Directory.GetFiles(browseDir, pattern).OrderBy(f => f))
+                    var files = new List<string>();
+                    foreach (var pat in patterns) files.AddRange(Directory.GetFiles(browseDir, pat));
+                    foreach (var file in files.Distinct().OrderBy(f => f))
                     {
                         string captured = file;
                         var b = new Button(() =>
@@ -2328,6 +2523,129 @@ namespace Muses.ChartTool
             uiNeedsPropertyRefresh = true;
             statusMessage = "新規譜面を作成しました";
             MarkPreviewDirty();
+        }
+
+        /// <summary>editor-ui-rework-r7.md §3.4。曲プロジェクト(songs/&lt;song-id&gt;/)を新規に
+        /// 作るウィザード。既存の「新規」(NewChart)は chart を空にするだけで song/songPath/chartPath
+        /// には触らない(＝同じ曲に別難易度を作る用の操作)ため意味が被らない。「新規曲」は
+        /// フォルダ自体が無い状態から一直線に編集開始できることを目的にする
+        /// （旧実装は保存を試みて初めて song.muses が無いことに気づく、という段差があった）。
+        /// </summary>
+        private static readonly string[] DifficultyChoices = { "LINE", "SQUARE", "CUBE", "TESSERACT" };
+
+        private void ShowNewSongWizard()
+        {
+            var modal = ShowModal("新規曲を作成");
+
+            var idField = new TextField("フォルダ名") { value = "" };
+            modal.Add(idField);
+            var idNote = new Label($"保存先: {songsRoot}/<フォルダ名>/");
+            idNote.AddToClassList("prop-note");
+            modal.Add(idNote);
+            idField.RegisterValueChangedCallback(evt => idNote.text = $"保存先: {songsRoot}/{evt.newValue}/");
+
+            var titleField = new TextField("タイトル") { value = "" };
+            modal.Add(titleField);
+
+            var diffDropdown = new DropdownField { choices = new List<string>(DifficultyChoices), index = 2 }; // 既定CUBE
+            MakePropRow(modal, "難易度", diffDropdown);
+
+            var errorLabel = new Label("");
+            errorLabel.AddToClassList("prop-note");
+            modal.Add(errorLabel);
+
+            var row = new VisualElement();
+            row.AddToClassList("modal-row");
+            modal.Add(row);
+
+            var createBtn = new Button(() =>
+            {
+                string songId = idField.value?.Trim();
+                if (string.IsNullOrEmpty(songId))
+                {
+                    errorLabel.text = "フォルダ名を入力してください";
+                    return;
+                }
+                if (songId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                {
+                    errorLabel.text = "フォルダ名に使えない文字が含まれています";
+                    return;
+                }
+
+                string difficulty = DifficultyChoices[Mathf.Clamp(diffDropdown.index, 0, DifficultyChoices.Length - 1)];
+                string error = CreateNewSong(songId, titleField.value, difficulty);
+                if (error != null) { errorLabel.text = error; return; }
+                CloseModal(modal);
+            })
+            { text = "作成" };
+            createBtn.AddToClassList("tb-btn");
+            var cancelBtn = new Button(() => CloseModal(modal)) { text = "キャンセル" };
+            cancelBtn.AddToClassList("tb-btn");
+            row.Add(createBtn);
+            row.Add(cancelBtn);
+        }
+
+        /// <summary>戻り値がnullなら成功。エラーメッセージがあれば失敗（ウィザードのラベルに出す）。
+        /// フォルダが既に存在する場合は既存の song.muses を引き継ぎ、新しい難易度ファイルだけを
+        /// 追加する（editor-ui-rework-r7.md §3.4「1曲に複数の譜面」を1つの曲プロジェクトフォルダ
+        /// で管理する、というユーザー確定の設計どおり）。</summary>
+        private string CreateNewSong(string songId, string title, string difficulty)
+        {
+            string dir = Path.Combine(songsRoot, songId);
+            string newSongPath = Path.Combine(dir, "song.muses");
+            string chartFileName = difficulty.ToLowerInvariant() + ".muses";
+            string newChartPath = Path.Combine(dir, chartFileName);
+
+            if (File.Exists(newChartPath))
+                return $"既に {chartFileName} が存在します（別の難易度を選ぶか、既存ファイルを開いてください）";
+
+            try
+            {
+                Directory.CreateDirectory(dir);
+
+                SongMeta newSong;
+                if (File.Exists(newSongPath))
+                {
+                    newSong = ChartSerializer.ReadSongMeta(newSongPath);
+                }
+                else
+                {
+                    newSong = new SongMeta { title = string.IsNullOrEmpty(title) ? songId : title };
+                    ChartSerializer.WriteSongMeta(newSong, newSongPath);
+                }
+
+                var newHeader = new ChartFileHeader { difficulty = difficulty, level = 1, charter = "", songFile = "song.muses" };
+                var newChart = new ChartData();
+                ChartSerializer.WriteChart(newChartPath, newHeader, newChart, newSong);
+
+                song = newSong;
+                header = newHeader;
+                chart = newChart;
+                songPath = newSongPath;
+                chartPath = newChartPath;
+                chartFilePathBuffer = newChartPath;
+                ClearSelection();
+                pendingSlideStart = null;
+                draggingNote = false;
+                dirty = false;
+                songMetaDirty = false;
+                undoStack.Clear();
+                redoStack.Clear();
+                lastAutosaveRealtime = Time.unscaledTime;
+                uiNeedsPropertyRefresh = true;
+                browseDir = dir;
+                settings.browseDir = dir;
+                EditorSettingsStore.Save(settings);
+                preview.Rebuild(song, chart, dir);
+                lastPreviewRebuildRealtime = Time.unscaledTime;
+                statusMessage = $"新規曲を作成しました: {dir}";
+                SyncAfterFileOperation();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return "作成エラー: " + ex.Message;
+            }
         }
 
         private void MarkPreviewDirty()

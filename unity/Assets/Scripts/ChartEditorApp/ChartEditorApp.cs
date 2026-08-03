@@ -108,6 +108,8 @@ namespace Muses.ChartTool
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
         private string browseDir;
+        /// <summary>editor-ui-rework-r7.md §3.2。曲プロジェクト群の親フォルダ。EditorSettings.songsRoot参照。</summary>
+        private string songsRoot;
         private string chartPath;
         private string songPath;
         private SongMeta song = new();
@@ -290,9 +292,6 @@ namespace Muses.ChartTool
             ClearEventSelection();
         }
 
-        /// <summary>単発ノーツ(Tap/ExTap/Flick)や、配置直後のノーツ全体を選択状態にするための補助。</summary>
-        private void SetSingleSelection(Note wholeNote) => SetSingleSelection(new NoteRef(wholeNote, 0));
-
         private void SetMultiSelection(List<NoteRef> refs)
         {
             selection.Clear();
@@ -428,8 +427,15 @@ namespace Muses.ChartTool
             preview = new PreviewSystem(this, stageShader, noteShader, beatLineShader, seClips);
 
             settings = EditorSettingsStore.Load();
+            // editor-ui-rework-r7.md §3.2: 既定の置き場所を Application.persistentDataPath
+            // （macOSでは ~/Library/... 下、Finder既定で非表示）から Finder で素直に見える
+            // ~/Documents/muses/songs/ へ変更。設定ファイル・自動保存はpersistentDataPathのまま
+            // （アプリ内部状態であってユーザーが触るものではないため）。
+            songsRoot = !string.IsNullOrEmpty(settings.songsRoot) && Directory.Exists(settings.songsRoot)
+                ? settings.songsRoot : EditorSettings.DefaultSongsRoot();
+            Directory.CreateDirectory(songsRoot);
             browseDir = !string.IsNullOrEmpty(settings.browseDir) && Directory.Exists(settings.browseDir)
-                ? settings.browseDir : Application.persistentDataPath;
+                ? settings.browseDir : songsRoot;
             followPlayback = settings.followPlayback;
             scrollFollowMode = settings.pageScroll ? ScrollFollowMode.Page : ScrollFollowMode.Smooth;
             judgeLineFrac = settings.judgeLineFrac;
@@ -490,6 +496,7 @@ namespace Muses.ChartTool
         private void SaveSettingsFromLiveFields()
         {
             settings.browseDir = browseDir;
+            settings.songsRoot = songsRoot;
             settings.followPlayback = followPlayback;
             settings.pageScroll = scrollFollowMode == ScrollFollowMode.Page;
             settings.judgeLineFrac = judgeLineFrac;
@@ -628,10 +635,26 @@ namespace Muses.ChartTool
             }
             try
             {
+                // editor-ui-rework-r7.md §0.1/§3.1: songPathを設定する箇所がOpenChartFromPath
+                // (既存譜面を開いたとき)にしか無かったため、「新規」から作った譜面は保存しても
+                // song.musesが一度も書かれず、次に開こうとすると弾かれる（＝二度と開けない）
+                // 実バグがあった。「保存＝曲フォルダを確定する行為」とみなし、songPathが未設定、
+                // または譜面の保存先と別フォルダを指している場合はここで確定し直す。
+                string songDir = Path.GetDirectoryName(path);
+                bool songPathNeedsRebase = string.IsNullOrEmpty(songPath)
+                    || !string.Equals(Path.GetDirectoryName(songPath), songDir, StringComparison.OrdinalIgnoreCase);
+                if (songPathNeedsRebase)
+                {
+                    songPath = Path.Combine(songDir ?? "", "song.muses");
+                    songMetaDirty = true; // 移設先にまだ無ければ新規作成が必要なため
+                }
+
                 ChartSerializer.WriteChart(path, header, chart, song);
                 // 右パネルの「情報」「音源」セクション(§2.5)は SongMeta を直接編集するので、
                 // 譜面と一緒に song.muses も書き戻さないと編集内容が消える。
-                if (songMetaDirty && !string.IsNullOrEmpty(songPath))
+                // song.musesがまだ存在しない場合（新規譜面の初回保存）も、songMetaDirtyの値に
+                // 関わらず必ず新規作成する。
+                if (songMetaDirty || !File.Exists(songPath))
                 {
                     ChartSerializer.WriteSongMeta(song, songPath);
                     songMetaDirty = false;
@@ -639,6 +662,11 @@ namespace Muses.ChartTool
                 chartPath = path;
                 dirty = false;
                 statusMessage = "保存完了";
+                // song.musesが確定した＝曲フォルダの音源ディレクトリも確定したので、
+                // 保存した瞬間に音源が読み込まれるようにする（従来はOpenChartFromPathでしか
+                // 音源ディレクトリが決まらず、新規譜面では保存しても永久に音源が読まれなかった）。
+                preview.Rebuild(song, chart, songDir);
+                lastPreviewRebuildRealtime = Time.unscaledTime;
                 if (validateOnSave) RunValidation();
             }
             catch (Exception ex)
@@ -1566,18 +1594,21 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.AddWaypoint:
                 {
-                    if (selectedNote is { kind: NoteKind.Slide })
+                    // editor-ui-rework-r7.md §1(c): ホバー位置の帯にあるSlideを対象にする
+                    // （選択されていなくてもゴーストを出す。以前は selectedNote 限定だった）。
+                    var bandNote = HitTestSlideBand(L, pos);
+                    if (bandNote != null)
                     {
-                        int nStart = selectedNote.points[0].tick, nEnd = selectedNote.points[^1].tick;
+                        int nStart = bandNote.points[0].tick, nEnd = bandNote.points[^1].tick;
                         if (tick > nStart && tick < nEnd)
                         {
-                            float width = InterpAtTick(selectedNote, tick).width;
+                            float width = InterpAtTick(bandNote, tick).width;
                             float cellF = CellFFromCenter(rawCell, width, 0.5f);
-                            bool forceSky = HasHeightVariation(selectedNote);
+                            bool forceSky = HasHeightVariation(bandNote);
                             // 高さ情報を持つSlideはSkyペインのみに描くため、マウスのペイン位置(layerF)は
                             // 意味を持たない。既存カーブを補間したlayerFを初期値にし、必要なら高さレーンで
                             // 調整してもらう（ResolveInsertLayerと同じ規則）。
-                            float previewLayerF = forceSky ? InterpAtTick(selectedNote, tick).layerF : layerF;
+                            float previewLayerF = forceSky ? InterpAtTick(bandNote, tick).layerF : layerF;
                             DrawGhostPoint(p, L, tick, previewLayerF, cellF, width, Color.white, forceSky);
                         }
                     }
@@ -1732,23 +1763,29 @@ namespace Muses.ChartTool
                     };
                     PushUndo(coalesce: false, "ノーツ配置");
                     chart.notes.Add(note);
-                    SetSingleSelection(note);
+                    // editor-ui-rework-r7.md §1: 配置直後は選択しない（連続配置中に幅ショートカット
+                    // を押すと、選択されたばかりのノーツの方が優先されてゴースト側の幅を変えられない
+                    // ため）。配置前の選択も同時に消す（残っているとそちらへ流れて同じ問題が再発する）。
+                    ClearSelection();
                     dirty = true;
                     break;
                 }
                 case EditorTool.AddWaypoint:
                 {
-                    if (selectedNote is { kind: NoteKind.Slide })
+                    // editor-ui-rework-r7.md §1(c): 「選択中のSlide」ではなく「クリック位置の帯にある
+                    // Slide」を対象にする。配置直後に選択しなくなったため、選択への依存を無くす。
+                    var bandNote = HitTestSlideBand(L, pos);
+                    if (bandNote != null)
                     {
-                        int insertAt = selectedNote.points.FindIndex(pt => pt.tick > tick);
-                        if (insertAt < 0) insertAt = selectedNote.points.Count;
-                        if (insertAt > 0 && insertAt < selectedNote.points.Count)
+                        int insertAt = bandNote.points.FindIndex(pt => pt.tick > tick);
+                        if (insertAt < 0) insertAt = bandNote.points.Count;
+                        if (insertAt > 0 && insertAt < bandNote.points.Count)
                         {
-                            float width = InterpAtTick(selectedNote, tick).width;
+                            float width = InterpAtTick(bandNote, tick).width;
                             float cellF = CellFFromCenter(rawCell, width, 0.5f);
-                            float insertLayer = ResolveInsertLayer(selectedNote, tick, layerF);
+                            float insertLayer = ResolveInsertLayer(bandNote, tick, layerF);
                             PushUndo(coalesce: false, "中継点を追加");
-                            selectedNote.points.Insert(insertAt, NewWaypoint(tick, insertLayer, cellF, width));
+                            bandNote.points.Insert(insertAt, NewWaypoint(tick, insertLayer, cellF, width));
                             dirty = true;
                         }
                     }
@@ -1814,7 +1851,8 @@ namespace Muses.ChartTool
                         PushUndo(coalesce: false, "Slide配置");
                         chart.notes.Add(completed);
                         pendingSlideStart = null;
-                        SetMultiSelection(AllPointRefs(completed));
+                        // editor-ui-rework-r7.md §1: 配置直後は選択しない（Tap等と同じ規則）。
+                        ClearSelection();
                         dirty = true;
                         statusMessage = "Slideを配置しました";
                     }

@@ -159,6 +159,19 @@ namespace Muses.ChartTool
         /// 設定ファイルへ統合する。</summary>
         public string browseDir = "";
 
+        /// <summary>editor-ui-rework-r7.md §3.2。曲プロジェクト（song.muses・各難易度・音源・
+        /// ジャケット等を1フォルダにまとめたもの、editor-spec.md §1.2の songs/&lt;song-id&gt;/ に相当）
+        /// を置く親フォルダ。空文字なら DefaultSongsRoot() を使う。
+        /// 従来はここが Application.persistentDataPath（macOSでは ~/Library/... 下、Finderの既定で
+        /// 非表示）になっており「どこにあるか分からない」の直接の原因だった。</summary>
+        public string songsRoot = "";
+
+        /// <summary>Finderから素直に見える既定の置き場所。ユーザーがドキュメントフォルダ以下を
+        /// 期待するのは自然な慣習なので、persistentDataPath（アプリ内部状態向け。editor-settings.json
+        /// や自動保存はこのままそこに残す）とは意図的に分離する。</summary>
+        public static string DefaultSongsRoot() =>
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "muses", "songs");
+
         /// <summary>editor-ui-rework-r5.md §5.3。参照元(MikuMikuWorld)の既定キー割り当てを土台に、
         /// muses の現状の割り当てを維持したもの。</summary>
         public static List<KeyBinding> DefaultKeyBindings() => new()

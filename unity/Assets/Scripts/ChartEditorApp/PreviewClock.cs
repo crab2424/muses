@@ -27,6 +27,11 @@ namespace Muses.ChartTool
         public bool Running { get; private set; }
         public float Rate { get; private set; } = 1f;
 
+        /// <summary>editor-ui-rework-r7.md §2.4b。AudioSource.Play()は「次のミックスブロック境界」
+        /// まで待つため、48kHz/バッファ256サンプルでも最大5.3msの開始遅延ゆらぎが乗る。
+        /// PlayScheduledでdspTime基準のサンプル精度の開始時刻を指定し、これを消す。</summary>
+        private const double ScheduleLeadSec = 0.05;
+
         /// <summary>音源先頭 → 譜面tick0のズレ(秒)。SongMeta.offsetSecをそのまま渡す想定。
         /// Offset&gt;0 なら譜面tick0は音源のOffset秒地点（＝音源の先頭に前奏がある場合の値）。</summary>
         public float Offset { get; set; }
@@ -56,7 +61,7 @@ namespace Muses.ChartTool
             {
                 source.time = Mathf.Clamp((float)pausedAt, 0f, Mathf.Max(0f, source.clip.length - 0.001f));
                 source.pitch = Rate;
-                source.Play();
+                source.PlayScheduled(AudioSettings.dspTime + ScheduleLeadSec);
             }
             else
             {

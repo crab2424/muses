@@ -303,23 +303,34 @@ namespace Muses.ChartTool
             // editor-ui-rework-r6.md §0.1/§4.1(c): UnityはOgg Vorbisしかデコードできず、
             // Opusコンテナ(近年のffmpegがoutput.oggに既定で選ぶ)は読めても無音になる/失敗するだけで
             // 原因が分からない。ヘッダ先頭を読んで先に弾き、はっきりした案内を出す。
-            if (LooksLikeOpus(path))
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".ogg" && LooksLikeOpus(path))
             {
                 LoadState = AudioLoadState.Unsupported;
                 LoadMessage = "Opus形式は再生できません。Vorbisに変換してください（例: ffmpeg -i 元ファイル -c:a libvorbis -q:a 6 出力ファイル）";
                 return;
             }
 
+            // editor-ui-rework-r7.md §2.4/Q6: ogg(Vorbis)以外にwav/mp3も読めるようにする
+            // （エディタ内で試すだけならこの2つはUnity標準のAudioTypeでそのまま扱える）。
+            AudioType audioType = ext switch
+            {
+                ".wav" => AudioType.WAV,
+                ".mp3" => AudioType.MPEG,
+                _ => AudioType.OGGVORBIS,
+            };
+
             LoadState = AudioLoadState.Loading;
             LoadMessage = "";
-            host.StartCoroutine(LoadAudioCoroutine(path));
+            host.StartCoroutine(LoadAudioCoroutine(path, audioType));
         }
 
         private string lastAttemptedPath;
 
         /// <summary>Oggコンテナの先頭ページ内に"OpusHead"シグネチャがあるかどうか。
-        /// 数十バイト読むだけなので同期I/Oで十分。</summary>
-        private static bool LooksLikeOpus(string path)
+        /// 数十バイト読むだけなので同期I/Oで十分。editor-ui-rework-r7.md §3.3:
+        /// 音源インポート（コピー）時の水際チェックにも使うためpublicにしてある。</summary>
+        public static bool LooksLikeOpus(string path)
         {
             try
             {
@@ -335,11 +346,11 @@ namespace Muses.ChartTool
             }
         }
 
-        private IEnumerator LoadAudioCoroutine(string path)
+        private IEnumerator LoadAudioCoroutine(string path, AudioType audioType)
         {
             int myToken = ++seCoroutineToken;
             string uri = "file://" + path.Replace("\\", "/");
-            using var www = UnityWebRequestMultimedia.GetAudioClip(uri, AudioType.OGGVORBIS);
+            using var www = UnityWebRequestMultimedia.GetAudioClip(uri, audioType);
             yield return www.SendWebRequest();
             if (myToken != seCoroutineToken) yield break; // 途中で別の曲に切り替わっていたら破棄
 

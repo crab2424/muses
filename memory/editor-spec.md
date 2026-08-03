@@ -57,6 +57,13 @@ songs/
     jacket.png
 ```
 
+**エディタでの実際の置き場所（editor-ui-rework-r7.md §3.2、rev.2 で追記）**: 上記の `songs/` は
+既定で **`~/Documents/muses/songs/`**（Finder から見える場所。macOS の
+`Application.persistentDataPath` は既定で不可視のため意図的に分離した）。
+`editor-settings.json`（アプリの内部設定）や `.autosave`（自動保存）はエディタの内部状態なので
+`persistentDataPath` のまま。設定画面の一般タブから変更でき、音源セクション/設定画面の
+「Finderで開く」ボタンで実際に開ける。
+
 **曲メタと譜面を分離する。Why**: BPM マップは曲の属性であって譜面の属性ではない。
 難易度ごとに複製すると、BPM を1箇所直したときに他が古いまま残る同期ズレが起きる。
 分離すれば BPM 修正が全難易度へ自動的に反映される。
@@ -115,7 +122,15 @@ songs/
   33:1:0      180
 ```
 
-- `@AUDIO` は **ogg 固定**（確定）。Unity のインポート設定は Vorbis / Streaming を既定とする。
+- `@AUDIO` は **ogg 固定**（確定）。`audio.ogg` は曲フォルダに置く生ファイルであり、
+  Unity のアセットパイプライン（AudioImporter）を通らない。実行時に
+  `UnityWebRequestMultimedia.GetAudioClip` で読み、常に PCM へ全展開してから再生する
+  （＝ Unity のインポート設定でいう **Decompress On Load 相当**。**Streaming オプションは
+  存在しない**——editor-ui-rework-r7.md §2.4 で確認済みのとおり、`audio.ogg` がアセットで
+  ない以上インポート設定という概念自体が無い）。
+  一方 SE 素材（`Assets/Audio/SE/*.wav`）は通常の Unity アセットなので、こちらは
+  **Decompress On Load** を明示的に選ぶ（Streaming は再生開始のディスク I/O ゆらぎを
+  持ち込むため、リズムゲームでは避ける）。
 - `@OFFSET` は**譜面と音源の頭合わせ**であり、`StageConfig.judgeOffsetMs` /
   `visualOffsetMs`（プレイヤー個人の環境補正、`PlayerPrefs` 保存）とは**別物**。混同しないこと。
 - `@PREVIEW` は**開始秒と終了秒の2値のみ**。曲選択画面（Phase 5）が無い現段階では
