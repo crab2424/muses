@@ -270,12 +270,29 @@ Sheets）がCSSのサブセット相当（セレクタ・カスケード・box m
    （`clearFlags = SolidColor`、`cullingMask = 0`、`depth` を最背面に）。
    **UI刷新とは独立に直せるので先に潰しておくのが良い。**
 
-3. **app容量120MB の内訳未調査** — 次回ビルド時に `Builds/ChartEditorMac/` 配下と
-   ビルドログ（Editor.log の "Build Report" セクション）で内訳を取る。
-   削減候補: Managed Stripping Level（現状 `managedStrippingLevel: {}` = 未設定）、
-   未使用のグラフィックスAPI、URP のシェーダバリアント、Input System の
-   不要パッケージ。**ただし Unity のランタイム自体が数十MB を占めるため、
-   劇的な削減は期待しないほうがよい。**
+3. **app容量120MB の内訳調査 → 対応済み（2026-08-03、コミット`74aec45`）**。
+   115.4MB → 75MBに削減（-35%）。
+   - **arm64単独ビルド化（-38MB）**: `EditorUserBuildSettings`が`OSXUniversal`
+     （x64+ARM64のユニバーサルバイナリ）になっていたのが最大の要因。
+     `BuildChartEditor.cs`に`PlayerSettings.SetArchitecture(NamedBuildTarget.Standalone,
+     (int)OSArchitecture.ARM64)`**と**`EditorUserBuildSettings.SetPlatformSettings(
+     "OSXUniversal", "Architecture", "ARM64")`の両方を追加。**前者だけではネイティブ側
+     （UnityPlayer.dylib等）のUniversal/ARM64選択に反映されないことを実測で確認済み**
+     （`PlayerSettings.SetArchitecture`はマネージド側のビルドターゲット選択用、
+     ネイティブバイナリの実際の切替キーは`EditorUserBuildSettings`の
+     `OSXUniversal > Architecture`という別経路だった）。
+   - **未使用パッケージ38個の削除（-4.3MB＋依存の芋づる）**: `unity/Packages/manifest.json`
+     から uGUI・TextMeshPro（Unity 6ではuGUIパッケージに同梱）・VisualScripting・
+     Timeline・AI Navigation・Physics/Physics2D関連・Terrain・Video・XR等、
+     `Assets/Scripts`から参照ゼロのものを削除。**UI Toolkit（`uielements`）が
+     `physics`と`animation`モジュールに依存しているため、この2つは不使用でも削除不可**
+     （`packages-lock.json`の依存関係で確認）。
+   - Managed Stripping Levelは**今回は見送り**（UI ToolkitのUXML要素解決がリフレクション
+     経由のため、Low以上にすると起動時にUIが組み上がらなくなるリスクがある。着手するなら
+     `link.xml`での保護とセットで段階的に実機確認しながら上げる必要がある）。
+   - 検証方法: `Unity -batchmode -nographics -quit -executeMethod BuildChartEditor.BuildMac`
+     でheadlessビルドし、コンパイル成功とアプリ起動（`open -W`後にプロセス生存確認）を確認。
+     Unity Editorを開かずにビルド検証できることが分かったので、今後の同種の調査でも使える。
 
 4. **BPM / 拍子 / ソフランを編集する UI が無い** — データ構造（`bpmEvents` /
    `SongMeta.meters` / `scrollEvents`）とシリアライザは実装済みだが、
