@@ -1,4 +1,5 @@
 using UnityEditor;
+using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 
 // 譜面エディタ(ChartEditor.unity)だけをスタンドアロン実行ファイルとしてビルドする。
@@ -11,6 +12,13 @@ public static class BuildChartEditor
     [MenuItem("Build/Build Chart Editor (macOS)")]
     public static void BuildMac()
     {
+        // Intel(x64)版を同梱しない。配布対象は自分のApple Siliconマシンのみのため、
+        // ユニバーサルバイナリ(x64+ARM64、約38MB増)は不要（容量調査 2026-08-03）。
+        // PlayerSettings.SetArchitecture単体ではネイティブ側(UnityPlayer.dylib等)の
+        // Universal/ARM64選択には反映されなかった（実測、EditorUserBuildSettings.asset内の
+        // "OSXUniversal > Architecture" が実際の切替キーだったため、両方セットする）。
+        PlayerSettings.SetArchitecture(NamedBuildTarget.Standalone, (int)OSArchitecture.ARM64);
+        EditorUserBuildSettings.SetPlatformSettings("OSXUniversal", "Architecture", "ARM64");
         Build(BuildTarget.StandaloneOSX, "Builds/ChartEditorMac/MusesChartEditor.app");
     }
 
