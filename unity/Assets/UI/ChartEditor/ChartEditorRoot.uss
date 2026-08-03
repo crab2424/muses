@@ -243,6 +243,18 @@
     overflow: hidden;
 }
 
+/* editor-ui-rework-r8.md §5.2: プレビュー画面左上のハイスピード表示。Painter2Dは文字を
+   描けないため、他のラベル類(sheetLabels等)と同じく絶対配置のLabel要素として重ねる。 */
+.hi-speed-label {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    color: rgb(230, 230, 230);
+    background-color: rgba(0, 0, 0, 0.45);
+    padding: 2px 6px;
+    font-size: 12px;
+}
+
 /*
     参考画像の「⟨タイムライン⟩⟨譜面プレビュー⟩」タブ見出し。標準のTabViewは内部の
     content-containerが確実に伸びる保証をコードから検証できなかったため使わず、

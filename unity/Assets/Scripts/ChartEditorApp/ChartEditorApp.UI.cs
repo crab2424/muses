@@ -44,6 +44,7 @@ namespace Muses.ChartTool
         private VisualElement overlayLayer;
         private VisualElement notesSheet;
         private VisualElement previewSurface;
+        private Label hiSpeedLabel;
         private Button timelineTabButton, previewTabButton;
         private int selectedTabIndex = TabTimeline;
 
@@ -536,6 +537,15 @@ namespace Muses.ChartTool
             previewSurface.RegisterCallback<GeometryChangedEvent>(_ => UpdatePreviewTexture());
             // editor-ui-rework-r3.md §6: 判定線をRenderTexture(3D)の上にPainter2Dで重ねて描く。
             previewSurface.generateVisualContent += GeneratePreviewOverlay;
+            // editor-ui-rework-r8.md §5: タイムラインと同じホイール操作を流用する。通常ホイールは
+            // OnSheetWheel（scrollTick経由でプレビューも追従する既存配線）、Cmd/Ctrl+ホイールだけ
+            // ここで横取りしてハイスピードに割り当てる（タイムライン側はズームに使っているため）。
+            previewSurface.RegisterCallback<WheelEvent>(OnPreviewWheel);
+
+            hiSpeedLabel = new Label("");
+            hiSpeedLabel.AddToClassList("hi-speed-label");
+            hiSpeedLabel.pickingMode = PickingMode.Ignore;
+            previewSurface.Add(hiSpeedLabel);
 
             content.Add(notesSheet);
             content.Add(previewSurface);
@@ -1544,8 +1554,16 @@ namespace Muses.ChartTool
                 zoomSlider.SetValueWithoutNotify(pxPerBeat);
                 zoomLabel.text = $"{pxPerBeat / ZoomBasePxPerBeat:0.00}x";
                 playButton.text = preview.IsPlaying ? "❙❙" : "▶";
+                // editor-ui-rework-r8.md §5.2: プレビュー左上のハイスピード表示。
+                hiSpeedLabel.text = $"HS {preview.HiSpeed:0.00}x";
 
-                float scrubMax = Mathf.Max(10f, preview.ChartEndSec + 2f);
+                // editor-ui-rework-r8.md §4: 音源が読み込まれている間はシークバーの長さを
+                // 「音源長+10秒」に固定する（旧実装は譜面の最終ノーツ基準だったため、譜面を編集する
+                // たびに目盛りが伸び縮みしていた）。音源未読み込みの間は従来相当のフォールバックを使う。
+                float audioLen = preview.AudioLengthSec;
+                float scrubMax = audioLen > 0f
+                    ? audioLen + 10f
+                    : Mathf.Max(10f, preview.ChartEndSec + 10f);
                 scrubSlider.lowValue = 0f;
                 scrubSlider.highValue = scrubMax;
                 scrubSlider.SetValueWithoutNotify(Mathf.Clamp(preview.SongTime, 0f, scrubMax));
@@ -2090,6 +2108,11 @@ namespace Muses.ChartTool
             var invertToggle = AddToggleRow(parent, "スクロール方向を反転", v => invertScroll = v);
             invertToggle.SetValueWithoutNotify(invertScroll);
 
+            // editor-ui-rework-r8.md §5.2: プレビュー画面でのCmd/Ctrl+ホイールで変わる値を
+            // 恒久的に確認・調整できる場所として設定画面にも置く。
+            var hiSpeedSlider = AddSliderRow(parent, "ハイスピード(プレビュー)", 0.5f, 4f, v => preview.HiSpeed = v);
+            hiSpeedSlider.SetValueWithoutNotify(preview.HiSpeed);
+
             var laneWidthField = AddFloatRow(parent, "レーン幅(px)", v => laneWidthPx = Mathf.Clamp(v, 20f, 100f));
             laneWidthField.SetValueWithoutNotify(laneWidthPx);
         }
@@ -2454,7 +2477,21 @@ namespace Muses.ChartTool
                     string name = nameField.value;
                     if (string.IsNullOrWhiteSpace(name)) return;
                     if (!name.EndsWith(".muses", StringComparison.OrdinalIgnoreCase)) name += ".muses";
-                    chartFilePathBuffer = Path.Combine(browseDir, name);
+
+                    // editor-ui-rework-r8.md §2.2: songsRoot直下へ保存しようとしたときだけ、
+                    // 入力したファイル名をそのままフォルダ名にも流用して曲プロジェクトフォルダを
+                    // 自動生成する（散らかり防止、ユーザー確定の方式）。既に曲フォルダの中にいる
+                    // 場合（難易度の追加保存等）は従来どおりbrowseDirへそのまま保存する。
+                    string targetDir = browseDir;
+                    if (IsSongsRootItself(browseDir))
+                    {
+                        string baseName = name.Substring(0, name.Length - ".muses".Length);
+                        targetDir = Path.Combine(songsRoot, SanitizeFolderName(baseName));
+                        Directory.CreateDirectory(targetDir);
+                    }
+
+                    chartFilePathBuffer = Path.Combine(targetDir, name);
+                    browseDir = targetDir;
                     RememberBrowseDir();
                     CloseModal(modal);
                     SaveChartToPath();
@@ -2476,6 +2513,30 @@ namespace Muses.ChartTool
         {
             settings.browseDir = browseDir;
             EditorSettingsStore.Save(settings);
+        }
+
+        /// <summary>editor-ui-rework-r8.md §2.2。dirがsongsRootそのもの(直下)かどうかを、
+        /// 末尾区切り文字・大小の揺れを無視して判定する。</summary>
+        private bool IsSongsRootItself(string dir)
+        {
+            try
+            {
+                string a = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string b = Path.GetFullPath(songsRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>editor-ui-rework-r8.md §2.2。ファイル名(拡張子除く)をフォルダ名として使える形へ
+        /// 変換する（CreateNewSongのフォルダ名検証と揃え、禁止文字は_へ置換する）。</summary>
+        private static string SanitizeFolderName(string name)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            return name;
         }
 
         private void ShowRestoreModal()

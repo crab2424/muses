@@ -450,6 +450,7 @@ namespace Muses.ChartTool
             preview.MasterVolume = settings.masterVolume;
             preview.BgmVolume = settings.bgmVolume;
             preview.SeVolume = settings.seVolume;
+            preview.HiSpeed = settings.hiSpeed;
 
             uiDocument = GetComponent<UIDocument>();
             if (uiDocument != null && uiDocument.panelSettings != null)
@@ -511,6 +512,7 @@ namespace Muses.ChartTool
             settings.masterVolume = preview.MasterVolume;
             settings.bgmVolume = preview.BgmVolume;
             settings.seVolume = preview.SeVolume;
+            settings.hiSpeed = preview.HiSpeed;
             EditorSettingsStore.Save(settings);
         }
 
@@ -764,14 +766,21 @@ namespace Muses.ChartTool
         /// 書くことで、新規譜面も自動保存の対象にする。</summary>
         private static string UntitledAutosavePath => Path.Combine(Application.persistentDataPath, "untitled.muses.autosave");
 
+        /// <summary>editor-ui-rework-r8.md §2.3。曲フォルダの中に散らからないよう、自動保存は
+        /// 譜面ファイルの真横ではなく<c>&lt;曲フォルダ&gt;/autosave/</c>配下へ格納する。</summary>
+        private static string AutosavePathFor(string chartPath) =>
+            Path.Combine(Path.GetDirectoryName(chartPath) ?? "", "autosave", Path.GetFileName(chartPath) + ".autosave");
+
         private void TickAutosave()
         {
             if (!autosaveEnabled || !dirty) return;
             float intervalSec = Mathf.Max(1, autosaveMinutes) * 60f;
             if (Time.unscaledTime - lastAutosaveRealtime < intervalSec) return;
-            string path = string.IsNullOrEmpty(chartPath) ? UntitledAutosavePath : chartPath + ".autosave";
+            string path = string.IsNullOrEmpty(chartPath) ? UntitledAutosavePath : AutosavePathFor(chartPath);
             try
             {
+                string dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 ChartSerializer.WriteChart(path, header, chart, song);
                 lastAutosaveRealtime = Time.unscaledTime;
             }
@@ -781,11 +790,18 @@ namespace Muses.ChartTool
             }
         }
 
-        /// <summary>読み込み直後に呼ぶ。autosaveの方が正規ファイルより新しければ復元を提案する。</summary>
+        /// <summary>読み込み直後に呼ぶ。autosaveの方が正規ファイルより新しければ復元を提案する。
+        /// editor-ui-rework-r8.md §2.3: 新しい格納先(autosave/フォルダ)を優先し、無ければr7以前の
+        /// 置き場所(譜面ファイルの真横)もフォールバックで探す（既存環境の自動保存を取りこぼさない）。</summary>
         private void CheckAutosaveRestore(string path)
         {
-            string autosavePath = path + ".autosave";
-            if (!File.Exists(autosavePath)) return;
+            string autosavePath = AutosavePathFor(path);
+            if (!File.Exists(autosavePath))
+            {
+                string legacyPath = path + ".autosave";
+                if (!File.Exists(legacyPath)) return;
+                autosavePath = legacyPath;
+            }
             if (File.GetLastWriteTimeUtc(autosavePath) <= File.GetLastWriteTimeUtc(path)) return;
             showRestorePrompt = true;
             restoreAutosavePath = autosavePath;
@@ -1594,6 +1610,11 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.AddWaypoint:
                 {
+                    // editor-ui-rework-r8.md §3: PointerDown側で既存の点をクリックしたときは
+                    // 中継点を挿入せず選択に横取りする（上のcase EditorTool.AddWaypoint参照）。
+                    // ゴーストもそれに合わせ、点の上では出さない。
+                    if (HitTestPoint(L, pos).HasValue) break;
+
                     // editor-ui-rework-r7.md §1(c): ホバー位置の帯にあるSlideを対象にする
                     // （選択されていなくてもゴーストを出す。以前は selectedNote 限定だった）。
                     var bandNote = HitTestSlideBand(L, pos);
@@ -1772,6 +1793,19 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.AddWaypoint:
                 {
+                    // editor-ui-rework-r8.md §3: 他の配置ツール(Tap/ExTap/Flick/Slide)と同じく、
+                    // 既存の点の上をクリックしたら中継点の挿入より選択への横取りを優先する
+                    // （従来はこの分岐が無く、既存ノーツの点の上で暴発していた）。
+                    var hitExisting = HitTestPoint(L, pos);
+                    if (hitExisting.HasValue)
+                    {
+                        var hp = hitExisting.Value;
+                        if (evt.shiftKey) ToggleSelectionMembership(hp);
+                        else if (!selection.Contains(hp)) SetSingleSelection(hp);
+                        if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        break;
+                    }
+
                     // editor-ui-rework-r7.md §1(c): 「選択中のSlide」ではなく「クリック位置の帯にある
                     // Slide」を対象にする。配置直後に選択しなくなったため、選択への依存を無くす。
                     var bandNote = HitTestSlideBand(L, pos);
@@ -2450,6 +2484,23 @@ namespace Muses.ChartTool
                 if (steps != 0) scrollTick = Mathf.Max(0, scrollTick + steps * SnapTicks);
             }
             evt.StopPropagation();
+        }
+
+        /// <summary>editor-ui-rework-r8.md §5: プレビュー画面でのホイール。通常ホイールは
+        /// OnSheetWheelをそのまま流用し、タイムラインと同じ時間スクロール(scrollTick経由で
+        /// 停止中のpreview.Seekが追従する既存配線)にする。Cmd/Ctrl+ホイールはタイムライン側の
+        /// ズームと役割が異なる（プレビューは拡大率という概念が無い）ため、ここではハイスピード
+        /// （ノーツ速度、判定には影響しない）に割り当てる（ユーザー確定）。</summary>
+        private void OnPreviewWheel(WheelEvent evt)
+        {
+            if (evt.ctrlKey || evt.commandKey)
+            {
+                // OnSheetWheelのズームと同じ符号の向き（上スクロールで増加）に揃える。
+                preview.HiSpeed -= evt.delta.y * 0.03f;
+                evt.StopPropagation();
+                return;
+            }
+            OnSheetWheel(evt);
         }
 
         // editor-ui-rework-r5.md §5.2: 旧OnSheetKeyDown(notesSheet専用のKeyDownEventハンドラ)は

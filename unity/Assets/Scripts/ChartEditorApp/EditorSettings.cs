@@ -142,6 +142,9 @@ namespace Muses.ChartTool
         public int laneDivisions = 4;
         public bool invertScroll = false;
         public float laneWidthPx = 46f;
+        /// <summary>editor-ui-rework-r8.md §5.2。プレビュー画面でのCmd/Ctrl+ホイールで変わる
+        /// ノーツ速度倍率。譜面の属性ではなくエディタ側の設定(音量と同じ扱い)なのでsong.musesには入れない。</summary>
+        public float hiSpeed = 1f;
 
         // ---- ショートカット ----
         public List<KeyBinding> keyBindings = new();

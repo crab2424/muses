@@ -416,6 +416,22 @@ namespace Muses.ChartTool
             }
         }
 
+        /// <summary>editor-ui-rework-r8.md §5.2。プレビュー画面上でのCmd/Ctrl+ホイールに割り当てる
+        /// ノーツ速度倍率。note-spec.md §5.5の「実効速度 = baseSpeed × hiSpeed × scrollMul」の
+        /// 中間項そのもの（<see cref="StageConfig.hiSpeed"/>）。判定には影響しない(§5.5どおり)。</summary>
+        public float HiSpeed
+        {
+            get => cfg.hiSpeed;
+            set
+            {
+                float v = Mathf.Clamp(value, 0.5f, 4f);
+                if (Mathf.Approximately(cfg.hiSpeed, v)) return;
+                cfg.hiSpeed = v;
+                noteView.UpdateScroll(SongTime, cfg.hiSpeed);
+                MarkDirty();
+            }
+        }
+
         /// <summary>オートプレイ中のスコア表示（非オートプレイ時はnull）。</summary>
         public string AutoplaySummary
         {
