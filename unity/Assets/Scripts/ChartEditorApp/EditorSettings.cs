@@ -16,6 +16,8 @@ namespace Muses.ChartTool
         public const string FileOpen = "file.open";
         public const string FileSave = "file.save";
         public const string FileSaveAs = "file.saveAs";
+        // editor-ui-rework-r12.md §2.3。
+        public const string FileRestoreAutosave = "file.restoreAutosave";
 
         public const string EditUndo = "edit.undo";
         public const string EditRedo = "edit.redo";
@@ -129,6 +131,24 @@ namespace Muses.ChartTool
         public int rightTabIndex = 0;
     }
 
+    /// <summary>editor-ui-rework-r12.md §2.2。「無視する」を押した自動保存ファイルを、
+    /// 更新日時ではなく内容(contentHash)で記憶する。同じ内容の間は二度と案内せず、
+    /// 新しい編集が自動保存されれば(=内容が変われば)また案内が出る。</summary>
+    [Serializable]
+    public class DismissedAutosave
+    {
+        public string autosavePath;
+        public string contentHash;
+    }
+
+    /// <summary>editor-ui-rework-r12.md §2.3。自動保存の復元案内をどこまで出すか。</summary>
+    public static class RestorePromptMode
+    {
+        public const int Always = 0;
+        public const int WhenDifferent = 1;
+        public const int Never = 2;
+    }
+
     /// <summary>
     /// editor-ui-rework-r5.md §1。譜面エディタ(ChartEditorApp)の設定。ゲーム本体のプレイヤー設定
     /// （Stage/OffsetSettings.cs、judgeOffsetMs/visualOffsetMs）とは別物で混ぜない。
@@ -146,6 +166,17 @@ namespace Muses.ChartTool
         public int frameRateMode = 0;
         /// <summary>PanelSettings.referenceResolutionを割る倍率。1.0で従来どおりの見た目。</summary>
         public float uiScale = 1f;
+        /// <summary>editor-ui-rework-r12.md §1.3。ノーツ/イベント選択時に右パネルを
+        /// インスペクタタブへ自動的に切り替えるか。「選ぶと消えたように見える」退行を防ぐための既定ON。</summary>
+        public bool autoFocusInspector = true;
+        /// <summary>editor-ui-rework-r12.md §2.3。RestorePromptMode.*。既定はWhenDifferent
+        /// （内容が正規ファイルと同じ、または「無視済み」なら聞かない）。</summary>
+        public int restorePromptMode = RestorePromptMode.WhenDifferent;
+        /// <summary>editor-ui-rework-r12.md §2.4。前回セッションが正常終了したか。Awakeの最後にfalseへ
+        /// 落として即保存し、OnDestroyでtrueに戻す。起動時にfalseのまま読めたらクラッシュ/強制終了とみなす。</summary>
+        public bool cleanShutdown = true;
+        /// <summary>editor-ui-rework-r12.md §2.2。「無視する」を押した自動保存の記録（内容一致で判定）。</summary>
+        public List<DismissedAutosave> dismissedAutosaves = new();
 
         // ---- タイムライン ----
         public bool followPlayback = true;
@@ -297,6 +328,13 @@ namespace Muses.ChartTool
             }
 
             settings.keyBindings ??= new List<KeyBinding>();
+            settings.dismissedAutosaves ??= new List<DismissedAutosave>();
+            // editor-ui-rework-r12.md §2.2: 参照先が既に無い(削除済み/移動済み)エントリは掃除する。
+            // 20件のリング上限も併せて維持する(無限に育たないように)。
+            settings.dismissedAutosaves.RemoveAll(d => string.IsNullOrEmpty(d.autosavePath) || !File.Exists(d.autosavePath));
+            const int maxDismissed = 20;
+            if (settings.dismissedAutosaves.Count > maxDismissed)
+                settings.dismissedAutosaves.RemoveRange(0, settings.dismissedAutosaves.Count - maxDismissed);
             // editor-ui-rework-r6.md §1.5: JsonUtility.FromJsonOverwriteはkeyBindingsを丸ごと
             // 置き換えるため、後からコマンドを追加しても既存のeditor-settings.jsonには
             // その既定バインドが無く、そのままだと一切効かない（新コマンドが無音で死ぬ）。

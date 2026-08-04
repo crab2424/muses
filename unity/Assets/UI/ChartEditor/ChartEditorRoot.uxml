@@ -32,8 +32,10 @@
             <ui:VisualElement name="tabs-host" class="tabs-host" />
 
             <!--
-                D: 右パネル(§2.5)。editor-ui-rework-r11.md §4: 折りたたみ7段から
-                「タブ3枚(曲/表示/結果)＋常設インスペクタ」へ再構成。タブヘッダは
+                D: 右パネル(§2.5)。editor-ui-rework-r12.md §1: r11で作った
+                「タブ3枚(曲/表示/結果)＋常設インスペクタ(max-height:45%)」は、点の多いSlideを
+                選ぶとインスペクタ自身が内部スクロールになり見づらいという指摘を受け、
+                インスペクタも4枚目のタブに統合した(全高を使える)。タブヘッダは
                 メインキャンバスのタブ(B、上のtabs-host)と同じUSSクラスを再利用する。
             -->
             <ui:VisualElement name="right-panel" class="right-panel">
@@ -57,10 +59,8 @@
                         <ui:Label text="検証結果" class="subsection-heading" />
                         <ui:VisualElement name="validation-host" />
                     </ui:ScrollView>
-                </ui:VisualElement>
-                <ui:VisualElement name="right-inspector" class="right-inspector">
-                    <ui:Label text="インスペクタ" class="subsection-heading subsection-heading--pinned" />
-                    <ui:ScrollView name="inspector-scroll" class="right-scroll">
+                    <ui:ScrollView name="right-tab-inspector" class="right-scroll">
+                        <ui:Label text="インスペクタ" class="subsection-heading" />
                         <ui:VisualElement name="inspector-host" class="inspector-host" />
                     </ui:ScrollView>
                 </ui:VisualElement>
@@ -82,6 +82,12 @@
             <ui:VisualElement class="tool-sep" />
             <ui:Button name="status-validation" class="link-btn" />
         </ui:VisualElement>
+
+        <!-- IME(変換中文字列・診断オーバーレイ)の置き場。モーダル層(overlay-layer)とは別にする。
+             editor-ui-rework-r12.md §3.1: IME用オーバーレイをoverlay-layerの子にしていたため、
+             「overlay-layerに子がある=モーダル表示中」という判定(OnGlobalKeyDown)が常に真になり
+             ショートカット全般が効かなくなっていた。 -->
+        <ui:VisualElement name="ime-layer" class="overlay-layer" picking-mode="Ignore" />
 
         <!-- モーダル類(ファイル参照・自動保存の復元確認)の置き場 -->
         <ui:VisualElement name="overlay-layer" class="overlay-layer" picking-mode="Ignore" />

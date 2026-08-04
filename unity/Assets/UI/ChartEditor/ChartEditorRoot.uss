@@ -300,7 +300,7 @@
     background-color: var(--bg-canvas);
 }
 
-/* ---------- D: 右パネル(§2.5、editor-ui-rework-r11.md §4で再構成) ---------- */
+/* ---------- D: 右パネル(§2.5、editor-ui-rework-r12.md §1で4タブ構成に再編) ---------- */
 
 .right-panel {
     width: 300px;
@@ -311,29 +311,14 @@
     border-left-color: var(--border);
 }
 
-/* タブ側(曲/表示/結果)は残り空間を埋め、インスペクタが下に固定で残る */
+/* タブ側(曲/表示/結果/インスペクタ)は全高を使う。r11では常設インスペクタ用に
+   flex-directionをここで指定していたが、タブ統合(r12 §1)で不要になった。 */
 .right-tab-body {
     flex-grow: 1;
     min-height: 0;
-    flex-direction: column;
 }
 
 .right-scroll {
-    flex-grow: 1;
-}
-
-/* インスペクタは常設。選択内容で行数が大きく変わるため固定高にせず、
-   上限だけ決めてはみ出した分は内部スクロールに任せる(r11 §4.3)。 */
-.right-inspector {
-    flex-shrink: 0;
-    flex-direction: column;
-    max-height: 45%;
-    border-top-width: 1px;
-    border-top-color: var(--border);
-    background-color: var(--bg-panel);
-}
-
-.right-inspector .right-scroll {
     flex-grow: 1;
 }
 
@@ -345,10 +330,6 @@
     margin: 0;
     border-bottom-width: 1px;
     border-bottom-color: var(--border);
-}
-
-.subsection-heading--pinned {
-    flex-shrink: 0;
 }
 
 /* 参考画像と同じ「ラベル左・値右」の2カラム(§2.5: 現状は縦積みで間延びしている) */
@@ -520,18 +501,8 @@
     bottom: 0;
 }
 
-/* editor-ui-rework-r11.md §2.3: IME変換中の文字列をキャレット位置に重ねて表示する。
-   UITKのテキストに下線スタイルは無いためborder-bottomで代用する。 */
-.ime-composition-overlay {
-    position: absolute;
-    background-color: var(--bg-overlay);
-    color: var(--text);
-    border-bottom-width: 1px;
-    border-bottom-color: var(--accent);
-    padding: 1px 3px;
-    font-size: var(--font-sm);
-}
-
+/* editor-ui-rework-r12.md §3.2: IME変換中の文字列はTextField自身にインライン表示するため、
+   専用オーバーレイ(旧.ime-composition-overlay)は廃止した。診断表示だけ残す。 */
 .ime-debug-overlay {
     position: absolute;
     left: 4px;

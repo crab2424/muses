@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -55,6 +56,8 @@ namespace Muses.ChartTool
                 new(CommandIds.FileOpen, "ファイル", "開く", () => ShowFileModal(saveMode: false)),
                 new(CommandIds.FileSave, "ファイル", "保存", SaveChartToPath),
                 new(CommandIds.FileSaveAs, "ファイル", "別名で保存", () => ShowFileModal(saveMode: true)),
+                new(CommandIds.FileRestoreAutosave, "ファイル", "自動保存から復元", ShowRestoreModal,
+                    () => !string.IsNullOrEmpty(restoreAutosavePath) && File.Exists(restoreAutosavePath)),
 
                 new(CommandIds.EditUndo, "編集", "元に戻す", Undo, () => undoStack.Count > 0),
                 new(CommandIds.EditRedo, "編集", "やり直す", Redo, () => redoStack.Count > 0),
@@ -128,10 +131,15 @@ namespace Muses.ChartTool
             }
 
             // editor-ui-rework-r6.md §3.3(2): モーダル表示中(設定/ファイル参照/自動保存復元/
-            // キー重複確認等、いずれもoverlayLayerの子として出る)は譜面側のコマンドを一切
-            // 発火させない。旧実装はこれが無く、ファイル参照モーダルを開いた状態でSpaceを押すと
-            // 再生が始まる、数字キーでツールが切り替わる、といった穴があった。
-            if (overlayLayer.childCount > 0) return;
+            // キー重複確認等)は譜面側のコマンドを一切発火させない。旧実装はこれが無く、
+            // ファイル参照モーダルを開いた状態でSpaceを押すと再生が始まる、数字キーでツールが
+            // 切り替わる、といった穴があった。
+            // editor-ui-rework-r12.md §3.1: 判定はoverlayLayer.childCount>0からmodalDepthへ変更。
+            // IME用オーバーレイ(ImeBridge)がoverlayLayerへ常駐の子要素を追加していたため、
+            // 旧判定は起動直後から常に真になりショートカット全般が死んでいた
+            // (IME側は別層ime-layerへ分離済みだが、判定自体も要素の有無に依存させないほうが
+            // 同種の事故を再発させない)。
+            if (modalDepth > 0) return;
 
             bool primary = evt.commandKey || evt.ctrlKey;
             bool textFocused = IsTextInputFocused();

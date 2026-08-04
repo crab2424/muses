@@ -261,7 +261,13 @@ namespace Muses.Chart
         }
 
         /// <summary>addr変換には song.meters を使う（chart.bpmEventsはsong側の値なのでここでは書かない）。</summary>
-        public static void WriteChart(string path, ChartFileHeader header, ChartData chart, SongMeta song)
+        public static void WriteChart(string path, ChartFileHeader header, ChartData chart, SongMeta song) =>
+            WriteAllTextLf(path, SerializeChart(header, chart, song));
+
+        /// <summary>editor-ui-rework-r12.md §2.1。WriteChartの中身をファイルI/Oと分離した。
+        /// 自動保存の要否・復元案内の要否を「更新日時」ではなく「内容」で判断できるようにするため
+        /// （ChartEditorApp側がこれを使って文字列比較する）。</summary>
+        public static string SerializeChart(ChartFileHeader header, ChartData chart, SongMeta song)
         {
             var sb = new StringBuilder();
             sb.Append("@FORMAT     muses-chart 1\n");
@@ -324,7 +330,7 @@ namespace Muses.Chart
                 }
             }
 
-            WriteAllTextLf(path, sb.ToString());
+            return sb.ToString().Replace("\r\n", "\n");
         }
 
         /// <summary>editor-ui-rework-r2.md §6: easeは横(cellF/width)専用として据え置き、

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Chart;
@@ -105,6 +107,15 @@ namespace Muses.ChartTool
         private float lastAutosaveRealtime = -999f;
         private bool showRestorePrompt;
         private string restoreAutosavePath;
+        /// <summary>editor-ui-rework-r12.md §2.1: 「最後にディスクへ書いた(=読み込んだ/保存した/
+        /// 自動保存した)内容」。自動保存を書くか・復元を案内するかを、更新日時ではなくこれとの
+        /// 内容比較で判断する。</summary>
+        private string lastPersistedChartText = "";
+        /// <summary>editor-ui-rework-r12.md §2.4: 前回セッションがOnDestroyを経由せず終わった
+        /// (クラッシュ・強制終了)かどうか。Awakeで前回値を読んでから即falseへ落とす。</summary>
+        private bool crashedLastSession;
+        private bool quitApproved;
+        private bool pendingQuitAfterSave;
 
         // ---- ファイル状態 ----
         private string chartFilePathBuffer = "";
@@ -482,7 +493,9 @@ namespace Muses.ChartTool
             snapIndex = Mathf.Clamp(ws.snapIndex, 0, SnapDenominators.Length - 1);
             showHeightLane = ws.showHeightLane;
             showEventLane = ws.showEventLane;
-            rightTabIndex = Mathf.Clamp(ws.rightTabIndex, 0, 2);
+            // editor-ui-rework-r12.md §1: インスペクタが4枚目のタブになったため上限を3へ拡張。
+            // 値域を広げる方向の変更なので、0〜2しか入っていない古い設定ファイルからの復元も無変更で通る。
+            rightTabIndex = Mathf.Clamp(ws.rightTabIndex, 0, 3);
             workspaceSavedPxPerBeat = pxPerBeat;
             workspaceSavedSnapIndex = snapIndex;
             workspaceSavedShowHeightLane = showHeightLane;
@@ -499,7 +512,17 @@ namespace Muses.ChartTool
 
             ApplyFrameRateSetting();
             ApplyUiScale();
+
+            // editor-ui-rework-r12.md §2.4: 前回値を読んでから即falseへ落として保存する
+            // （このセッションがOnDestroyを経由せず終われば、次回起動時にfalseのまま読める＝
+            // クラッシュ/強制終了とみなす）。
+            crashedLastSession = !settings.cleanShutdown;
+            settings.cleanShutdown = false;
+            EditorSettingsStore.Save(settings);
+
             CheckUntitledAutosaveRestore();
+
+            Application.wantsToQuit += HandleWantsToQuit;
         }
 
         /// <summary>editor-ui-rework-r5.md §3.2: VSyncとtargetFrameRateは排他
@@ -660,7 +683,13 @@ namespace Muses.ChartTool
 
         private void OnDestroy()
         {
-            if (settings != null) SaveSettingsFromLiveFields();
+            Application.wantsToQuit -= HandleWantsToQuit;
+            if (settings != null)
+            {
+                // editor-ui-rework-r12.md §2.4: OnDestroyを経由した=正常終了の印。
+                settings.cleanShutdown = true;
+                SaveSettingsFromLiveFields();
+            }
             preview?.Dispose();
             imeBridge?.Dispose();
         }
@@ -691,6 +720,12 @@ namespace Muses.ChartTool
 
             try
             {
+                // editor-ui-rework-r12.md §2.1: 基準イベント補完(EnsureBase*Events)より前の、
+                // ディスク上に実在する内容をlastPersistedChartTextの初期値にする。補完後の内容と
+                // 意図的に食い違わせることで、「補完によって実際に変わった分」だけを次の自動保存が
+                // 正しく検知して1回だけ書く(r10 §3の副作用を内容比較で自然に吸収する)。
+                string rawFileText = NormalizeLf(File.ReadAllText(path));
+
                 var loadedSong = ChartSerializer.ReadSongMeta(songFilePath);
                 // editor-ui-rework-r10.md §3: 曲先頭のBPM/拍子を実データとして補う。
                 // ReadChartがsong.bpmEventsをchart.bpmEventsへ複製するので、必ずその前に呼ぶ。
@@ -710,6 +745,7 @@ namespace Muses.ChartTool
                 // （黙って補うだけだと、ノーツを触らない限り永久にファイルへ現れない）。
                 dirty = baseChartAdded;
                 songMetaDirty = baseSongAdded;
+                lastPersistedChartText = rawFileText;
                 undoStack.Clear();
                 redoStack.Clear();
                 lastAutosaveRealtime = Time.unscaledTime;
@@ -800,7 +836,11 @@ namespace Muses.ChartTool
                 // r9以前に書かれた譜面では "song.muses" のまま残っていた。書き出す曲メタの
                 // 実ファイル名と食い違うのは誤りなので、保存のたびに実体へ揃える。
                 header.songFile = ChartSerializer.SongFileName;
-                ChartSerializer.WriteChart(writePath, header, chart, song);
+                // editor-ui-rework-r12.md §2.1: WriteChartの中身(SerializeChart)を自分で呼び、
+                // 書いた内容をlastPersistedChartTextへそのまま控える(次の自動保存の比較対象)。
+                string chartText = ChartSerializer.SerializeChart(header, chart, song);
+                File.WriteAllText(writePath, chartText, new UTF8Encoding(false));
+                lastPersistedChartText = chartText;
                 // 右パネルの「情報」「音源」セクション(§2.5)は SongMeta を直接編集するので、
                 // 譜面と一緒に song.museproj も書き戻さないと編集内容が消える。
                 // song.museprojがまだ存在しない場合（新規譜面の初回保存）も、songMetaDirtyの値に
@@ -813,6 +853,10 @@ namespace Muses.ChartTool
                 chartPath = writePath;
                 chartFilePathBuffer = writePath;
                 dirty = false;
+                // editor-ui-rework-r12.md §2.1(b): 正規保存が成功した内容は自動保存より正となるため、
+                // 対応する自動保存ファイル(新形式・旧形式・untitled)を消す。「保存せず終了→毎回案内」
+                // という穴(r11以前)はこれで塞がる。
+                DeleteAutosaveArtifacts(writePath);
                 statusMessage = "保存完了";
                 // song.museprojが確定した＝曲フォルダの音源ディレクトリも確定したので、
                 // 保存した瞬間に音源が読み込まれるようにする（従来はOpenChartFromPathでしか
@@ -921,18 +965,81 @@ namespace Muses.ChartTool
         private static string AutosavePathFor(string chartPath) =>
             Path.Combine(Path.GetDirectoryName(chartPath) ?? "", "autosave", Path.GetFileName(chartPath) + ".autosave");
 
+        private static string NormalizeLf(string s) => s.Replace("\r\n", "\n");
+
+        /// <summary>editor-ui-rework-r12.md §2.2。内容の同一性判定専用（改竄検知ではないのでMD5で十分）。</summary>
+        private static string ContentHash(string text)
+        {
+            using var md5 = MD5.Create();
+            byte[] bytes = md5.ComputeHash(Encoding.UTF8.GetBytes(text));
+            var sb = new StringBuilder(bytes.Length * 2);
+            foreach (byte b in bytes) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+
+        private bool IsDismissedAutosave(string autosavePath, string contentHash)
+        {
+            foreach (var d in settings.dismissedAutosaves)
+                if (EditorSettings.PathEquals(d.autosavePath, autosavePath) && d.contentHash == contentHash)
+                    return true;
+            return false;
+        }
+
+        /// <summary>editor-ui-rework-r12.md §2.3「無視する」。内容(ハッシュ)で記録するため、
+        /// 同じ内容の間は二度と案内されず、新しい編集がまた自動保存されれば(=内容が変われば)
+        /// 改めて案内される。</summary>
+        private void DismissAutosave(string autosavePath, string contentText)
+        {
+            const int maxDismissed = 20;
+            settings.dismissedAutosaves.Add(new DismissedAutosave
+            {
+                autosavePath = autosavePath,
+                contentHash = ContentHash(contentText),
+            });
+            if (settings.dismissedAutosaves.Count > maxDismissed)
+                settings.dismissedAutosaves.RemoveAt(0);
+            EditorSettingsStore.Save(settings);
+        }
+
+        /// <summary>editor-ui-rework-r12.md §2.1(b)。正規保存が成功した後、対応する自動保存
+        /// (新形式・旧形式の真横・untitled)を消す。ここで消さないと「編集→自動保存→保存せず終了」を
+        /// 一度でもやった曲は以後毎回復元案内が出続けてしまう(r11以前の実際の不具合)。</summary>
+        private void DeleteAutosaveArtifacts(string chartFilePath)
+        {
+            try
+            {
+                string autosavePath = AutosavePathFor(chartFilePath);
+                if (File.Exists(autosavePath)) File.Delete(autosavePath);
+                string legacyPath = chartFilePath + ".autosave";
+                if (File.Exists(legacyPath)) File.Delete(legacyPath);
+                if (File.Exists(UntitledAutosavePath)) File.Delete(UntitledAutosavePath);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"自動保存ファイルの削除に失敗しました: {ex.Message}");
+            }
+        }
+
         private void TickAutosave()
         {
-            if (!autosaveEnabled || !dirty) return;
+            if (!autosaveEnabled) return;
             float intervalSec = Mathf.Max(1, autosaveMinutes) * 60f;
             if (Time.unscaledTime - lastAutosaveRealtime < intervalSec) return;
+
+            // editor-ui-rework-r12.md §2.1(a): 「最後にディスクへ書いた内容」と比較する。
+            // r10 §3で基準イベント補完だけがdirtyの原因になっていても、内容が実際に変わっていない
+            // 限りここで弾かれるため、「触っていないのに自動保存が走る」が起きない。
+            string currentText = ChartSerializer.SerializeChart(header, chart, song);
+            lastAutosaveRealtime = Time.unscaledTime;
+            if (currentText == lastPersistedChartText) return;
+
             string path = string.IsNullOrEmpty(chartPath) ? UntitledAutosavePath : AutosavePathFor(chartPath);
             try
             {
                 string dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                ChartSerializer.WriteChart(path, header, chart, song);
-                lastAutosaveRealtime = Time.unscaledTime;
+                File.WriteAllText(path, currentText, new UTF8Encoding(false));
+                lastPersistedChartText = currentText;
             }
             catch (Exception ex)
             {
@@ -940,11 +1047,14 @@ namespace Muses.ChartTool
             }
         }
 
-        /// <summary>読み込み直後に呼ぶ。autosaveの方が正規ファイルより新しければ復元を提案する。
+        /// <summary>読み込み直後に呼ぶ。editor-ui-rework-r12.md §2.3: 判定を更新日時から内容比較へ
+        /// 変更。settings.restorePromptModeで挙動を選べる。restoreAutosavePathは案内するかに関わらず
+        /// 「自動保存が存在するなら」常にセットする(ファイルメニュー「自動保存から復元…」用)。
         /// editor-ui-rework-r8.md §2.3: 新しい格納先(autosave/フォルダ)を優先し、無ければr7以前の
         /// 置き場所(譜面ファイルの真横)もフォールバックで探す（既存環境の自動保存を取りこぼさない）。</summary>
         private void CheckAutosaveRestore(string path)
         {
+            restoreAutosavePath = null;
             string autosavePath = AutosavePathFor(path);
             if (!File.Exists(autosavePath))
             {
@@ -952,18 +1062,49 @@ namespace Muses.ChartTool
                 if (!File.Exists(legacyPath)) return;
                 autosavePath = legacyPath;
             }
-            if (File.GetLastWriteTimeUtc(autosavePath) <= File.GetLastWriteTimeUtc(path)) return;
-            showRestorePrompt = true;
+
+            string autosaveText;
+            try { autosaveText = NormalizeLf(File.ReadAllText(autosavePath)); }
+            catch { return; } // 壊れたファイルで案内しない
+            if (string.IsNullOrEmpty(autosaveText)) return;
+
             restoreAutosavePath = autosavePath;
+            if (settings.restorePromptMode == RestorePromptMode.Never) return;
+
+            if (settings.restorePromptMode == RestorePromptMode.WhenDifferent)
+            {
+                string regularText = null;
+                try { regularText = NormalizeLf(File.ReadAllText(path)); } catch { /* 比較できなければ案内側へ倒す */ }
+                if (regularText != null && regularText == autosaveText) return;
+            }
+            else if (File.GetLastWriteTimeUtc(autosavePath) <= File.GetLastWriteTimeUtc(path))
+            {
+                return;
+            }
+
+            if (IsDismissedAutosave(autosavePath, ContentHash(autosaveText))) return;
+            showRestorePrompt = true;
         }
 
         /// <summary>起動直後に1回だけ呼ぶ。保存先を持たない新規譜面の自動保存ファイルが
-        /// 残っていれば復元を提案する（CheckAutosaveRestoreと違い、比較対象の正規ファイルが無い）。</summary>
+        /// 残っていれば復元を提案する（CheckAutosaveRestoreと違い、比較対象の正規ファイルが無い）。
+        /// editor-ui-rework-r12.md §2.4: 「起動した瞬間に何のプロジェクトも開いていないのに案内が
+        /// 出る」不具合の修正。crashedLastSession(前回セッションがOnDestroyを経由せず終わった)の
+        /// ときだけ案内する。それ以外(正常終了直後の起動)は黙って残すだけにする。</summary>
         private void CheckUntitledAutosaveRestore()
         {
             if (!File.Exists(UntitledAutosavePath)) return;
-            showRestorePrompt = true;
+
+            string text;
+            try { text = NormalizeLf(File.ReadAllText(UntitledAutosavePath)); }
+            catch { return; }
+            if (string.IsNullOrEmpty(text)) return;
+
             restoreAutosavePath = UntitledAutosavePath;
+            if (settings.restorePromptMode == RestorePromptMode.Never) return;
+            if (!crashedLastSession) return;
+            if (IsDismissedAutosave(UntitledAutosavePath, ContentHash(text))) return;
+            showRestorePrompt = true;
         }
 
         private void RestoreFromAutosave()
@@ -987,6 +1128,50 @@ namespace Muses.ChartTool
                 statusMessage = "復元エラー: " + ex.Message;
             }
             showRestorePrompt = false;
+        }
+
+        /// <summary>editor-ui-rework-r12.md §2.5。dirtyが無ければ確認なしで終了を許可する。
+        /// このとき残っているuntitled autosaveも掃除する(意味的には「保存すべき未保存作業は無い」
+        /// という状態なので、以前の未保存新規譜面の残骸を持ち越さない)。</summary>
+        private bool HandleWantsToQuit()
+        {
+            if (quitApproved) return true;
+            if (!dirty)
+            {
+                CleanupUntitledAutosaveOnQuit();
+                return true;
+            }
+            ShowQuitConfirmModal();
+            return false; // 一旦終了をキャンセルする。モーダルの選択後に改めてQuitApp()を呼ぶ。
+        }
+
+        /// <summary>editor-ui-rework-r12.md §2.4/§2.5。「保存すべき未保存作業が無い」状態
+        /// (dirtyでない、または保存せずに終了を選んだ)での終了時に、以前の未保存新規譜面の
+        /// 残骸(untitled autosave)を持ち越さない。EditorのStopではApplication.wantsToQuitが
+        /// 発火しないため、QuitApp/ShowQuitConfirmModal側でも個別に呼ぶ必要がある。</summary>
+        private void CleanupUntitledAutosaveOnQuit()
+        {
+            try { if (File.Exists(UntitledAutosavePath)) File.Delete(UntitledAutosavePath); }
+            catch (Exception ex) { Debug.LogWarning($"untitled自動保存の削除に失敗しました: {ex.Message}"); }
+        }
+
+        /// <summary>ShowFileModal(saveMode:true)経由の保存が完了した直後に呼ぶ。終了待ちでなければ
+        /// 何もしない。dirtyが残っていれば保存失敗とみなし終了しない(ユーザーがやり直せるように)。</summary>
+        private void TryQuitIfPendingAfterSave()
+        {
+            if (!pendingQuitAfterSave) return;
+            pendingQuitAfterSave = false;
+            if (dirty) return;
+            ApproveAndQuit();
+        }
+
+        /// <summary>editor-ui-rework-r12.md §2.5。RealQuitApp(ChartEditorApp.UI.cs)は
+        /// Editor停止/Application.Quitを吸収する共通口。quitApprovedを先に立てておくことで、
+        /// standalone側でApplication.Quit()が再度HandleWantsToQuitを呼んでも即許可される。</summary>
+        private void ApproveAndQuit()
+        {
+            quitApproved = true;
+            RealQuitApp();
         }
 
         // ---------- §3 再生位置カーソル ----------

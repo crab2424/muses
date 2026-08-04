@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Chart;
@@ -44,17 +45,20 @@ namespace Muses.ChartTool
         private const int RightTabSong = 0;
         private const int RightTabView = 1;
         private const int RightTabResults = 2;
+        // editor-ui-rework-r12.md §1: インスペクタを常設枠(max-height:45%)から4枚目のタブへ移す。
+        private const int RightTabInspector = 3;
 
         // ---- 要素の参照（BuildUIで一度だけ引く）----
         private VisualElement uiRoot;
         private VisualElement overlayLayer;
+        private VisualElement imeLayer;
         private VisualElement notesSheet;
         private VisualElement previewSurface;
         private Label hiSpeedLabel;
         private Button timelineTabButton, previewTabButton;
         private int selectedTabIndex = TabTimeline;
-        private Button rightTabSongButton, rightTabViewButton, rightTabResultsButton;
-        private VisualElement rightTabSongBody, rightTabViewBody, rightTabResultsBody;
+        private Button rightTabSongButton, rightTabViewButton, rightTabResultsButton, rightTabInspectorButton;
+        private VisualElement rightTabSongBody, rightTabViewBody, rightTabResultsBody, rightTabInspectorBody;
 
         private const int MaxSheetLabels = 128;
         private readonly List<Label> sheetLabels = new();
@@ -112,6 +116,12 @@ namespace Muses.ChartTool
         private EventKind inspectorEventKind = EventKind.None;
         private int inspectorEventIndex = -1;
 
+        // editor-ui-rework-r12.md §1.3/§1.4: インスペクタがタブ化されたことに伴う追加状態。
+        // inspectorTabVisible=falseの間は値リフレッシュ(inspectorRefreshers)を止める(§1.4)。
+        // lastInspectorHadSelectionは「空→非空」の変化検知専用(§1.3、選択中のドラッグでは切り替えない)。
+        private bool inspectorTabVisible = true;
+        private bool lastInspectorHadSelection;
+
         /// <summary>UI側からの書き込み中に同期処理が走って値が往復するのを防ぐ。</summary>
         private bool suppressUiCallbacks;
         private bool restorePromptShown;
@@ -146,7 +156,8 @@ namespace Muses.ChartTool
             }
 
             overlayLayer = uiRoot.Q<VisualElement>("overlay-layer");
-            imeBridge = new ImeBridge(uiRoot, overlayLayer);
+            imeLayer = uiRoot.Q<VisualElement>("ime-layer");
+            imeBridge = new ImeBridge(uiRoot, imeLayer);
 
             BuildMenuBar();
             BuildToolbar();
@@ -195,6 +206,12 @@ namespace Muses.ChartTool
                 menu.AddSeparator("");
                 menu.AddItem("保存", false, SaveChartToPath);
                 menu.AddItem("曲フォルダを選んで保存...", false, () => ShowFileModal(saveMode: true));
+                menu.AddSeparator("");
+                // editor-ui-rework-r12.md §2.3: restorePromptMode=確認しない でも手動で復元できる口。
+                if (!string.IsNullOrEmpty(restoreAutosavePath) && File.Exists(restoreAutosavePath))
+                    menu.AddItem("自動保存から復元...", false, () => ShowRestoreModal());
+                else
+                    menu.AddDisabledItem("自動保存から復元...", false);
                 menu.AddSeparator("");
                 menu.AddItem("終了", false, QuitApp);
             });
@@ -899,7 +916,8 @@ namespace Muses.ChartTool
 
         /// <summary>editor-ui-rework-r11.md §4: 右パネルのタブ切替。中身(info-host等)はこの前の
         /// ブロックで既に流し込み済みなので、ここではタブヘッダの生成とdisplay切替だけを持つ
-        /// （BuildTabsと同じ役割分担）。§3の作業状態(rightTabIndex)を初期表示に使う。</summary>
+        /// （BuildTabsと同じ役割分担）。§3の作業状態(rightTabIndex)を初期表示に使う。
+        /// editor-ui-rework-r12.md §1: インスペクタ用の4枚目のタブを追加。</summary>
         private void BuildRightTabs()
         {
             var header = uiRoot.Q<VisualElement>("right-tab-header");
@@ -907,17 +925,20 @@ namespace Muses.ChartTool
             rightTabSongButton = new Button(() => SelectRightTab(RightTabSong)) { text = "曲" };
             rightTabViewButton = new Button(() => SelectRightTab(RightTabView)) { text = "表示" };
             rightTabResultsButton = new Button(() => SelectRightTab(RightTabResults)) { text = "結果" };
-            foreach (var btn in new[] { rightTabSongButton, rightTabViewButton, rightTabResultsButton })
+            rightTabInspectorButton = new Button(() => SelectRightTab(RightTabInspector)) { text = "インスペクタ" };
+            foreach (var btn in new[] { rightTabSongButton, rightTabViewButton, rightTabResultsButton, rightTabInspectorButton })
                 btn.AddToClassList("tab-header-btn");
             header.Add(rightTabSongButton);
             header.Add(rightTabViewButton);
             header.Add(rightTabResultsButton);
+            header.Add(rightTabInspectorButton);
 
             rightTabSongBody = uiRoot.Q<VisualElement>("right-tab-song");
             rightTabViewBody = uiRoot.Q<VisualElement>("right-tab-view");
             rightTabResultsBody = uiRoot.Q<VisualElement>("right-tab-results");
+            rightTabInspectorBody = uiRoot.Q<VisualElement>("right-tab-inspector");
 
-            SelectRightTab(Mathf.Clamp(rightTabIndex, RightTabSong, RightTabResults));
+            SelectRightTab(Mathf.Clamp(rightTabIndex, RightTabSong, RightTabInspector));
         }
 
         private void SelectRightTab(int index)
@@ -926,9 +947,14 @@ namespace Muses.ChartTool
             rightTabSongBody.style.display = index == RightTabSong ? DisplayStyle.Flex : DisplayStyle.None;
             rightTabViewBody.style.display = index == RightTabView ? DisplayStyle.Flex : DisplayStyle.None;
             rightTabResultsBody.style.display = index == RightTabResults ? DisplayStyle.Flex : DisplayStyle.None;
+            rightTabInspectorBody.style.display = index == RightTabInspector ? DisplayStyle.Flex : DisplayStyle.None;
             rightTabSongButton.EnableInClassList("tab-header-btn--selected", index == RightTabSong);
             rightTabViewButton.EnableInClassList("tab-header-btn--selected", index == RightTabView);
             rightTabResultsButton.EnableInClassList("tab-header-btn--selected", index == RightTabResults);
+            rightTabInspectorButton.EnableInClassList("tab-header-btn--selected", index == RightTabInspector);
+            // editor-ui-rework-r12.md §1.4: 非表示タブのインスペクタ値リフレッシュを止める最適化
+            // (r11で「常に更新」に置換していたが、タブ化で再び「見えていない」状態が生まれたため復活)。
+            inspectorTabVisible = index == RightTabInspector;
         }
 
         /// <summary>
@@ -1691,6 +1717,16 @@ namespace Muses.ChartTool
             // それ以外の間はキャンバス上のドラッグ結果を各フィールドへ反映するだけにする。
             // §3: 単一選択の点だけでなく複数選択の代表点(SelectionRepresentative)が変わった
             // 場合も再構築が要る（例: 矩形選択のドラッグで代表点になる点が入れ替わる）。
+            // editor-ui-rework-r12.md §1.3: 選択が「空→非空」に変わった瞬間だけインスペクタタブへ
+            // 自動的に切り替える（選択中のドラッグのたびには切り替えない）。設定でOFFにできる。
+            bool hasSelection = selection.Count > 0 || selectedEventKind != EventKind.None;
+            if (hasSelection && !lastInspectorHadSelection && settings.autoFocusInspector
+                && rightTabIndex != RightTabInspector)
+            {
+                SelectRightTab(RightTabInspector);
+            }
+            lastInspectorHadSelection = hasSelection;
+
             var rep = SelectionRepresentative();
             Note repNote = rep?.note;
             int repIndex = rep?.index ?? -1;
@@ -1708,9 +1744,9 @@ namespace Muses.ChartTool
                 inspectorSelectionCount = selection.Count;
                 RebuildInspector();
             }
-            // editor-ui-rework-r11.md §4: インスペクタが常設になったため、以前あった
-            // 「折りたたまれている間はリフレッシュしない」最適化(foldInspector.value)は不要。
-            else if (slowTick)
+            // editor-ui-rework-r12.md §1.4: インスペクタがタブ化され、非表示中がありうるように
+            // 戻ったため、値リフレッシュは表示中のみ行う(r11 §4での「常に更新」から復帰)。
+            else if (slowTick && inspectorTabVisible)
             {
                 suppressUiCallbacks = true;
                 try
@@ -2005,6 +2041,13 @@ namespace Muses.ChartTool
 
         // ================= モーダル(ファイル参照 / 自動保存の復元) =================
 
+        /// <summary>editor-ui-rework-r12.md §3.1: 「開いているモーダルの数」を明示カウンタで持つ。
+        /// 旧実装はoverlayLayer.childCount>0で代用していたが、IME用オーバーレイ(ImeBridge)が
+        /// 常駐の子要素をoverlayLayerへ追加した結果、その判定が常に真になりショートカット全般が
+        /// 効かなくなる副作用があった。IME側は別層(imeLayer)へ分離した(§3.1)うえで、判定自体も
+        /// 「特定要素の有無」から独立させる。</summary>
+        private int modalDepth;
+
         private VisualElement ShowModal(string title)
         {
             var scrim = new VisualElement();
@@ -2016,12 +2059,15 @@ namespace Muses.ChartTool
             modal.Add(titleLabel);
             scrim.Add(modal);
             overlayLayer.Add(scrim);
+            modalDepth++;
             return modal;
         }
 
         private void CloseModal(VisualElement modal)
         {
-            modal?.parent?.RemoveFromHierarchy();
+            if (modal?.parent == null) return;
+            modal.parent.RemoveFromHierarchy();
+            modalDepth = Mathf.Max(0, modalDepth - 1);
         }
 
         // ================= 設定モーダル(editor-ui-rework-r5.md) =================
@@ -2092,6 +2138,8 @@ namespace Muses.ChartTool
                     autosaveMinutes = 5;
                     frameRateMode = 0;
                     uiScale = 1f;
+                    settings.restorePromptMode = RestorePromptMode.WhenDifferent;
+                    settings.autoFocusInspector = true;
                     ApplyFrameRateSetting();
                     ApplyUiScale();
                     break;
@@ -2119,6 +2167,15 @@ namespace Muses.ChartTool
 
             var intervalField = AddIntRow(parent, "自動保存の間隔(分)", v => autosaveMinutes = Mathf.Clamp(v, 1, 60));
             intervalField.SetValueWithoutNotify(autosaveMinutes);
+
+            // editor-ui-rework-r12.md §2.3: 復元案内の出し方を選べるようにする。
+            var restorePromptDropdown = new DropdownField
+            {
+                choices = new List<string> { "常に確認", "内容が異なる時のみ確認", "確認しない" },
+                index = settings.restorePromptMode,
+            };
+            restorePromptDropdown.RegisterValueChangedCallback(_ => settings.restorePromptMode = restorePromptDropdown.index);
+            MakePropRow(parent, "自動保存の復元を確認", restorePromptDropdown);
 
             var frameRateDropdown = new DropdownField
             {
@@ -2162,6 +2219,11 @@ namespace Muses.ChartTool
             // 診断表示。既定OFF、設定として永続化はしない(デバッグ用の一時的なトグルのため)。
             var imeDebugToggle = AddToggleRow(parent, "IME診断表示", v => imeBridge?.SetDebugOverlayEnabled(v));
             imeDebugToggle.SetValueWithoutNotify(imeBridge?.DebugOverlayEnabled ?? false);
+
+            // editor-ui-rework-r12.md §1.3: ノーツ/イベント選択時に右パネルをインスペクタタブへ
+            // 自動的に切り替えるか。「モーダルで明示的に選ぶ」設定に属する（作業状態(§3)とは別扱い）。
+            var autoFocusToggle = AddToggleRow(parent, "選択時にインスペクタへ切り替える", v => settings.autoFocusInspector = v);
+            autoFocusToggle.SetValueWithoutNotify(settings.autoFocusInspector);
         }
 
         // ---- タイムラインタブ(§4) ----
@@ -2617,6 +2679,9 @@ namespace Muses.ChartTool
                     CloseModal(modal);
                     SaveChartToPath();
                     SyncAfterFileOperation();
+                    // editor-ui-rework-r12.md §2.5: 終了確認モーダルの「保存して終了」が
+                    // 保存先未確定の新規譜面向けにこのフローへ委譲したときの続き。
+                    TryQuitIfPendingAfterSave();
                 })
                 { text = "保存" };
                 saveBtn.AddToClassList("tb-btn");
@@ -2644,11 +2709,41 @@ namespace Muses.ChartTool
             return name;
         }
 
+        /// <summary>editor-ui-rework-r12.md §2.4。旧文面「自動保存ファイルの方が新しいです」は
+        /// 何のファイルの話か分からず、untitled経路(保存先を持たない新規譜面)では特に不可解だった
+        /// （ユーザー報告の「不明なパス」の直接原因）。対象・パス・更新日時を明示する。</summary>
         private void ShowRestoreModal()
         {
             restorePromptShown = true;
             var modal = ShowModal("自動保存ファイルの復元");
-            var body = new Label("自動保存ファイルの方が新しいです。復元しますか？");
+
+            string autosaveText = null;
+            try { autosaveText = File.ReadAllText(restoreAutosavePath); } catch { /* 下のcatchで表示 */ }
+
+            bool isUntitled = EditorSettings.PathEquals(restoreAutosavePath, UntitledAutosavePath);
+            string targetDesc;
+            if (autosaveText != null)
+            {
+                try
+                {
+                    var (previewHeader, _) = ChartSerializer.ReadChart(restoreAutosavePath, song);
+                    targetDesc = string.IsNullOrEmpty(previewHeader.difficulty)
+                        ? "(難易度不明)" : $"難易度: {previewHeader.difficulty}";
+                }
+                catch { targetDesc = "(内容の解析に失敗しました)"; }
+            }
+            else
+            {
+                targetDesc = "(読み込みに失敗しました)";
+            }
+
+            var body = new Label(
+                $"自動保存ファイルが見つかりました。{targetDesc}\n" +
+                $"自動保存: {restoreAutosavePath}\n" +
+                (File.Exists(restoreAutosavePath) ? $"  更新: {File.GetLastWriteTime(restoreAutosavePath)}\n" : "") +
+                (isUntitled
+                    ? "保存先: (未確定の新規譜面。まだファイルとして保存されていません)"
+                    : $"正規ファイル: {chartPath}\n  更新: {(File.Exists(chartPath) ? File.GetLastWriteTime(chartPath).ToString() : "-")}"));
             body.AddToClassList("prop-note");
             modal.Add(body);
 
@@ -2668,11 +2763,24 @@ namespace Muses.ChartTool
                 CloseModal(modal);
                 restorePromptShown = false;
                 showRestorePrompt = false;
+                if (autosaveText != null) DismissAutosave(restoreAutosavePath, NormalizeLf(autosaveText));
             })
             { text = "無視する" };
             ignore.AddToClassList("tb-btn");
+            var discard = new Button(() =>
+            {
+                CloseModal(modal);
+                restorePromptShown = false;
+                showRestorePrompt = false;
+                try { if (File.Exists(restoreAutosavePath)) File.Delete(restoreAutosavePath); }
+                catch (Exception ex) { statusMessage = "削除エラー: " + ex.Message; }
+                restoreAutosavePath = null;
+            })
+            { text = "自動保存を削除する" };
+            discard.AddToClassList("tb-btn");
             row.Add(restore);
             row.Add(ignore);
+            row.Add(discard);
             modal.Add(row);
         }
 
@@ -2794,7 +2902,8 @@ namespace Muses.ChartTool
                 var newHeader = new ChartFileHeader { difficulty = difficulty, level = 1, charter = "", songFile = ChartSerializer.SongFileName };
                 var newChart = new ChartData();
                 ChartFormat.EnsureBaseChartEvents(newChart);
-                ChartSerializer.WriteChart(newChartPath, newHeader, newChart, newSong);
+                string newChartText = ChartSerializer.SerializeChart(newHeader, newChart, newSong);
+                File.WriteAllText(newChartPath, newChartText, new UTF8Encoding(false));
 
                 song = newSong;
                 header = newHeader;
@@ -2807,6 +2916,9 @@ namespace Muses.ChartTool
                 draggingNote = false;
                 dirty = false;
                 songMetaDirty = false;
+                lastPersistedChartText = newChartText;
+                // editor-ui-rework-r12.md §2.1(b): 新規曲もuntitled自動保存の対象を卒業したことになる。
+                DeleteAutosaveArtifacts(newChartPath);
                 undoStack.Clear();
                 redoStack.Clear();
                 lastAutosaveRealtime = Time.unscaledTime;
@@ -2852,7 +2964,67 @@ namespace Muses.ChartTool
             SyncModelToUi();
         }
 
-        private static void QuitApp()
+        /// <summary>editor-ui-rework-r12.md §2.5。未保存の変更があれば終了確認モーダルを挟む
+        /// （旧実装は無条件でQuitしていた）。実際にプロセスを終わらせる処理はRealQuitAppへ分離。</summary>
+        private void QuitApp()
+        {
+            if (!dirty) { CleanupUntitledAutosaveOnQuit(); RealQuitApp(); return; }
+            ShowQuitConfirmModal();
+        }
+
+        /// <summary>editor-ui-rework-r12.md §2.5。HandleWantsToQuit(ChartEditorApp.cs)と
+        /// QuitApp(メニュー「終了」)の両方から呼ばれる。「保存先が未確定の新規譜面」で
+        /// 「保存して終了」を選んだ場合はShowFileModal(saveMode:true)へ委譲し、保存完了は
+        /// TryQuitIfPendingAfterSaveが拾う（このモーダル自身は先に閉じる）。
+        /// Application.wantsToQuitの×ボタン経由での発火はmacOS実機でしか確認できない
+        /// （設計時点で明記済み、[[muses-unity-port-progress]]参照）。</summary>
+        private void ShowQuitConfirmModal()
+        {
+            var modal = ShowModal("未保存の変更があります");
+            var body = new Label("保存せずに終了すると、直前の変更が失われます。");
+            body.AddToClassList("prop-note");
+            modal.Add(body);
+
+            var row = new VisualElement();
+            row.AddToClassList("modal-row");
+
+            var saveAndQuit = new Button(() =>
+            {
+                CloseModal(modal);
+                if (string.IsNullOrEmpty(chartFilePathBuffer))
+                {
+                    pendingQuitAfterSave = true;
+                    ShowFileModal(saveMode: true);
+                }
+                else
+                {
+                    SaveChartToPath();
+                    pendingQuitAfterSave = true;
+                    TryQuitIfPendingAfterSave();
+                }
+            })
+            { text = "保存して終了" };
+            saveAndQuit.AddToClassList("tb-btn");
+
+            var discardAndQuit = new Button(() =>
+            {
+                CloseModal(modal);
+                CleanupUntitledAutosaveOnQuit();
+                ApproveAndQuit();
+            })
+            { text = "保存せず終了" };
+            discardAndQuit.AddToClassList("tb-btn");
+
+            var cancel = new Button(() => CloseModal(modal)) { text = "キャンセル" };
+            cancel.AddToClassList("tb-btn");
+
+            row.Add(saveAndQuit);
+            row.Add(discardAndQuit);
+            row.Add(cancel);
+            modal.Add(row);
+        }
+
+        private static void RealQuitApp()
         {
 #if UNITY_EDITOR
             UnityEditor.EditorApplication.isPlaying = false;
