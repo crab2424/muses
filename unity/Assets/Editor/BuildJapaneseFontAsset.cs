@@ -13,8 +13,8 @@ using UnityEngine.UIElements;
 // 容量調査でTextMeshProパッケージ自体は削除済みだが、そちらとは別物でパッケージ不要)。
 public static class BuildJapaneseFontAsset
 {
-    private const string FontPath = "Assets/UI/ChartEditor/Fonts/NotoSansJP-Variable.ttf";
-    private const string FontAssetPath = "Assets/UI/ChartEditor/Fonts/NotoSansJP SDF.asset";
+    private const string FontPath = "Assets/UI/ChartEditor/Fonts/NotoSansJP-Regular.ttf";
+    private const string FontAssetPath = "Assets/UI/ChartEditor/Fonts/NotoSansJP-Regular SDF.asset";
     private const string TextSettingsPath = "Assets/UI/ChartEditor/Fonts/ChartEditorTextSettings.asset";
     private const string PanelSettingsPath = "Assets/UI/ChartEditor/PanelSettings.asset";
 

@@ -14,11 +14,12 @@ MonoBehaviour:
   m_EditorClassIdentifier: UnityEngine.dll::UnityEngine.UIElements.PanelTextSettings
   m_Version: 
   m_ShowObsoleteProperties: 0
-  m_DefaultFontAsset: {fileID: 11400000, guid: 2d02826011a754df0966da66ddfee4cc, type: 2}
+  m_DefaultFontAsset: {fileID: 11400000, guid: ba68e63c20adf48d9a6f2eb516231708, type: 2}
   m_DefaultFontAssetPath: Fonts & Materials/
   m_FallbackFontAssets:
   - {fileID: 0}
   - {fileID: 11400000, guid: 2d02826011a754df0966da66ddfee4cc, type: 2}
+  - {fileID: 11400000, guid: ba68e63c20adf48d9a6f2eb516231708, type: 2}
   m_MatchMaterialPreset: 0
   m_MissingCharacterUnicode: 0
   m_FallbackOSFontAssets: []
