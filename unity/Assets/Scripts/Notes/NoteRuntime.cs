@@ -38,5 +38,13 @@ namespace Muses.Notes
         /// 不成立に終わった場合のフォールバック判定に使う。移動なし・枠内更新ありならGOOD）。
         /// </summary>
         public bool flickEnterSeen;
+
+        /// <summary>
+        /// note-spec.md §6.4「Ex Tap 巻き込みルール」（rev.7）。Tap/Slide始点専用:
+        /// 譜面上で同時刻・同一層・セル範囲が交差する Ex Tap が存在するか（ロード時にprecompute）。
+        /// true なら実際の入力に関わらず常に PERFECT+ とみなす。chainExempt は引き継がない
+        /// （実効窓自体は縦連判定で通常どおり削られる。窓の中に入力があった場合のティアだけが変わる）。
+        /// </summary>
+        public bool exBoosted;
     }
 }

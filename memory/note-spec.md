@@ -1,6 +1,6 @@
-# muses ノーツ仕様（Phase 1 / 2026-08-02 改訂 rev.6）
+# muses ノーツ仕様（Phase 1 / 2026-08-04 改訂 rev.7）
 
-対象: **Tap / Ex Tap / Slide / Flick** と、Slide に付く**中継点**。
+対象: **Tap / Ex Tap / Slide / Flick / Riser（層跨ぎ）** と、Slide に付く**中継点**。
 目的は「今あるものを確定させる」ことに加えて、**今後ノーツ種別が増えても
 データモデル・描画・判定のどれも作り直さずに済む形にする**こと。
 
@@ -34,6 +34,14 @@
 > 不具合の原因になっていた。`cellF` は常に「帯の左端」、`cellF + width` が右端。
 > §1.1 に明記（従来どこにも書かれていなかった）。保存済みの `.muses` 譜面は
 > リポジトリ内に存在しなかったため、移行はデモ譜面（`ChartBuilder`）のみで完結した。
+>
+> rev.7 の主な変更（`memory/game/game-rework-r1.md` で決定）: **Ex Tap の巻き込みルールを
+> 改訂**（§6.4）。従来「同時刻グループはまとめて解決するがティアは個別」だったところを、
+> **「譜面上でセル範囲が交差する同時刻の Tap / Slide 始点は、入力に関わらず常に PERFECT+
+> とみなす」に変更**（rev.6 までの記述を撤回）。**新種別 `Riser`（層跨ぎ、地上⇄空中）を追加**
+> （§4.6）。`Waypoint` に `layerTo` を新設し、Presence 駆動＋移動量判定という
+> Flick の判定機構を再利用しつつ、方向制約（上向き/下向き）と handoff（成立後の一定時間、
+> 後続 Slide 始点の包含判定・駆動を緩和する）を追加した。
 
 ---
 
@@ -96,6 +104,7 @@
 | **Slide 始点** | **連続座標**（`(cellF, layerF)`） | **枠内更新**（Tap と同じ） |
 | **Slide 継続コンボ点** | **連続座標** | コンボ点の時刻（占有駆動、§2.4） |
 | **Flick** | **連続座標** + 移動量 | 移動量が閾値を超えた瞬間（§4.4 で枠内更新も見る） |
+| **Riser** | **連続座標** + 縦移動量 | 縦移動量が閾値を超えた瞬間（Flick と同じ機構、§4.6） |
 
 **Slide 始点は「Tap と同じ枠内更新で駆動されるが、包含判定は連続座標」**という組み合わせを取る。
 
@@ -139,14 +148,15 @@ Slide / Flick の包含判定を連続にする理由:
 
 ```
 Note {
-  kind        : NoteKind        // Tap / ExTap / Slide / Flick / …（プリセットの選択）
+  kind        : NoteKind        // Tap / ExTap / Slide / Flick / Riser / …（プリセットの選択）
   scrollGroup : int             // スクロールグループ（§5.5）。既定 0
-  points      : Waypoint[]      // Tap/ExTap/Flick は1個、Slide は2個以上
+  points      : Waypoint[]      // Tap/ExTap/Flick/Riser は1個、Slide は2個以上
 }
 
 Waypoint {
   tick        : int             // 譜面先頭からの累積 tick（§5）
   layerF      : float           // 0=地上 … 1=空中（連続値）
+  layerTo     : float           // Riser 専用: 移動先の層（連続値）。Riser 以外は layerF と同値、未使用（rev.7、§4.6）
   cellF       : float           // 帯の左端（連続値）。右端は cellF + width。全種別で共通の基準（rev.6）
   width       : float           // この点における帯の幅（セル数）
   easing      : Easing          // 「この点から次の点まで」の cellF/width（横方向）の補間種別。既定 Linear
@@ -156,7 +166,9 @@ Waypoint {
 }
 ```
 
-- **Tap / Ex Tap / Flick** は `points.Length == 1` の退化形。幅は始点の `width`。
+- **Tap / Ex Tap / Flick / Riser** は `points.Length == 1` の退化形。幅は始点の `width`。
+  **Riser のみ例外的に `layerF ≠ layerTo` を取り**、「時間的な広がりを持たない縦移動」を
+  1点で表す（§4.6。同時刻2 Waypoint ではなく1点＋`layerTo` を選んだ理由も同節）。
 - **Slide** は `points.Length >= 2`。始点 = `points[0]`、終点 = `points[^1]`、
   間にあるものがすべて**中継点**。
 - 幅を点ごとに持たせることで「始点・中継点・終点で幅を変更可能」を満たす。
@@ -214,10 +226,15 @@ Waypoint {
 | **Ex Tap** | 1  | `Contact` | None | None | **Cell** | **AllPerfect** | **true** |
 | **Slide**  | ≥2 | `Contact` | **Ticks** | None | **Continuous** | Normal | false |
 | **Flick**  | 1  | `Presence` | None | **Flick** | **Continuous** | Normal | false※ |
+| **Riser**  | 1  | `Presence` | None | **Flick** | **Continuous** | Normal | false※ |
 
-※ Flick は `chainExempt = false` だが、**早い側だけ中点分割を適用しない**という
+※ Flick / Riser は `chainExempt = false` だが、**早い側だけ中点分割を適用しない**という
 片側だけの例外を持つ（§6.2）。属性としての真偽値では表せないので、
 `chainExempt` を将来 `None / Early / Both` の3値に昇格させる余地を残す。
+Riser と Flick はトレイト表の上では同一の行になる（`motion = Flick` を共有し、
+実装上も同じ判定機構を再利用する）。両者の違いは移動方向の制約と閾値の測り方
+（Flick は `√(Δu²+Δv²)`、Riser は `Δv` 単独）にあり、これは属性ではなく §4.6 の
+個別ロジックで扱う。
 
 **新種別を足す手順**: `NoteKind` に値を足し、この表に1行足し、必要なら
 見た目用のパラメータ構造体を足す。判定側は属性を見て動くので `switch` は増えない。
@@ -233,6 +250,9 @@ Waypoint {
 - 通常 Tap とは**色などの見た目で区別**する。
 - 用途: Slide 追従中の指による誤爆が起きうる位置に置いて、巻き込まれても最高判定にする（§6.3）。
 - スコア上は PERFECT+ なので `1.01` 倍で加算される（§7）。
+- **同時刻でセル範囲が交差する通常 Tap / Slide 始点も PERFECT+ に引き上げる**
+  （rev.7、§6.4「Ex Tap 巻き込みルール」）。これは自身の窓の話（本節）とは別の、
+  ノーツ間の関係についての規則。
 
 ---
 
@@ -433,7 +453,131 @@ Visible 中継点によってこれより密になるのは許容する（§2.2�
 |---|---|---|
 | `flickDistance` | 成立に必要な NDC 上の移動量 | **0.5 セル幅（現行値で 0.0725）** |
 | `flickWindowMs` | その移動を行うべき時間窓 | **未定**（仮 120 ms、実機で決定） |
-| `flickDirection` | `Any` / `Left` / `Right` / `Up` / `Down` | **`Any` のみ実装**（他はフィールドのみ予約） |
+| `flickDirection` | `Any` / `Left` / `Right` / `Up` / `Down` | Flick は **`Any` のみ実装**。`Up`/`Down` は rev.7 で Riser（§4.6）が使用（Flick 自体は引き続き `Any` のみ） |
+
+---
+
+## 4.6 Riser / Diver（層跨ぎノーツ、rev.7 で追加）
+
+### 4.6.1 位置づけ
+
+**「垂直化した Slide」ではなく、独立した新 `NoteKind`。**
+「時間差 0 で層を移動する」という要求（ワールド空間で判定線に平行な**垂直な壁**）は
+時間で掛ける既存の Slide 機構（`ChartMath.At` の区間補間、`PushSlideBand` の時間スイープ、
+`ResolveSlideComboPoints` の刻み生成）と根本的に相容れない。**`ChartMath.At` は
+`b.time == a.time` のとき `k = 0` を返す実装**（同一時刻の2点を許すと常に始端の値しか
+返らない）なので、Slide の Waypoint を2点同時刻にする案は実装上も破綻する。
+`points.Length == 1` の Tap/Flick と同じ退化形に留め、**移動先の層を `Waypoint.layerTo` で
+持つ**ことで、既存の時間掛けコードに一切手を入れずに済む。
+
+**用途（想定フロー）**: 「地上 Tap → 同地点で Riser（垂直フリック）→ 空中 Slide」のように、
+1本の指が層を移動しながら別の種別へ繋がる操作を書けるようにする。この一連の流れが
+成立することが以下の設計要件になっている。
+
+- `Riser`: `layerTo > layerF`（地上→空中方向）。
+- `Diver`: `layerTo < layerF`（空中→地上方向）。
+  **`NoteKind` は `Riser` 1つで、方向は `layerTo` の大小関係のみで決まる**
+  （`Diver` を独立した kind にするかは§9の未決事項。判定・描画コードは kind を分岐せず
+  `layerTo - layerF` の符号だけで動く設計にする）。
+- **部分的な層移動を許す**（例 `layerF=0, layerTo=0.5`）。`layerF` は全体を通して連続値であり、
+  ここだけ地上/空中の二値に限定する理由がない。
+
+### 4.6.2 成立条件・閾値
+
+**「枠内に接触点が存在」かつ「直近 `flickWindowMs` の `Δv`（符号付き）が閾値を超えた」**。
+Flick（§4.1）と同じ Presence 駆動・同じリングバッファ機構を再利用するが、次の3点が違う:
+
+1. **方向制約**: `layerTo > layerF` なら `Δv > 0`（上向き）のみ、`layerTo < layerF` なら
+   `Δv < 0`（下向き）のみを見る。Flick の `flickDirection = Any`（ユークリッド距離、方向不問）
+   とは異なり、Riser は `Δv` 単独かつ符号を問う。
+2. **閾値**: `riserDistance = 0.5 × (vSkyJudge - vGroundJudge) × riserReachFrac`。
+   **「`layerTo` まで到達させる」ではなく「絶対 `layerF` で 0.5 に到達すること」を基準とし、
+   `riserReachFrac` はその基準に対する倍率**（`note.layerF`/`layerTo` の値には依らない）。
+   `riserReachFrac` の既定は **1.0**（＝現行パラメータで `layerF 0.5` 相当 ＝ 0.45 NDC ≒
+   11インチ横持ちで約 40mm。ユーザー選択「空中側に届くまで」の実測値）。
+   **Why 0.5 を基準にするか**: §4.6.4 の包含判定（`layerJudgeRadius = 0.5`）と噛み合わせるため。
+   `layerTo` までの到達を要求する案（例えば地上→空中で 0.9 NDC ≒ 80mm）も検討したが、
+   ユーザーが実際に選んだのは 40mm 相当の値だったため、それを基準値として明文化した。
+3. **窓・フォールバックは Flick と完全に同じ**（§4.3 の早い側非対称、§4.4 のフォールバック表を
+   そのまま適用）。
+
+### 4.6.3 包含判定
+
+始端の層側で、Tap/Slide と同じ形の判定を使う:
+
+```
+|contact.layerF - wp.layerF| ≤ layerJudgeRadius
+∧ contact.cellF ∈ [wp.cellF, wp.cellF + wp.width]
+```
+
+**移動の起点が枠内にあればよく、終点の位置は問わない**（§4.6.2 の閾値は移動量のみを見るため）。
+
+### 4.6.4 handoff（後続 Slide 始点への引き継ぎ）
+
+**構造上の問題**: 現行 `flickDistance`（0.0725 NDC）では、指は `layerF ≈ 0.081` までしか
+進まない。空中 Slide 始点の包含判定（`layerJudgeRadius = 0.5`）には
+`|1 - 0.081| = 0.919 > 0.5` で届かず、さらに層の離散境界 `vSplit`
+（`layerF = 0.722` 相当）を越えないと `EnterEvent` 自体が発火しない。
+**駆動（EnterEvent）と包含判定の両方が独立した壁として立ちはだかる**ため、
+Riser の閾値を引き上げる（§4.6.2）だけでは後続 Slide への接続が成立しない。
+
+**解**: Riser が成立した接触に、**一定時間だけ「終端の層にいる」とみなす handoff を記録する**。
+
+```
+Contact {
+  ...既存...
+  layerHandoffUntil : float   // この時刻まで handoff 有効（songTime 基準の秒）
+  layerHandoffTo    : float   // みなす layerF（Riser の layerTo）
+}
+```
+
+- **書き込み**: Riser 成立の瞬間、`layerHandoffTo = wp.layerTo`,
+  `layerHandoffUntil = songTime + handoffWindowMs` を書く。
+- **読み出し**: handoff が有効な間、包含判定・`EnterEvent` 生成の両方で接触の `layerF` を
+  `layerHandoffTo` に読み替える（実際の `layerF` は上書きしない）。
+- **駆動**: handoff 成立の瞬間、**その接触について終端層での `EnterEvent` を1回合成して
+  発火する**（Judge 側の構造を変えず、入力層だけで完結させるため）。
+- **失効**: `handoffWindowMs` 経過、接触の解放、または実際の `layerF` が自力で
+  `layerHandoffTo` に到達したとき。
+- `handoffWindowMs` の既定は **200ms**（`flickWindowMs` と同じく実機で決める仮値）。
+
+**誤爆リスク**: handoff 中は「空中にいる」とみなされるため、その間に空中の別ノーツを
+踏む可能性がある（§6.3 と同種の問題）。Ex Tap を置く／レギュレーションで縛る、という
+既存の対処がそのまま使える。rev.7 で Ex 巻き込みルール（§6.4）の救済力が上がっているため、
+handoff との組み合わせでの誤爆耐性は以前より良い。
+
+### 4.6.5 スコア・縦連判定
+
+- **コンボ点は1**（Tap/Flick と同じ、`points.Length == 1` なので §2.2 のコンボ点生成の対象外）。
+- **縦連判定**: Flick と同じ扱い（対象集合 T に加え、早い側のみ免除。§6.2）。
+- **Ex 巻き込み（§6.4）の対象外**: 駆動が「移動量の閾値超過」で Tap/Slide 始点と異なるため
+  （Flick が対象外なのと同じ理由）。
+
+### 4.6.6 描画
+
+**時刻を1つだけ持つ垂直な壁**として描く（Slide の時間スイープ帯とは別の生成関数）。
+
+- 頂点の奥行きは全頂点で同一時刻から算出する（＝ワールド空間で判定線に平行な垂直面）。
+- `layerF ∈ [layerF, layerTo]` を8〜16分割（直線移動なので曲率による分割数調整は不要）。
+- 各分割点で `u = UAt(cellF)` / `UAt(cellF + width)` の2点。**層ごとに `LaneX` の収束補正 `c`
+  が変わる**ため、壁の左右端はワールド空間では厳密な垂直線にならない（正しい挙動。
+  `unity-stage-port-design.md` の「最遠端でワールド x は層ごとに違う」と同じ理由）。
+- `nearOf(layerF)` も層ごとに補間する。
+- **`renderQueue` は既存の Notes 帯（3010）をそのまま使う**（設計時点では専用の renderQueue 3012 を
+  割り当てる想定だったが、実装時に判明: Riser は Tap/Slide と同じ `NoteView` 単一 Mesh/Material
+  （`NotesRenderQueue = 3010`）に頂点を追加する構造で、種別ごとに別 MeshRenderer を持たない。
+  renderQueue はメッシュ単位で決まるため、新規の値は不要だった）。
+
+**視認性の懸念（実機確認が必要）**: 壁は判定線に平行な垂直面なので、カメラ正面から見ると
+薄い面になる。タップノーツで踏んだ「遠方でサブピクセル化して点滅」の罠と同種のリスクが
+あるが、壁は画面上で縦に長いため厚み方向の縮退は起きにくいと予想している。
+
+### 4.6.7 パラメータ
+
+| 名前 | 意味 | 値 |
+|---|---|---|
+| `riserReachFrac` | 絶対 `layerF=0.5` 到達を基準1.0とする倍率（§4.6.2） | **仮 1.0**（実機で決定） |
+| `handoffWindowMs` | Riser 成立後、handoff が有効な時間窓 | **仮 200 ms**（実機で決定） |
 
 ---
 
@@ -583,7 +727,7 @@ JudgeTier[] = [ (name, halfWidthMs, scoreWeight, comboBreak) ]
 **規則**:
 
 ```
-対象集合 T = { Tap, Ex Tap, Flick, Slide の始点 }
+対象集合 T = { Tap, Ex Tap, Flick, Riser, Slide の始点 }
 
 ノーツ N ∈ T について、同一 layer かつセル範囲が交差する N' ∈ T のうち、
   prev(N) = t_{N'} < t_N を満たす最近傍
@@ -602,7 +746,7 @@ JudgeTier[] = [ (name, halfWidthMs, scoreWeight, comboBreak) ]
 - **`chainExempt = true`（Ex Tap）は自身の窓を切られない**（実効窓 = 素の窓 ±100ms）。
   ただし**他ノーツの `prev` / `next` としては機能する**。つまり Ex Tap の隣の通常 Tap は
   Ex Tap との中点で削られる。Ex Tap 側だけが得をする非対称な関係で、これは意図的。
-- **Flick は早い側だけ免除**: `loBound` を適用せず、`hiBound` のみ適用する。
+- **Flick / Riser は早い側だけ免除**: `loBound` を適用せず、`hiBound` のみ適用する。
   早い分がすべて PERFECT+（§4.3）である仕様と揃える。
 
 **その他**:
@@ -681,13 +825,39 @@ Tap を誤爆しうるが、これは**想定内**とする。対策は次の2�
 2. **1回の枠内更新で、該当するノーツをすべて同時に解決する。**
    対象は「**同じ枠内更新で駆動される**（§0.2）＋ **同時刻** ＋ **入力位置が包含判定を満たす**」
    ノーツの全体。すなわち **Tap / Ex Tap / Slide 始点**。
-   **Flick は駆動が「移動量の閾値超過」で異なるため、同時刻でも独立に判定する。**
+   **Flick / Riser は駆動が「移動量の閾値超過」で異なるため、同時刻でも独立に判定する。**
 
-3. **`dt` は共通だが、ティアは同じとは限らない。**
-   まとめて解決されるのは「同じ入力イベントで、同じ `dt` を使って」という意味であって、
-   結果のティアが揃うわけではない。同時刻に通常 Tap と Ex Tap を交差配置した場合、
-   同じ `dt` でも Ex Tap は PERFECT+（`judgeProfile = AllPerfect`）、
-   通常 Tap は `dt` 相応のティアになる。
+3. **Ex Tap 巻き込みルール（rev.7 で改訂）**:
+   **同時刻に Tap（または Slide 始点）と Ex Tap がセル範囲で交差している場合、
+   ノーツは両方とも有効なまま、判定は全て Ex Tap（PERFECT+）とみなす。**
+
+   > rev.6 までは「`dt` は共通だがティアは同じとは限らない（Ex Tap だけ PERFECT+、
+   > 通常 Tap は `dt` 相応のティア）」としていたが、rev.7 でこれを撤回し、
+   > **交差する通常 Tap 側もまとめて PERFECT+ に引き上げる**方式に変更。
+
+   **判定基準は「譜面上で交差しているか」のみで、実行時にその入力が Ex Tap のセル範囲に
+   実際に触れたかどうかは問わない。** ロード時に静的に決まる関係として precompute する:
+
+   ```
+   ∃ Ex Tap E:
+       |A.time - E.time| < ε           // 同時刻。ε = 1e-4 秒
+     ∧ A と E が同じ層                  // §6.2「層が違えば無関係」と同じ
+     ∧ A と E のセル範囲が交差する
+     → A（Tap または Slide 始点）は exBoosted = true
+   ```
+
+   セル範囲の交差は A の種別で判定式が異なる:
+   - A が離散（Tap / Ex Tap）: `[cellA, cellA+wA)` と `[cellE, cellE+wE)` の区間交差。
+   - A が連続（Slide 始点）: `[cellF, cellF+width]` と `[cellE, cellE+wE)` の区間交差、
+     かつ `|A.layerF - (E の層を0/1とした値)| ≤ layerJudgeRadius`。
+
+   **`exBoosted` は `chainExempt` を引き継がない。** 実効窓（§6.2）は通常どおり縦連判定で
+   削られたままで、ブーストが効くのは**その窓の中に入力があった場合のティアだけ**。
+   **Why**: 引き継ぐと Ex Tap を1枚重ねるだけで縦連判定を回避でき、§6.2 冒頭に書いた
+   「グループ全体を縦連判定から外すことはしない」という原則が骨抜きになる。
+
+   **Flick / Riser には適用しない**（規則2と同じ理由で、そもそも同時刻グループの
+   まとめ解決の対象外）。
 
 4. **コンボ・スコアはノーツの数だけ加算する。**
    1回の入力で2ノーツ解決すればコンボは2進み、スコアも2ノーツ分入る。
@@ -698,6 +868,8 @@ Tap を誤爆しうるが、これは**想定内**とする。対策は次の2�
 （交差部分を押せば両方が該当し、片方だけの範囲を押せば片方だけが該当する）。
 現行 `Judge.OnEnter` は「候補から `|dt|` 最小のノーツを1つ選ぶ」実装なので、
 **選んだノーツと同時刻の該当ノーツもまとめて解決する**よう変更が要る。
+Ex 巻き込み（`exBoosted`）は縦連判定の実効窓と同様、**ロード時に precompute**する
+（`Judge.Prepare()` に追加。実行時コストはゼロ）。
 
 **エディタ要件**: セル範囲の交差は**意図的な配置**なので、警告ではなく
 **交差している範囲をハイライト表示する**情報提示とする（作者が交差の有無を目視できればよい）。
@@ -754,6 +926,20 @@ NP = 1,000,000 / N        // N = 総ノーツ数
 **依存順**: `1 → 2 → 3` を先に固めてから `4〜16` に進む。
 データモデルが確定する前に判定や描画に手を付けると全部作り直しになる。
 
+### 8.1 rev.7 での追加差分（`memory/game/game-rework-r1.md` 参照）
+
+| # | 変更 | 影響ファイル |
+|---|---|---|
+| 17 | Ex Tap 巻き込み（`exBoosted` の precompute、§6.4） | `Gameplay/Judge.cs`, `Chart/ChartNote.cs` |
+| 18 | `Waypoint.layerTo`、`NoteKind.Riser` の追加（§1.1, §4.6.1） | `Chart/ChartNote.cs`, `Chart/ChartSerializer.cs` |
+| 19 | Riser の判定（Flick 機構の拡張、方向制約・閾値・§4.6.2〜4.6.4） | `Gameplay/Judge.cs`, `TouchInput/Contact.cs`, `TouchInput/TouchInputManager.cs` |
+| 20 | handoff（`Contact.layerHandoffUntil/To`、終端層での `EnterEvent` 合成、§4.6.4） | `TouchInput/*`, `Gameplay/Judge.cs` |
+| 21 | Riser の描画（layerF スイープの壁ジオメトリ、renderQueue 3012、§4.6.6） | `Notes/NoteGeometry.cs`, `Notes/NoteView.cs` |
+
+**依存順**: `18 → 19 → 20` を先に固めてから `21` に進む（データモデル → 判定 → 描画、
+Phase 1 と同じ順序の原則）。`17` は独立して先に着手できる（最小・`JudgeSmokeTest` で
+Unity Editor を開かずに検証できる）。
+
 ---
 
 ## 9. 未決事項
@@ -767,3 +953,17 @@ NP = 1,000,000 / N        // N = 総ノーツ数
    - BPM 境界／`comboStep` 上書き点に Visible 中継点が無い場合の**警告**（§2.3）
    - 同一層でセル範囲が交差するノーツの**ハイライト表示**（§6.4。禁止ではなく情報提示）
    - Tap / Ex Tap は整数セルへスナップ、Slide の幅は 0.5 / 1.0 セル刻みへスナップ（§1.1）
+6. **Diver を独立した `NoteKind` にするか、`Riser` の `layerTo < layerF` で表すか**（rev.7、
+   §4.6.1）。譜面フォーマット・エディタのノーツパレット設計に関わるので、エディタ側の
+   Riser 対応に着手するときに合わせて決めたい。現状のコード（判定・描画）は
+   kind を分岐せず符号だけで動く設計にしてあるので、どちらに転んでも実装への影響は小さい。
+7. **`riserReachFrac` / `handoffWindowMs` の実値**（rev.7、§4.6.7。仮 1.0 / 200ms）。
+   `flickWindowMs`・`layerJudgeRadius` と同じ「実機で決める」グループ。
+8. **Riser を単体（前後に何も無い状態）で置いたときの操作感**（rev.7）。
+   40mm 前後のストロークを要求するので高 BPM の連打には使えない。
+   譜面レギュレーションとして最小間隔を決める必要があるかもしれない。
+9. **handoff 中の指が空中で「押しっぱなし」になっている状態の扱い**（rev.7、§4.6.4）。
+   Riser 成立後に指を離さず層の途中で止まると、handoff 失効後は実 `layerF` に戻る。
+   このとき後続 Slide の追従が続くかは実 `layerF` と `layerJudgeRadius` の関係次第で、
+   余裕が小さいケースがありうる。実機で「Riser の後、指が自然にどこで止まるか」を
+   計測してから `layerJudgeRadius` を見直すのがよい。

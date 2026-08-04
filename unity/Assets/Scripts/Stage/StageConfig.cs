@@ -73,6 +73,16 @@ namespace Muses.Stage
         /// <summary>note-spec.md §4.5。Flickの移動量を測る時間窓 (ms)。実値未確定（仮120ms）。</summary>
         public float flickWindowMs;
         /// <summary>
+        /// note-spec.md §4.6.2/§4.6.7（rev.7）。Riserの成立に必要な終端層への到達割合。
+        /// 実効下限として「layerFで0.5に到達」を別途課すため、これは主に上振れ調整用。実値未確定（仮1.0）。
+        /// </summary>
+        public float riserReachFrac;
+        /// <summary>
+        /// note-spec.md §4.6.4（rev.7）。Riser成立後、接触の layerF を終端層とみなす handoff の有効時間 (ms)。
+        /// 後続Slide始点への引き継ぎに使う。実値未確定（仮200ms）。
+        /// </summary>
+        public float handoffWindowMs;
+        /// <summary>
         /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
         /// （実機の出力レイテンシ分、判定を「音が実際に鳴った後」にずらす想定）。
         /// 実機キャリブレーション用の値なので <see cref="OffsetSettings"/> でPlayerPrefsに永続化する。
@@ -140,6 +150,8 @@ namespace Muses.Stage
             splitHysteresis = 0.05f,
             layerJudgeRadius = 0.5f,
             flickWindowMs = 120f,
+            riserReachFrac = 1f,
+            handoffWindowMs = 200f,
             judgeOffsetMs = 0f,
             visualOffsetMs = 0f,
 

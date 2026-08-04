@@ -10,6 +10,10 @@ namespace Muses.Chart
         ExTap,
         Slide,
         Flick,
+        /// <summary>note-spec.md §4.6（rev.7）。層跨ぎ（地上⇄空中）。方向は Waypoint.layerTo の
+        /// layerF との大小関係のみで決まる（Riser: layerTo&gt;layerF、Diver: layerTo&lt;layerF）。
+        /// kind としては1つに統一（§4.6.1、Diver独立kind化は未決事項）。</summary>
+        Riser,
     }
 
     /// <summary>note-spec.md §1.2。区間補間の種別。任意の数式は許さず列挙型に限定する。</summary>
@@ -79,6 +83,14 @@ namespace Muses.Chart
                 startTrigger = StartTrigger.Presence, sustain = Sustain.None, motion = Motion.Flick,
                 resolution = Resolution.Continuous, judgeProfile = JudgeProfile.Normal, chainExempt = false,
             },
+            [NoteKind.Riser] = new NoteTraits
+            {
+                // note-spec.md §4.6.1（rev.7）。Flickと同じ行（motion=Flick機構を再利用）。
+                // 方向制約・閾値の測り方の違いはJudge側の個別ロジックで扱う（属性としては追加しない）。
+                // chainExemptの扱いもFlickと同じ片側例外（早い側のみ免除、§4.6.5）。
+                startTrigger = StartTrigger.Presence, sustain = Sustain.None, motion = Motion.Flick,
+                resolution = Resolution.Continuous, judgeProfile = JudgeProfile.Normal, chainExempt = false,
+            },
         };
 
         public static NoteTraits Of(NoteKind kind) => Table[kind];
@@ -93,6 +105,8 @@ namespace Muses.Chart
     {
         public int tick;
         public float layerF;
+        /// <summary>note-spec.md §1.1/§4.6（rev.7）。Riser専用: 移動先の層。Riser以外はlayerFと同値・未使用。</summary>
+        public float layerTo;
         public float cellF;
         public float width;
         /// <summary>この点から次の点までの cellF / width（横方向）の補間種別。既定 Linear（note-spec.md §1.2）。</summary>

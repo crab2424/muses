@@ -342,16 +342,20 @@ namespace Muses.Chart
             if (wp.easingH != wp.easing) opts.Add($"easeh={EasingToStr(wp.easingH)}");
             if (wp.marker != WaypointMarker.None) opts.Add($"mark={MarkerToStr(wp.marker)}");
             if (wp.comboStep.HasValue) opts.Add($"combo={wp.comboStep.Value}");
+            // note-spec.md §1.1（rev.7）: layerTo は Riser 専用。それ以外は常に layerF と同値なので出力しない。
+            if (wp.layerTo != wp.layerF) opts.Add($"to={LayerToStr(wp.layerTo)}");
         }
 
         /// <summary>easeh省略時はeaseを両軸に流用する（既存譜面はease=1個のままで横高さとも
-        /// 同じeasingがかかる、editor-ui-rework-r2.md §6の互換規則）。</summary>
+        /// 同じeasingがかかる、editor-ui-rework-r2.md §6の互換規則）。
+        /// layerTo は "to=" 省略時 layerF と同値（note-spec.md §1.1: Riser以外は未使用、rev.7）。</summary>
         private static Waypoint MakeWaypoint(int tick, float layerF, float cellF, float width, Dictionary<string, string> opts)
         {
             var wp = new Waypoint
             {
                 tick = tick,
                 layerF = layerF,
+                layerTo = layerF,
                 cellF = cellF,
                 width = width,
                 easing = Easing.Linear,
@@ -363,6 +367,7 @@ namespace Muses.Chart
             if (opts.TryGetValue("easeh", out var eh)) wp.easingH = ParseEasing(eh);
             if (opts.TryGetValue("mark", out var m)) wp.marker = ParseMarker(m);
             if (opts.TryGetValue("combo", out var c)) wp.comboStep = int.Parse(c, CultureInfo.InvariantCulture);
+            if (opts.TryGetValue("to", out var to)) wp.layerTo = ParseLayer(to);
             return wp;
         }
 
@@ -427,6 +432,7 @@ namespace Muses.Chart
             NoteKind.ExTap => "extap",
             NoteKind.Slide => "slide",
             NoteKind.Flick => "flick",
+            NoteKind.Riser => "riser",
             _ => throw new ArgumentOutOfRangeException(nameof(k)),
         };
 
@@ -436,6 +442,7 @@ namespace Muses.Chart
             "extap" => NoteKind.ExTap,
             "slide" => NoteKind.Slide,
             "flick" => NoteKind.Flick,
+            "riser" => NoteKind.Riser,
             _ => throw new FormatException($"unknown note kind '{s}'"),
         };
 

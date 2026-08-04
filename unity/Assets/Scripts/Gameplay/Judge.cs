@@ -113,12 +113,12 @@ namespace Muses.Gameplay
             chainWindows.Clear();
             float w = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの半幅=100ms（対象集合T全ノーツ共通）
 
-            // 対象集合 T = Tap / ExTap / Flick / Slide始点（§6.2）。
+            // 対象集合 T = Tap / ExTap / Flick / Riser / Slide始点（§6.2、rev.7でRiser追加）。
             // runtimes は既に開始時刻順ソート済みなので、そのままの相対順序で prev/next の最近傍探索ができる。
             var group = new List<NoteRuntime>();
             foreach (var rt in runtimes)
                 if (rt.note.kind == NoteKind.Tap || rt.note.kind == NoteKind.ExTap ||
-                    rt.note.kind == NoteKind.Flick || rt.note.kind == NoteKind.Slide)
+                    rt.note.kind == NoteKind.Flick || rt.note.kind == NoteKind.Riser || rt.note.kind == NoteKind.Slide)
                     group.Add(rt);
 
             for (int i = 0; i < group.Count; i++)
@@ -152,9 +152,49 @@ namespace Muses.Gameplay
 
                 var traits = NoteKindTraits.Of(rt.note.kind);
                 if (traits.chainExempt) { lo = float.NegativeInfinity; hi = float.PositiveInfinity; } // Ex Tap: 自身は切られない
-                if (rt.note.kind == NoteKind.Flick) lo = float.NegativeInfinity; // Flick: 早い側だけ免除(§6.2)
+                if (rt.note.kind == NoteKind.Flick || rt.note.kind == NoteKind.Riser)
+                    lo = float.NegativeInfinity; // Flick/Riser: 早い側だけ免除(§6.2、§4.6.5)
 
                 chainWindows[rt] = (MathF.Max(lo, t - w), MathF.Min(hi, t + w));
+            }
+
+            PrepareExBoost(group);
+        }
+
+        /// <summary>
+        /// note-spec.md §6.4「Ex Tap 巻き込みルール」（rev.7）。同時刻・同一層でセル範囲が交差する
+        /// Ex Tap を持つ Tap / Slide始点を exBoosted=true にする。実行時にその入力が実際に
+        /// Ex Tap のセル範囲へ触れたかは問わない（譜面上で交差していれば常に、が仕様）。
+        /// chainWindows と同様ロード時に一度だけ計算する（実行時コストはゼロ）。
+        /// </summary>
+        private void PrepareExBoost(List<NoteRuntime> group)
+        {
+            var exNotes = new List<NoteRuntime>();
+            foreach (var rt in group)
+                if (rt.note.kind == NoteKind.ExTap) exNotes.Add(rt);
+
+            foreach (var rt in group)
+            {
+                rt.exBoosted = false;
+                if (rt.note.kind != NoteKind.Tap && rt.note.kind != NoteKind.Slide) continue;
+                var wp = rt.note.points[0];
+                float t = wp.time;
+
+                foreach (var ex in exNotes)
+                {
+                    var ewp = ex.note.points[0];
+                    if (MathF.Abs(ewp.time - t) >= 1e-4f) continue; // 同時刻のみ
+                    var eLayer = ewp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+
+                    // note-spec.md §6.4.3: Tapは離散層、Slide始点は連続座標(layerJudgeRadius)で層一致を見る
+                    bool sameLayer = rt.note.kind == NoteKind.Slide
+                        ? MathF.Abs(wp.layerF - (eLayer == Layer.Sky ? 1f : 0f)) <= cfg.layerJudgeRadius
+                        : (wp.layerF > 0.5f ? Layer.Sky : Layer.Ground) == eLayer;
+                    if (!sameLayer) continue;
+                    if (!CellOverlap(ewp, wp)) continue;
+                    rt.exBoosted = true;
+                    break;
+                }
             }
         }
 
@@ -166,13 +206,21 @@ namespace Muses.Gameplay
         {
             var (layerF, cellF, width) = ChartMath.At(n, t);
             foreach (var c in contacts)
-                if (InBand(c, layerF, cellF, width))
+                if (InBand(c, layerF, cellF, width, t))
                     return true;
             return false;
         }
 
-        private bool InBand(Contact c, float layerF, float cellF, float width) =>
-            MathF.Abs(c.layerF - layerF) <= cfg.layerJudgeRadius &&
+        /// <summary>
+        /// note-spec.md §4.6.4（rev.7）。handoff が有効な間（songTime &lt;= layerHandoffUntil）は
+        /// 実際の layerF ではなく layerHandoffTo を返す。Riser 成立後、指がまだ物理的に終端層へ
+        /// 到達していなくても後続 Slide 始点などの包含判定を一定時間だけ通すための読み替え。
+        /// </summary>
+        private static float EffectiveLayerF(Contact c, float songTime) =>
+            songTime <= c.layerHandoffUntil ? c.layerHandoffTo : c.layerF;
+
+        private bool InBand(Contact c, float layerF, float cellF, float width, float songTime) =>
+            MathF.Abs(EffectiveLayerF(c, songTime) - layerF) <= cfg.layerJudgeRadius &&
             c.cellF >= cellF && c.cellF <= cellF + width;
 
         /// <summary>
@@ -207,7 +255,7 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > songTime + rawWin) break; // これ以降は誰の実効窓にも入らない
-                if (n.kind == NoteKind.Flick) continue; // item8: Flickは移動量駆動でUpdate()側が扱う
+                if (n.kind == NoteKind.Flick || n.kind == NoteKind.Riser) continue; // Presence駆動でUpdate()側が扱う（§4/§4.6）
                 if (rt.state != NoteState.Pending) continue;
                 if (!chainWindows.TryGetValue(rt, out var win)) continue;
                 if (songTime < win.lo || songTime > win.hi) continue;
@@ -231,7 +279,7 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > bestTime + 1e-4f) break; // 開始時刻順ソート済みなので同時刻グループを過ぎたら終了
-                if (n.kind == NoteKind.Flick) continue;
+                if (n.kind == NoteKind.Flick || n.kind == NoteKind.Riser) continue;
                 if (rt.state != NoteState.Pending) continue;
                 var wp = n.points[0];
                 if (MathF.Abs(wp.time - bestTime) > 1e-4f) continue;
@@ -248,11 +296,12 @@ namespace Muses.Gameplay
             }
         }
 
-        /// <summary>note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決める。理論上ここに来ない場合は null（呼び出し元がchainWindowで既に窓内を保証している）。</summary>
-        private JudgeKind? TierFor(NoteKind kind, float absMs)
+        /// <summary>note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決める。理論上ここに来ない場合は null（呼び出し元がchainWindowで既に窓内を保証している）。
+        /// exBoosted は §6.4「Ex Tap 巻き込みルール」（rev.7）: 同時刻・セル交差する Ex Tap があれば常に PERFECT+。</summary>
+        private JudgeKind? TierFor(NoteKind kind, float absMs, bool exBoosted = false)
         {
             var traits = NoteKindTraits.Of(kind);
-            if (traits.judgeProfile == JudgeProfile.AllPerfect) return JudgeKind.PerfectPlus;
+            if (traits.judgeProfile == JudgeProfile.AllPerfect || exBoosted) return JudgeKind.PerfectPlus;
             return JudgeTiers.TierFor(absMs)?.kind;
         }
 
@@ -290,10 +339,10 @@ namespace Muses.Gameplay
         /// note-spec.md §6.1。トレイト駆動でティアを決め、スコア/コンボ/演出を反映する。
         /// 有効なティアが無い場合（chainWindow の外＝理論上到達しない）は null を返し、呼び出し側は状態を変えない。
         /// </summary>
-        private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, int cell, float width, float songTime)
+        private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, int cell, float width, float songTime, bool exBoosted = false)
         {
             float ms = -dt * 1000f; // 正 = 早押し
-            var judged = TierFor(kind, MathF.Abs(ms));
+            var judged = TierFor(kind, MathF.Abs(ms), exBoosted);
             if (judged == null) return null;
             CommitJudgement(judged.Value, layer, cell, width, songTime, ms);
             return judged;
@@ -302,7 +351,7 @@ namespace Muses.Gameplay
         /// <summary>Tap/ExTap: 接触即ヒット確定。</summary>
         private void ResolveHit(NoteRuntime rt, Waypoint wp, int cell, Layer layer, float dt, float songTime)
         {
-            var judged = ApplyJudgement(rt.note.kind, dt, layer, cell, wp.width, songTime);
+            var judged = ApplyJudgement(rt.note.kind, dt, layer, cell, wp.width, songTime, rt.exBoosted);
             if (judged == null) return;
             rt.state = NoteState.Hit;
             setAlpha(rt, 0f);
@@ -315,7 +364,7 @@ namespace Muses.Gameplay
         private void ResolveSlideStart(NoteRuntime rt, Waypoint wp, Layer layer, float dt, float songTime)
         {
             int cell = (int)MathF.Round(wp.cellF);
-            var judged = ApplyJudgement(NoteKind.Slide, dt, layer, cell, wp.width, songTime);
+            var judged = ApplyJudgement(NoteKind.Slide, dt, layer, cell, wp.width, songTime, rt.exBoosted);
             if (judged == null) return;
             rt.state = NoteState.Active;
             rt.nextComboIndex = 0;
@@ -347,7 +396,12 @@ namespace Muses.Gameplay
                         UpdateFlickPending(rt, n, songTime, contacts);
                         continue;
                     }
-                    if (start > songTime) continue; // Flick以外はまだ開始前なら何もしない
+                    if (n.kind == NoteKind.Riser)
+                    {
+                        UpdateRiserPending(rt, n, songTime, contacts);
+                        continue;
+                    }
+                    if (start > songTime) continue; // Flick/Riser以外はまだ開始前なら何もしない
 
                     // note-spec.md §6.2/§0.2: Tap/ExTap/Slide始点は同じ実効窓
                     // （縦連判定で中点分割された窓）の上限を超えた時点でMISSが確定する。
@@ -457,7 +511,7 @@ namespace Muses.Gameplay
             {
                 foreach (var c in contacts)
                 {
-                    if (!InBand(c, wp.layerF, wp.cellF, wp.width)) continue;
+                    if (!InBand(c, wp.layerF, wp.cellF, wp.width, songTime)) continue;
                     rt.flickEnterSeen = true; // §4.4フォールバック用: 枠内に接触があったことを記録
 
                     if (c.history.Count == 0) continue;
@@ -489,6 +543,89 @@ namespace Muses.Gameplay
             }
 
             // note-spec.md §4.4: 判定窓を過ぎても移動が確認できなかった場合
+            if (rt.flickEnterSeen)
+            {
+                CommitJudgement(JudgeKind.Good, layer, cell, wp.width, songTime, (songTime - wp.time) * 1000f);
+                rt.state = NoteState.Hit;
+                setAlpha(rt, 0f);
+            }
+            else
+            {
+                CommitMiss(layer, cell, wp.width, songTime);
+                rt.state = NoteState.Missed;
+                setAlpha(rt, 0.12f);
+            }
+        }
+
+        /// <summary>
+        /// note-spec.md §4.6（rev.7）。Riser は Flick と同じ Presence 駆動だが、方向制約
+        /// （layerTo方向のΔvのみを見る）と閾値の測り方（Δv単独、§4.6.2）が異なる。
+        /// 成立時は接触に handoff を記録し（§4.6.4）、終端層での EnterEvent を1回合成して
+        /// 発火することで、後続 Slide 始点などが Judge の構造を変えずに引き継げるようにする。
+        /// フォールバック（窓を過ぎても移動なし、§4.4 と同じ表）は UpdateFlickPending と共通の規則。
+        /// </summary>
+        private void UpdateRiserPending(NoteRuntime rt, Note n, float songTime, IEnumerable<Contact> contacts)
+        {
+            if (!chainWindows.TryGetValue(rt, out var win)) return;
+            var wp = n.points[0];
+            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            int cell = (int)MathF.Round(wp.cellF);
+            float dir = MathF.Sign(wp.layerTo - wp.layerF); // +1: 上向き(Riser) / -1: 下向き(Diver)
+            if (dir == 0f) return; // layerTo==layerF は不正データ(ChartValidator V13)。判定不能として無視する
+
+            // note-spec.md §4.6.2: 絶対layerF 0.5への到達を基準1.0とする倍率。layerTo自体には依らない。
+            float riserDistanceV = 0.5f * MathF.Abs(cfg.vSkyJudge - cfg.vGroundJudge) * cfg.riserReachFrac;
+
+            if (songTime <= win.hi)
+            {
+                foreach (var c in contacts)
+                {
+                    if (!InBand(c, wp.layerF, wp.cellF, wp.width, songTime)) continue;
+                    rt.flickEnterSeen = true; // §4.4フォールバック用（Flickと同じ規則を再利用）
+
+                    if (c.history.Count == 0) continue;
+                    var oldest = c.history[0];
+                    float dv = (c.v - oldest.v) * dir; // 指定方向への符号付き移動量（逆方向は負になり不成立）
+                    if (dv < riserDistanceV) continue;
+
+                    // note-spec.md §4.3と同じ非対称窓（Flickと共有）
+                    float ms = (songTime - wp.time) * 1000f;
+                    JudgeKind judged = ms <= 33.33f ? JudgeKind.PerfectPlus
+                        : JudgeTiers.TierFor(MathF.Abs(ms))?.kind ?? JudgeKind.Miss;
+
+                    if (judged == JudgeKind.Miss)
+                    {
+                        CommitMiss(layer, cell, wp.width, songTime);
+                        rt.state = NoteState.Missed;
+                        setAlpha(rt, 0.12f);
+                    }
+                    else
+                    {
+                        CommitJudgement(judged, layer, cell, wp.width, songTime, ms);
+                        rt.state = NoteState.Hit;
+                        setAlpha(rt, 0f);
+
+                        // note-spec.md §4.6.4: handoffを記録し、終端層でのEnterEventを1回合成して発火する。
+                        c.layerHandoffTo = wp.layerTo;
+                        c.layerHandoffUntil = songTime + cfg.handoffWindowMs / 1000f;
+                        var targetLayer = wp.layerTo > 0.5f ? Layer.Sky : Layer.Ground;
+                        OnEnter(new EnterEvent
+                        {
+                            layer = targetLayer,
+                            cell = (int)MathF.Round(c.cellF),
+                            fresh = true,
+                            at = songTime,
+                            cellF = c.cellF,
+                            layerF = wp.layerTo,
+                        }, songTime);
+                    }
+                    c.history.Clear();
+                    return;
+                }
+                return;
+            }
+
+            // note-spec.md §4.4と同じフォールバック（Flickと共通）
             if (rt.flickEnterSeen)
             {
                 CommitJudgement(JudgeKind.Good, layer, cell, wp.width, songTime, (songTime - wp.time) * 1000f);

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Muses.Chart
@@ -77,6 +78,16 @@ namespace Muses.Chart
 
                     if (wp.layerF < 0f || wp.layerF > 1f)
                         Add(issues, "V7", ValidationSeverity.Warning, $"layerF({wp.layerF:0.##}) が [0,1] の範囲外です", wp.tick);
+                }
+
+                // note-spec.md §4.6.1（rev.7）: Riser は layerF != layerTo が本質（移動が無ければ意味を持たない）。
+                if (note.kind == NoteKind.Riser)
+                {
+                    var wp0 = note.points[0];
+                    if (wp0.layerTo < 0f || wp0.layerTo > 1f)
+                        Add(issues, "V7", ValidationSeverity.Warning, $"layerTo({wp0.layerTo:0.##}) が [0,1] の範囲外です", wp0.tick);
+                    if (MathF.Abs(wp0.layerTo - wp0.layerF) < 1e-4f)
+                        Add(issues, "V13", ValidationSeverity.Warning, "Riser の layerTo が layerF と同じで、層移動がありません", wp0.tick);
                 }
             }
         }
@@ -162,7 +173,8 @@ namespace Muses.Chart
         {
             var group = new List<Note>();
             foreach (var n in chart.notes)
-                if (n.kind == NoteKind.Tap || n.kind == NoteKind.ExTap || n.kind == NoteKind.Flick || n.kind == NoteKind.Slide)
+                if (n.kind == NoteKind.Tap || n.kind == NoteKind.ExTap || n.kind == NoteKind.Flick ||
+                    n.kind == NoteKind.Riser || n.kind == NoteKind.Slide)
                     group.Add(n);
             group.Sort((a, b) => a.points[0].time.CompareTo(b.points[0].time));
 

@@ -97,6 +97,7 @@ namespace Muses.Notes
             var cFlick = new Color(0xff / 255f, 0x4a / 255f, 0xc8 / 255f); // Flick: 仮の専用色（判定はPhase 1後続項目）
             var cSlide = new Color(0x35 / 255f, 0xe8 / 255f, 0xff / 255f);
             var cSlideMarker = Color.white; // note-spec.md §3: Visible中継点。帯(シアン)と区別できる色
+            var cRiser = new Color(0x4a / 255f, 0xff / 255f, 0xa0 / 255f); // Riser: 仮の専用色（note-spec.md §4.6.6）
 
             foreach (var n in notes)
             {
@@ -114,6 +115,13 @@ namespace Muses.Notes
                         : n.kind == NoteKind.Flick ? cFlick
                         : (layerF > 0.5f ? cS : cG);
                     QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF));
+                }
+                else if (n.kind == NoteKind.Riser)
+                {
+                    // note-spec.md §4.6.6: 時刻を1つだけ持つ垂直な壁。layerF方向にスイープする
+                    // （時間でスイープする PushSlideBand とは別の生成関数）。
+                    var wp = n.points[0];
+                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cRiser, timeline.XAt(wp.time));
                 }
                 else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
@@ -230,6 +238,46 @@ namespace Muses.Notes
                 Emit(cur, 1f);
                 Emit(cur, -1f);
                 prev = cur;
+            }
+        }
+
+        /// <summary>
+        /// note-spec.md §4.6.6（rev.7）。Riser（層跨ぎ）の壁ジオメトリ。全頂点が同じ時刻
+        /// centerTime を持つ（＝ワールド空間で判定線に平行な垂直面）点が PushSlideBand との違い。
+        /// layerF ∈ [wp.layerF, wp.layerTo] を分割してスイープする。直線移動なので分割数は固定8〜16で足りる。
+        /// u（左右端）は各分割点で同じ cellF/width から求めるが、シェーダ側で頂点ごとの layerF 属性
+        /// （uv1.x）に応じて LaneX の収束補正が変わるため、ワールド空間では厳密な垂直線にならない
+        /// （unity-stage-port-design.md の「最遠端でワールド x は層ごとに違う」と同じ理由。正しい挙動）。
+        /// </summary>
+        private static void PushRiserWall(
+            Waypoint wp, Derived d,
+            PushFn push, Func<float, float> nearOf,
+            Func<float, float> uAt, Func<float, float, float> yAt, Color c, float centerTime)
+        {
+            const int steps = 12;
+            float u0 = uAt(wp.cellF);
+            float u1 = uAt(wp.cellF + wp.width);
+
+            (float y, float near) At(float layerF) =>
+                (yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, nearOf(layerF));
+
+            void EmitQuad(float layerA, float layerB)
+            {
+                var a = At(layerA);
+                var b = At(layerB);
+                push(u0, a.y, centerTime, layerA, c, a.near);
+                push(u1, a.y, centerTime, layerA, c, a.near);
+                push(u1, b.y, centerTime, layerB, c, b.near);
+                push(u0, a.y, centerTime, layerA, c, a.near);
+                push(u1, b.y, centerTime, layerB, c, b.near);
+                push(u0, b.y, centerTime, layerB, c, b.near);
+            }
+
+            for (int i = 0; i < steps; i++)
+            {
+                float lA = wp.layerF + (wp.layerTo - wp.layerF) * i / steps;
+                float lB = wp.layerF + (wp.layerTo - wp.layerF) * (i + 1) / steps;
+                EmitQuad(lA, lB);
             }
         }
     }

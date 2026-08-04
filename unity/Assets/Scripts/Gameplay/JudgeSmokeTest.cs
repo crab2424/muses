@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using Muses.Chart;
@@ -31,6 +32,8 @@ namespace Muses.Gameplay
             TestSlideComboResolution();
             TestFlickHit();
             TestSeekSkipsPastNotesWithoutScoring();
+            TestExBoostAppliesToOverlappingTap();
+            TestRiserHandsOffToSlideStart();
 
             Debug.Log(fail == 0
                 ? $"JudgeSmokeTest: ALL PASS ({pass})"
@@ -135,6 +138,68 @@ namespace Muses.Gameplay
             judge.Update(1.0f, new List<Contact> { contact });
 
             Check("Flick 閾値超過移動 -> PERFECT+ (即着地)", judge.Score.perfectPlus == 1 && rt.state == NoteState.Hit);
+        }
+
+        /// <summary>note-spec.md §6.4「Ex Tap 巻き込みルール」（rev.7）。同時刻・セル範囲が交差する
+        /// Ex Tap があれば、実際にはそのExへ触れていない入力でも交差する Tap は PERFECT+ になる。</summary>
+        private void TestExBoostAppliesToOverlappingTap()
+        {
+            var tap = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3, width: 2f); // [3,5)
+            var ex = SingleWaypointNote(NoteKind.ExTap, 1.0f, Layer.Ground, 4, width: 2f); // [4,6): 3とだけ交差
+            var rtTap = new NoteRuntime { note = tap };
+            var rtEx = new NoteRuntime { note = ex };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rtTap, rtEx });
+
+            // 83ms遅れ(通常TapならGOOD相当)。cell=3はTapのみに触れ、Exの範囲[4,6)には触れていない。
+            judge.OnEnter(new EnterEvent { layer = Layer.Ground, cell = 3, fresh = true, at = 1.083f, cellF = 3f, layerF = 0f }, 1.083f);
+
+            Check("Ex巻き込み: 実際にExへ触れなくても交差するTapはPERFECT+",
+                judge.Score.perfectPlus == 1 && judge.Score.good == 0 && rtTap.state == NoteState.Hit);
+        }
+
+        /// <summary>
+        /// note-spec.md §4.6（rev.7）。「地上Tap → 同地点でRiser → 空中Slide」の想定フロー。
+        /// Riser成立でhandoffが記録され、終端層(空中)でのEnterEventが合成発火されて
+        /// 後続Slide始点がJudgeの構造を変えずに引き継げることを確認する。
+        /// </summary>
+        private void TestRiserHandsOffToSlideStart()
+        {
+            var cfg = Cfg();
+            var riser = new Note
+            {
+                kind = NoteKind.Riser,
+                points = new List<Waypoint> { new() { time = 1.0f, layerF = 0f, layerTo = 1f, cellF = 3f, width = 2f } },
+            };
+            // Riser成立直後(50ms後)に始まる空中Slide。handoffWindowMs(仮200ms)の中に収まる。
+            var slide = new Note
+            {
+                kind = NoteKind.Slide,
+                points = new List<Waypoint>
+                {
+                    new() { time = 1.05f, layerF = 1f, cellF = 3f, width = 2f },
+                    new() { time = 1.55f, layerF = 1f, cellF = 3f, width = 2f },
+                },
+                comboTimes = new List<float> { 1.55f },
+            };
+            var rtRiser = new NoteRuntime { note = riser };
+            var rtSlide = new NoteRuntime { note = slide };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rtRiser, rtSlide });
+
+            // note-spec.md §4.6.2: 閾値は絶対layerF 0.5相当のΔv(既定riserReachFrac=1.0)。
+            // 指はRiserの枠内(layerF=0付近)から、閾値をわずかに超える分だけ上向きにvを動かす。
+            float threshold = 0.5f * MathF.Abs(cfg.vSkyJudge - cfg.vGroundJudge) * cfg.riserReachFrac;
+            var contact = new Contact { cellF = 3f, layerF = 0f, u = 0f, v = cfg.vGroundJudge };
+            contact.history.Add((0f, cfg.vGroundJudge - (threshold + 0.01f), 0.9f));
+
+            judge.Update(1.0f, new List<Contact> { contact });
+
+            Check("Riser 閾値超過移動 -> PERFECT+ (即着地)、handoff記録",
+                judge.Score.perfectPlus >= 1 && rtRiser.state == NoteState.Hit &&
+                contact.layerHandoffUntil > 1.0f && contact.layerHandoffTo == 1f);
+            Check("Riser handoff -> 後続Slide始点がEnterEvent合成でActiveへ引き継がれる",
+                rtSlide.state == NoteState.Active);
         }
 
         private void TestSeekSkipsPastNotesWithoutScoring()
