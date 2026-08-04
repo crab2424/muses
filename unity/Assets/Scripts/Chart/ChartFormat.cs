@@ -41,6 +41,72 @@ namespace Muses.Chart
     /// </summary>
     public static class ChartFormat
     {
+        /// <summary>BPMイベントが1つも無いときに各所（BuildTickToSeconds等）が黙って使う既定値。
+        /// EnsureBaseEvents が実データとして書き込む値でもある。</summary>
+        public const float DefaultBpm = 120f;
+
+        /// <summary>
+        /// editor-ui-rework-r10.md §3。曲の先頭（bar 0 / tick 0）の BPM・拍子・ソフラン倍率を
+        /// 実データとして必ず存在させる。
+        ///
+        /// これらが無くても BuildTickToSeconds は120、SongAddr.Normalize は4/4、
+        /// ScrollTimeline は恒等写像、とそれぞれ既定値へ黙って落ちるため動作はする。
+        /// しかし「既定値で動いている」状態は譜面ファイルに一切現れないので、保存しても
+        /// [BPM]/[METER]/[SCROLL] が空のままになり、曲のテンポ情報を持たない譜面ができてしまう
+        /// （ユーザー報告「イベント3種が譜面データに反映されない」の実体）。
+        /// 暗黙の既定値を実データとして書き出すことで、ファイル単体で完結し、
+        /// エディタのイベントレーンからも基準値として選択・編集できるようになる。
+        ///
+        /// 戻り値は追加が発生したか（呼び出し側が dirty フラグを立てるのに使う）。
+        /// </summary>
+        public static bool EnsureBaseSongEvents(SongMeta song)
+        {
+            bool changed = false;
+
+            if (!song.meters.Exists(m => m.bar == 0))
+            {
+                song.meters.Add(new MeterEvent { bar = 0, numerator = 4, denominator = 4 });
+                song.meters.Sort((a, b) => a.bar.CompareTo(b.bar));
+                changed = true;
+            }
+
+            if (!song.bpmEvents.Exists(e => e.tick == 0))
+            {
+                // 先頭にBPMが無い譜面では、既に書かれている最初のBPMを引き継ぐのが自然
+                // （途中変化だけが書かれたファイルで、先頭に無関係な120が挿し込まれるのを避ける）。
+                float baseBpm = DefaultBpm;
+                int earliest = int.MaxValue;
+                foreach (var e in song.bpmEvents)
+                    if (e.tick < earliest) { earliest = e.tick; baseBpm = e.bpm; }
+
+                song.bpmEvents.Add(new BpmEvent { tick = 0, bpm = baseBpm });
+                song.bpmEvents.Sort((a, b) => a.tick.CompareTo(b.tick));
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        /// <summary>editor-ui-rework-r10.md §3。<see cref="EnsureBaseSongEvents"/> のソフラン版
+        /// （ソフランは曲メタではなく譜面の属性なので ChartData 側に持つ）。
+        /// tick 0・group 0・mul 1 は ScrollTimeline 上で恒等写像と完全に等価なため、
+        /// 追加しても既存譜面の見た目・速度は変わらない。</summary>
+        public static bool EnsureBaseChartEvents(ChartData chart)
+        {
+            if (chart.scrollEvents.Exists(e => e.group == 0 && e.tick == 0)) return false;
+
+            chart.scrollEvents.Add(new ScrollEvent
+            {
+                tick = 0,
+                group = 0,
+                mul = 1f,
+                easing = Easing.Linear,
+                durationTicks = 0,
+            });
+            chart.scrollEvents.Sort((a, b) => a.tick != b.tick ? a.tick.CompareTo(b.tick) : a.group.CompareTo(b.group));
+            return true;
+        }
+
         /// <summary>
         /// bpmEvents から tick→秒の区分線形変換関数を構築する。譜面ロード時に1回だけ呼ぶ想定。
         /// </summary>
@@ -49,7 +115,7 @@ namespace Muses.Chart
             var sorted = new List<BpmEvent>(bpmEvents);
             sorted.Sort((a, b) => a.tick.CompareTo(b.tick));
             if (sorted.Count == 0 || sorted[0].tick != 0)
-                sorted.Insert(0, new BpmEvent { tick = 0, bpm = 120f });
+                sorted.Insert(0, new BpmEvent { tick = 0, bpm = DefaultBpm });
 
             // 各イベント開始tickでの累積秒をあらかじめ求めておく
             var accSec = new float[sorted.Count];
@@ -93,7 +159,7 @@ namespace Muses.Chart
             var sorted = new List<BpmEvent>(bpmEvents);
             sorted.Sort((a, b) => a.tick.CompareTo(b.tick));
             if (sorted.Count == 0 || sorted[0].tick != 0)
-                sorted.Insert(0, new BpmEvent { tick = 0, bpm = 120f });
+                sorted.Insert(0, new BpmEvent { tick = 0, bpm = DefaultBpm });
             return sorted;
         }
 

@@ -614,7 +614,11 @@ namespace Muses.ChartTool
             try
             {
                 var loadedSong = ChartSerializer.ReadSongMeta(songFilePath);
+                // editor-ui-rework-r10.md §3: 曲先頭のBPM/拍子を実データとして補う。
+                // ReadChartがsong.bpmEventsをchart.bpmEventsへ複製するので、必ずその前に呼ぶ。
+                bool baseSongAdded = ChartFormat.EnsureBaseSongEvents(loadedSong);
                 var (loadedHeader, loadedChart) = ChartSerializer.ReadChart(path, loadedSong);
+                bool baseChartAdded = ChartFormat.EnsureBaseChartEvents(loadedChart);
                 song = loadedSong;
                 header = loadedHeader;
                 chart = loadedChart;
@@ -623,7 +627,11 @@ namespace Muses.ChartTool
                 ClearSelection();
                 pendingSlideStart = null;
                 draggingNote = false;
-                dirty = false;
+                // editor-ui-rework-r10.md §3: 基準イベントを補った場合、メモリ上のデータは
+                // ファイルの内容と食い違っている。次の保存で確実に書き出されるようdirtyにする
+                // （黙って補うだけだと、ノーツを触らない限り永久にファイルへ現れない）。
+                dirty = baseChartAdded;
+                songMetaDirty = baseSongAdded;
                 undoStack.Clear();
                 redoStack.Clear();
                 lastAutosaveRealtime = Time.unscaledTime;
@@ -710,6 +718,10 @@ namespace Muses.ChartTool
                     songMetaDirty = true; // 移設先にまだ無ければ新規作成が必要なため
                 }
 
+                // editor-ui-rework-r10.md §4: @SONG は読み込み時の値をそのまま持ち回っており、
+                // r9以前に書かれた譜面では "song.muses" のまま残っていた。書き出す曲メタの
+                // 実ファイル名と食い違うのは誤りなので、保存のたびに実体へ揃える。
+                header.songFile = ChartSerializer.SongFileName;
                 ChartSerializer.WriteChart(writePath, header, chart, song);
                 // 右パネルの「情報」「音源」セクション(§2.5)は SongMeta を直接編集するので、
                 // 譜面と一緒に song.museproj も書き戻さないと編集内容が消える。
@@ -2949,6 +2961,13 @@ namespace Muses.ChartTool
             {
                 case EventKind.Bpm:
                     if (selectedEventIndex < 0 || selectedEventIndex >= song.bpmEvents.Count) break;
+                    // editor-ui-rework-r10.md §3: 曲先頭のBPMは削除不可（0小節目の拍子と同じ理由。
+                    // 消すとBuildTickToSecondsが黙って120へ落ち、設定値だけが気づかれず消える）。
+                    if (song.bpmEvents[selectedEventIndex].tick == 0)
+                    {
+                        statusMessage = "曲先頭のBPMは削除できません（変更のみ可能）";
+                        break;
+                    }
                     song.bpmEvents.RemoveAt(selectedEventIndex);
                     songMetaDirty = true;
                     MarkPreviewDirty();
@@ -2969,6 +2988,15 @@ namespace Muses.ChartTool
                     break;
                 case EventKind.Scroll:
                     if (selectedEventIndex < 0 || selectedEventIndex >= chart.scrollEvents.Count) break;
+                    // editor-ui-rework-r10.md §3: 基準のソフラン倍率(tick0/group0)は削除不可。
+                    {
+                        var ev = chart.scrollEvents[selectedEventIndex];
+                        if (ev.tick == 0 && ev.group == 0)
+                        {
+                            statusMessage = "曲先頭の基準倍率は削除できません（変更のみ可能）";
+                            break;
+                        }
+                    }
                     PushUndo(coalesce: false, "ソフランイベント削除");
                     chart.scrollEvents.RemoveAt(selectedEventIndex);
                     dirty = true;

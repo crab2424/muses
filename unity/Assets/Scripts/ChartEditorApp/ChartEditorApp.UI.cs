@@ -2425,24 +2425,34 @@ namespace Muses.ChartTool
 
             string ExpectedChartFileName() => header.difficulty.ToLowerInvariant() + ChartSerializer.ChartExt;
 
-            bool HasSongMeta(string dir) => File.Exists(Path.Combine(dir, ChartSerializer.SongFileName));
+            // editor-ui-rework-r10.md §1: songsRoot は「曲フォルダを並べる親」であって曲フォルダ
+            // そのものではないので、たとえ song.museproj が直下に落ちていても曲プロジェクトとは
+            // 扱わない（r9でこの除外を落としたため、一度songs直下に保存すると以降ずっと
+            // 「既存の曲フォルダ」と誤判定され、サブフォルダが作られなくなっていた）。
+            bool IsSongProjectDir(string dir) =>
+                !EditorSettings.PathEquals(dir, songsRoot)
+                && File.Exists(Path.Combine(dir, ChartSerializer.SongFileName));
 
             string ResolveTargetDir() =>
-                HasSongMeta(browseDir) ? browseDir : Path.Combine(browseDir, SanitizeFolderName(nameField.value ?? ""));
+                IsSongProjectDir(browseDir) ? browseDir : Path.Combine(browseDir, SanitizeFolderName(nameField.value ?? ""));
 
             void UpdateDestLabel()
             {
-                if (HasSongMeta(browseDir))
+                // editor-ui-rework-r10.md §2: 既存の曲フォルダにいるときは入力欄を無効化(SetEnabled)
+                // していたが、無効化は opacity 0.5 になるだけで「暗い背景に薄い文字」となり、
+                // 入力欄が消えたようにしか見えなかった。使えない状態を見せずに畳む。
+                bool inSongProject = IsSongProjectDir(browseDir);
+                nameField.style.display = inSongProject ? DisplayStyle.None : DisplayStyle.Flex;
+
+                if (inSongProject)
                 {
-                    nameField.SetEnabled(false);
                     destLabel.text = $"既存の曲フォルダに保存: {browseDir}/{ExpectedChartFileName()}";
                 }
                 else
                 {
-                    nameField.SetEnabled(true);
                     string folder = SanitizeFolderName(nameField.value ?? "");
                     destLabel.text = string.IsNullOrEmpty(folder)
-                        ? "曲フォルダ名を入力してください"
+                        ? "曲フォルダ名を入力してください（この名前でフォルダを作ります）"
                         : $"保存先: {browseDir}/{folder}/{ExpectedChartFileName()}";
                 }
             }
@@ -2506,8 +2516,12 @@ namespace Muses.ChartTool
             {
                 var saveBtn = new Button(() =>
                 {
+                    if (!IsSongProjectDir(browseDir) && string.IsNullOrWhiteSpace(nameField.value))
+                    {
+                        destLabel.text = "曲フォルダ名を入力してください（この名前でフォルダを作ります）";
+                        return;
+                    }
                     string targetDir = ResolveTargetDir();
-                    if (!HasSongMeta(browseDir) && string.IsNullOrWhiteSpace(nameField.value)) return;
                     Directory.CreateDirectory(targetDir);
 
                     chartFilePathBuffer = Path.Combine(targetDir, ExpectedChartFileName());
@@ -2581,6 +2595,9 @@ namespace Muses.ChartTool
         {
             PushUndo(coalesce: false);
             chart = new ChartData();
+            // editor-ui-rework-r10.md §3: 基準のソフラン倍率(tick0/group0/mul1)を持たせる。
+            // BPM/拍子はSongMeta側なので新規譜面では引き継がれる（作り直さない）。
+            ChartFormat.EnsureBaseChartEvents(chart);
             ClearSelection();
             pendingSlideStart = null;
             draggingNote = false;
@@ -2676,17 +2693,20 @@ namespace Muses.ChartTool
                 }
                 else if (File.Exists(legacySongPath))
                 {
-                    newSong = ChartSerializer.ReadSongMeta(legacySongPath);
-                    ChartSerializer.WriteSongMeta(newSong, newSongPath); // r9 §4.3: 保存は常に新名で
+                    newSong = ChartSerializer.ReadSongMeta(legacySongPath); // r9 §4.3: 書き出しは下で新名に統一
                 }
                 else
                 {
                     newSong = new SongMeta { title = string.IsNullOrEmpty(title) ? songId : title };
-                    ChartSerializer.WriteSongMeta(newSong, newSongPath);
                 }
+                // editor-ui-rework-r10.md §3: 曲先頭のBPM/拍子を実データとして必ず持たせてから書く
+                // （既存フォルダから引き継いだ曲メタも、まだ持っていなければここで補われる）。
+                ChartFormat.EnsureBaseSongEvents(newSong);
+                ChartSerializer.WriteSongMeta(newSong, newSongPath);
 
                 var newHeader = new ChartFileHeader { difficulty = difficulty, level = 1, charter = "", songFile = ChartSerializer.SongFileName };
                 var newChart = new ChartData();
+                ChartFormat.EnsureBaseChartEvents(newChart);
                 ChartSerializer.WriteChart(newChartPath, newHeader, newChart, newSong);
 
                 song = newSong;
