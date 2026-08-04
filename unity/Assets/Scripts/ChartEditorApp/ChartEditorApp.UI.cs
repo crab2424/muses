@@ -185,7 +185,7 @@ namespace Muses.ChartTool
                 menu.AddItem("開く...", false, () => ShowFileModal(saveMode: false));
                 menu.AddSeparator("");
                 menu.AddItem("保存", false, SaveChartToPath);
-                menu.AddItem("別名で保存...", false, () => ShowFileModal(saveMode: true));
+                menu.AddItem("曲フォルダを選んで保存...", false, () => ShowFileModal(saveMode: true));
                 menu.AddSeparator("");
                 menu.AddItem("終了", false, QuitApp);
             });
@@ -807,7 +807,7 @@ namespace Muses.ChartTool
             audioPickBtn.AddToClassList("tb-btn");
             audioFile.parent.Add(audioPickBtn);
             audioOffset = AddFloatRow(audioHost, "オフセット(秒)", v => { song.offsetSec = v; songMetaDirty = true; MarkPreviewDirty(); });
-            var note = new Label("タイトル〜オフセットは song.muses の内容です。保存時に譜面と一緒に書き戻します。");
+            var note = new Label("タイトル〜オフセットは song.museproj の内容です。保存時に譜面と一緒に書き戻します。");
             note.AddToClassList("prop-note");
             audioHost.Add(note);
 
@@ -833,7 +833,7 @@ namespace Muses.ChartTool
             statusRow.Add(openFolderBtn);
             audioHost.Add(statusRow);
 
-            // editor-ui-rework-r6.md §4.3: 全体/BGM/SEの3段音量。song.musesではなくEditorSettings
+            // editor-ui-rework-r6.md §4.3: 全体/BGM/SEの3段音量。song.museprojではなくEditorSettings
             // (preview.MasterVolume等)に永続化する(音量は譜面の属性ではないため)。
             masterVolumeSlider = AddSliderRow(audioHost, "全体音量", 0f, 1f, v => preview.MasterVolume = v);
             bgmVolumeSlider = AddSliderRow(audioHost, "BGM音量", 0f, 1f, v => preview.BgmVolume = v);
@@ -1196,7 +1196,7 @@ namespace Muses.ChartTool
         /// <summary>
         /// §7.3: イベントレーンで選択したBPM/拍子/ソフランイベントの編集UI。ノーツと違い
         /// song.bpmEvents/song.metersはUndoスナップショット(chart+headerのみ)の対象外なので、
-        /// 既存のタイトル等song.muses系フィールドと同じくPushUndoを呼ばない
+        /// 既存のタイトル等song.museproj系フィールドと同じくPushUndoを呼ばない
         /// （chart.scrollEventsはchartの一部なので通常どおりPushUndoする）。
         /// </summary>
         private void RebuildEventInspector()
@@ -1751,7 +1751,7 @@ namespace Muses.ChartTool
                 statusValidation.text = $"検証 E{errors} W{warnings} I{infos}";
         }
 
-        /// <summary>editor-ui-rework-r7.md §3.3: 音源は必ずsong.musesと同じフォルダから
+        /// <summary>editor-ui-rework-r7.md §3.3: 音源は必ずsong.museprojと同じフォルダから
         /// 相対パス(ファイル名のみ)で解決される（PreviewSystem.TryLoadAudio）ため、別フォルダの
         /// ファイルを選んだ場合は曲フォルダへコピーする（旧実装は「読み込めません」と警告して
         /// 終わるだけだった）。拡張子はogg/wav/mp3（editor-ui-rework-r7.md Q6でwav/mp3にも対応）。</summary>
@@ -2395,11 +2395,13 @@ namespace Muses.ChartTool
 
         /// <summary>
         /// ネイティブのファイル選択ダイアログが無いスタンドアロン向けの代替（editor-spec.md の
-        /// 簡易ファイルブラウザをUI Toolkitへ移植したもの）。saveMode時はファイル名入力欄が付く。
+        /// 簡易ファイルブラウザをUI Toolkitへ移植したもの）。saveMode時は曲フォルダ名入力欄が付く。
+        /// editor-ui-rework-r9.md §5.2: 譜面ファイル名は自由入力ではなく@DIFFICULTYから自動決定
+        /// するため、旧「ファイル名」入力は「曲フォルダ名」入力に置き換える。
         /// </summary>
         private void ShowFileModal(bool saveMode)
         {
-            var modal = ShowModal(saveMode ? "別名で保存" : "譜面ファイルを開く");
+            var modal = ShowModal(saveMode ? "曲フォルダを選んで保存" : "譜面ファイルを開く");
 
             var pathLabel = new Label(browseDir);
             pathLabel.AddToClassList("prop-note");
@@ -2409,8 +2411,41 @@ namespace Muses.ChartTool
             list.AddToClassList("browse-list");
             modal.Add(list);
 
-            var nameField = new TextField("ファイル名") { value = Path.GetFileName(chartFilePathBuffer ?? "") };
-            if (saveMode) modal.Add(nameField);
+            // editor-ui-rework-r9.md §3.1: 曲フォルダ名の入力は「保存先に曲メタファイルが無い」
+            // ときだけ使う（無ければこの名前でサブフォルダを作る、あれば直下にそのまま保存）。
+            var nameField = new TextField("曲フォルダ名") { value = string.IsNullOrEmpty(song.title) ? "" : song.title };
+            var destLabel = new Label("");
+            destLabel.AddToClassList("prop-note");
+            if (saveMode)
+            {
+                modal.Add(nameField);
+                modal.Add(destLabel);
+                nameField.RegisterValueChangedCallback(_ => UpdateDestLabel());
+            }
+
+            string ExpectedChartFileName() => header.difficulty.ToLowerInvariant() + ChartSerializer.ChartExt;
+
+            bool HasSongMeta(string dir) => File.Exists(Path.Combine(dir, ChartSerializer.SongFileName));
+
+            string ResolveTargetDir() =>
+                HasSongMeta(browseDir) ? browseDir : Path.Combine(browseDir, SanitizeFolderName(nameField.value ?? ""));
+
+            void UpdateDestLabel()
+            {
+                if (HasSongMeta(browseDir))
+                {
+                    nameField.SetEnabled(false);
+                    destLabel.text = $"既存の曲フォルダに保存: {browseDir}/{ExpectedChartFileName()}";
+                }
+                else
+                {
+                    nameField.SetEnabled(true);
+                    string folder = SanitizeFolderName(nameField.value ?? "");
+                    destLabel.text = string.IsNullOrEmpty(folder)
+                        ? "曲フォルダ名を入力してください"
+                        : $"保存先: {browseDir}/{folder}/{ExpectedChartFileName()}";
+                }
+            }
 
             var row = new VisualElement();
             row.AddToClassList("modal-row");
@@ -2420,6 +2455,7 @@ namespace Muses.ChartTool
             {
                 pathLabel.text = browseDir;
                 list.Clear();
+                if (saveMode) UpdateDestLabel();
 
                 var parent = Directory.GetParent(browseDir);
                 if (parent != null)
@@ -2441,16 +2477,12 @@ namespace Muses.ChartTool
                         list.Add(b);
                     }
 
-                    foreach (var file in Directory.GetFiles(browseDir, "*.muses").OrderBy(f => f))
+                    foreach (var file in Directory.GetFiles(browseDir, "*" + ChartSerializer.ChartExt).OrderBy(f => f))
                     {
                         string captured = file;
                         var b = new Button(() =>
                         {
-                            if (saveMode)
-                            {
-                                nameField.value = Path.GetFileName(captured);
-                                return;
-                            }
+                            if (saveMode) return; // r9 §5.2: 保存時はファイル名を選ばせない（難易度で自動決定するため）
                             chartFilePathBuffer = captured;
                             RememberBrowseDir();
                             CloseModal(modal);
@@ -2474,23 +2506,11 @@ namespace Muses.ChartTool
             {
                 var saveBtn = new Button(() =>
                 {
-                    string name = nameField.value;
-                    if (string.IsNullOrWhiteSpace(name)) return;
-                    if (!name.EndsWith(".muses", StringComparison.OrdinalIgnoreCase)) name += ".muses";
+                    string targetDir = ResolveTargetDir();
+                    if (!HasSongMeta(browseDir) && string.IsNullOrWhiteSpace(nameField.value)) return;
+                    Directory.CreateDirectory(targetDir);
 
-                    // editor-ui-rework-r8.md §2.2: songsRoot直下へ保存しようとしたときだけ、
-                    // 入力したファイル名をそのままフォルダ名にも流用して曲プロジェクトフォルダを
-                    // 自動生成する（散らかり防止、ユーザー確定の方式）。既に曲フォルダの中にいる
-                    // 場合（難易度の追加保存等）は従来どおりbrowseDirへそのまま保存する。
-                    string targetDir = browseDir;
-                    if (IsSongsRootItself(browseDir))
-                    {
-                        string baseName = name.Substring(0, name.Length - ".muses".Length);
-                        targetDir = Path.Combine(songsRoot, SanitizeFolderName(baseName));
-                        Directory.CreateDirectory(targetDir);
-                    }
-
-                    chartFilePathBuffer = Path.Combine(targetDir, name);
+                    chartFilePathBuffer = Path.Combine(targetDir, ExpectedChartFileName());
                     browseDir = targetDir;
                     RememberBrowseDir();
                     CloseModal(modal);
@@ -2515,24 +2535,8 @@ namespace Muses.ChartTool
             EditorSettingsStore.Save(settings);
         }
 
-        /// <summary>editor-ui-rework-r8.md §2.2。dirがsongsRootそのもの(直下)かどうかを、
-        /// 末尾区切り文字・大小の揺れを無視して判定する。</summary>
-        private bool IsSongsRootItself(string dir)
-        {
-            try
-            {
-                string a = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                string b = Path.GetFullPath(songsRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        /// <summary>editor-ui-rework-r8.md §2.2。ファイル名(拡張子除く)をフォルダ名として使える形へ
-        /// 変換する（CreateNewSongのフォルダ名検証と揃え、禁止文字は_へ置換する）。</summary>
+        /// <summary>editor-ui-rework-r8.md §2.2。フォルダ名として使える形へ変換する
+        /// （CreateNewSongのフォルダ名検証と揃え、禁止文字は_へ置換する）。</summary>
         private static string SanitizeFolderName(string name)
         {
             foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
@@ -2590,7 +2594,7 @@ namespace Muses.ChartTool
         /// 作るウィザード。既存の「新規」(NewChart)は chart を空にするだけで song/songPath/chartPath
         /// には触らない(＝同じ曲に別難易度を作る用の操作)ため意味が被らない。「新規曲」は
         /// フォルダ自体が無い状態から一直線に編集開始できることを目的にする
-        /// （旧実装は保存を試みて初めて song.muses が無いことに気づく、という段差があった）。
+        /// （旧実装は保存を試みて初めて song.museproj が無いことに気づく、という段差があった）。
         /// </summary>
         private static readonly string[] DifficultyChoices = { "LINE", "SQUARE", "CUBE", "TESSERACT" };
 
@@ -2647,14 +2651,14 @@ namespace Muses.ChartTool
         }
 
         /// <summary>戻り値がnullなら成功。エラーメッセージがあれば失敗（ウィザードのラベルに出す）。
-        /// フォルダが既に存在する場合は既存の song.muses を引き継ぎ、新しい難易度ファイルだけを
+        /// フォルダが既に存在する場合は既存の song.museproj を引き継ぎ、新しい難易度ファイルだけを
         /// 追加する（editor-ui-rework-r7.md §3.4「1曲に複数の譜面」を1つの曲プロジェクトフォルダ
         /// で管理する、というユーザー確定の設計どおり）。</summary>
         private string CreateNewSong(string songId, string title, string difficulty)
         {
             string dir = Path.Combine(songsRoot, songId);
-            string newSongPath = Path.Combine(dir, "song.muses");
-            string chartFileName = difficulty.ToLowerInvariant() + ".muses";
+            string newSongPath = Path.Combine(dir, ChartSerializer.SongFileName);
+            string chartFileName = difficulty.ToLowerInvariant() + ChartSerializer.ChartExt;
             string newChartPath = Path.Combine(dir, chartFileName);
 
             if (File.Exists(newChartPath))
@@ -2664,10 +2668,16 @@ namespace Muses.ChartTool
             {
                 Directory.CreateDirectory(dir);
 
+                string legacySongPath = Path.Combine(dir, ChartSerializer.LegacySongFileName);
                 SongMeta newSong;
                 if (File.Exists(newSongPath))
                 {
                     newSong = ChartSerializer.ReadSongMeta(newSongPath);
+                }
+                else if (File.Exists(legacySongPath))
+                {
+                    newSong = ChartSerializer.ReadSongMeta(legacySongPath);
+                    ChartSerializer.WriteSongMeta(newSong, newSongPath); // r9 §4.3: 保存は常に新名で
                 }
                 else
                 {
@@ -2675,7 +2685,7 @@ namespace Muses.ChartTool
                     ChartSerializer.WriteSongMeta(newSong, newSongPath);
                 }
 
-                var newHeader = new ChartFileHeader { difficulty = difficulty, level = 1, charter = "", songFile = "song.muses" };
+                var newHeader = new ChartFileHeader { difficulty = difficulty, level = 1, charter = "", songFile = ChartSerializer.SongFileName };
                 var newChart = new ChartData();
                 ChartSerializer.WriteChart(newChartPath, newHeader, newChart, newSong);
 

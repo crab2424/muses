@@ -114,9 +114,9 @@ namespace Muses.ChartTool
         private string songPath;
         private SongMeta song = new();
         private ChartData chart = new();
-        private ChartFileHeader header = new() { difficulty = "CUBE", level = 1, charter = "", songFile = "song.muses" };
+        private ChartFileHeader header = new() { difficulty = "CUBE", level = 1, charter = "", songFile = ChartSerializer.SongFileName };
         private bool dirty;
-        /// <summary>SongMeta(song.muses)側だけの変更。chartのdirtyとは別に持ち、保存時に書き戻す。</summary>
+        /// <summary>SongMeta(song.museproj)側だけの変更。chartのdirtyとは別に持ち、保存時に書き戻す。</summary>
         private bool songMetaDirty;
         private string statusMessage = "";
 
@@ -431,9 +431,17 @@ namespace Muses.ChartTool
             // （macOSでは ~/Library/... 下、Finder既定で非表示）から Finder で素直に見える
             // ~/Documents/muses/songs/ へ変更。設定ファイル・自動保存はpersistentDataPathのまま
             // （アプリ内部状態であってユーザーが触るものではないため）。
+            // editor-ui-rework-r9.md §2.2: 旧既定値(Unix系でHOMEに縮退していたバグの産物)を
+            // 指したまま空フォルダになっている設定は、ここで新既定値へ救済する。
+            bool songsRootRescued = EditorSettingsStore.RescueLegacySongsRoot(settings);
             songsRoot = !string.IsNullOrEmpty(settings.songsRoot) && Directory.Exists(settings.songsRoot)
                 ? settings.songsRoot : EditorSettings.DefaultSongsRoot();
             Directory.CreateDirectory(songsRoot);
+            if (songsRootRescued)
+            {
+                statusMessage = $"曲フォルダの既定値を修正しました: {songsRoot}";
+                EditorSettingsStore.Save(settings);
+            }
             browseDir = !string.IsNullOrEmpty(settings.browseDir) && Directory.Exists(settings.browseDir)
                 ? settings.browseDir : songsRoot;
             followPlayback = settings.followPlayback;
@@ -589,10 +597,17 @@ namespace Muses.ChartTool
             }
 
             string dir = Path.GetDirectoryName(path);
-            string songFilePath = Path.Combine(dir ?? "", "song.muses");
+            string songFilePath = Path.Combine(dir ?? "", ChartSerializer.SongFileName);
+            // editor-ui-rework-r9.md §4.3: 旧ファイル名(song.muses)は読み込みのみフォールバックする。
+            // 自動リネームはしない（保存時に新名で書かれる）。
             if (!File.Exists(songFilePath))
             {
-                statusMessage = $"同じフォルダに song.muses がありません: {songFilePath}";
+                string legacyPath = Path.Combine(dir ?? "", ChartSerializer.LegacySongFileName);
+                if (File.Exists(legacyPath)) songFilePath = legacyPath;
+            }
+            if (!File.Exists(songFilePath))
+            {
+                statusMessage = $"同じフォルダに {ChartSerializer.SongFileName} がありません: {songFilePath}";
                 return;
             }
 
@@ -627,6 +642,21 @@ namespace Muses.ChartTool
             }
         }
 
+        /// <summary>2つの絶対パスを、末尾区切り文字・大小の揺れを無視して比較する。</summary>
+        private static bool PathsEqual(string a, string b)
+        {
+            try
+            {
+                string na = Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string nb = Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(na, nb, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void SaveChartToPath()
         {
             string path = chartFilePathBuffer;
@@ -635,36 +665,66 @@ namespace Muses.ChartTool
                 statusMessage = "保存先パスを入力してください";
                 return;
             }
+
+            // editor-ui-rework-r9.md §5.3: 難易度を変更していたら、ファイル名を <difficulty>.muses
+            // へ追従させる（リネーム）。別の譜面が既にその名前を使っていたら確認する。
+            string songDir = Path.GetDirectoryName(path);
+            string expectedFileName = header.difficulty.ToLowerInvariant() + ChartSerializer.ChartExt;
+            string expectedPath = Path.Combine(songDir ?? "", expectedFileName);
+
+            if (!PathsEqual(expectedPath, path) && File.Exists(expectedPath))
+            {
+                ShowConfirmModal("難易度ファイルの上書き",
+                    $"難易度を変更したため \"{expectedFileName}\" として保存しますが、既に存在します。上書きしますか？",
+                    "上書きする", () => DoSaveChartToPath(path, expectedPath));
+                return;
+            }
+
+            DoSaveChartToPath(path, expectedPath);
+        }
+
+        /// <summary>editor-ui-rework-r9.md §5.3。writePathがoldPathと異なる場合は難易度変更に伴う
+        /// リネーム(File.Move)として扱ってから、従来のWriteChart/WriteSongMeta処理を行う。</summary>
+        private void DoSaveChartToPath(string oldPath, string writePath)
+        {
             try
             {
+                if (!PathsEqual(oldPath, writePath) && File.Exists(oldPath))
+                {
+                    if (File.Exists(writePath)) File.Delete(writePath);
+                    File.Move(oldPath, writePath);
+                }
+
                 // editor-ui-rework-r7.md §0.1/§3.1: songPathを設定する箇所がOpenChartFromPath
                 // (既存譜面を開いたとき)にしか無かったため、「新規」から作った譜面は保存しても
-                // song.musesが一度も書かれず、次に開こうとすると弾かれる（＝二度と開けない）
+                // song.museprojが一度も書かれず、次に開こうとすると弾かれる（＝二度と開けない）
                 // 実バグがあった。「保存＝曲フォルダを確定する行為」とみなし、songPathが未設定、
-                // または譜面の保存先と別フォルダを指している場合はここで確定し直す。
-                string songDir = Path.GetDirectoryName(path);
-                bool songPathNeedsRebase = string.IsNullOrEmpty(songPath)
-                    || !string.Equals(Path.GetDirectoryName(songPath), songDir, StringComparison.OrdinalIgnoreCase);
+                // または譜面の保存先と別フォルダ/旧ファイル名(song.muses)を指している場合は
+                // ここで新名(song.museproj)へ確定し直す（editor-ui-rework-r9.md §4）。
+                string songDir = Path.GetDirectoryName(writePath);
+                string expectedSongPath = Path.Combine(songDir ?? "", ChartSerializer.SongFileName);
+                bool songPathNeedsRebase = string.IsNullOrEmpty(songPath) || !PathsEqual(songPath, expectedSongPath);
                 if (songPathNeedsRebase)
                 {
-                    songPath = Path.Combine(songDir ?? "", "song.muses");
+                    songPath = expectedSongPath;
                     songMetaDirty = true; // 移設先にまだ無ければ新規作成が必要なため
                 }
 
-                ChartSerializer.WriteChart(path, header, chart, song);
+                ChartSerializer.WriteChart(writePath, header, chart, song);
                 // 右パネルの「情報」「音源」セクション(§2.5)は SongMeta を直接編集するので、
-                // 譜面と一緒に song.muses も書き戻さないと編集内容が消える。
-                // song.musesがまだ存在しない場合（新規譜面の初回保存）も、songMetaDirtyの値に
+                // 譜面と一緒に song.museproj も書き戻さないと編集内容が消える。
+                // song.museprojがまだ存在しない場合（新規譜面の初回保存）も、songMetaDirtyの値に
                 // 関わらず必ず新規作成する。
                 if (songMetaDirty || !File.Exists(songPath))
                 {
                     ChartSerializer.WriteSongMeta(song, songPath);
                     songMetaDirty = false;
                 }
-                chartPath = path;
+                chartPath = writePath;
+                chartFilePathBuffer = writePath;
                 dirty = false;
                 statusMessage = "保存完了";
-                // song.musesが確定した＝曲フォルダの音源ディレクトリも確定したので、
+                // song.museprojが確定した＝曲フォルダの音源ディレクトリも確定したので、
                 // 保存した瞬間に音源が読み込まれるようにする（従来はOpenChartFromPathでしか
                 // 音源ディレクトリが決まらず、新規譜面では保存しても永久に音源が読まれなかった）。
                 preview.Rebuild(song, chart, songDir);
@@ -2501,6 +2561,11 @@ namespace Muses.ChartTool
                 return;
             }
             OnSheetWheel(evt);
+            // editor-ui-rework-r9.md §1.2: プレビューは「再生位置そのもの」を映す面なので、
+            // ここでのスクロールは表示位置(scrollTick)だけでなく再生開始地点(cursorTick)も動かす
+            // （スクラブバーでの操作と同じ扱い）。タイムライン側のホイール(OnSheetWheel直呼び)は
+            // 従来どおりcursorTickを動かさない（譜面を眺めるスクロールで再生開始位置が動くと邪魔）。
+            if (!preview.IsPlaying) cursorTick = scrollTick;
         }
 
         // editor-ui-rework-r5.md §5.2: 旧OnSheetKeyDown(notesSheet専用のKeyDownEventハンドラ)は

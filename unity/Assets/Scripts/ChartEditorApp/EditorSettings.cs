@@ -171,9 +171,34 @@ namespace Muses.ChartTool
 
         /// <summary>Finderから素直に見える既定の置き場所。ユーザーがドキュメントフォルダ以下を
         /// 期待するのは自然な慣習なので、persistentDataPath（アプリ内部状態向け。editor-settings.json
-        /// や自動保存はこのままそこに残す）とは意図的に分離する。</summary>
-        public static string DefaultSongsRoot() =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "muses", "songs");
+        /// や自動保存はこのままそこに残す）とは意図的に分離する。
+        /// editor-ui-rework-r9.md §2.1: Unix系(.NET/Mono)では SpecialFolder.MyDocuments が
+        /// $HOME に縮退する（Documentsを指さない）ため、その場合だけ手で "Documents" を補う。
+        /// Windowsではこの縮退は起きないため分岐なしでそのまま使う。</summary>
+        public static string DefaultSongsRoot()
+        {
+            string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(docs) || PathEquals(docs, home))
+                docs = Path.Combine(home, "Documents");
+            return Path.Combine(docs, "muses", "songs");
+        }
+
+        /// <summary>2つの絶対パスを、末尾区切り文字・大小の揺れを無視して比較する
+        /// （editor-ui-rework-r9.md §2.1/§3.1で共通に使う）。</summary>
+        public static bool PathEquals(string a, string b)
+        {
+            try
+            {
+                string na = Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string nb = Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(na, nb, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         /// <summary>editor-ui-rework-r5.md §5.3。参照元(MikuMikuWorld)の既定キー割り当てを土台に、
         /// muses の現状の割り当てを維持したもの。</summary>
@@ -265,6 +290,27 @@ namespace Muses.ChartTool
                     settings.keyBindings.Add(def);
 
             return settings;
+        }
+
+        /// <summary>editor-ui-rework-r9.md §2.2。旧DefaultSongsRoot()（Unix系でHOMEに縮退していた
+        /// バグの産物、$HOME/muses/songs）を指したまま保存されている設定ファイルを救済する。
+        /// フォルダが空（＝実際には使われていない）のときだけ新しい既定値へ書き換える。
+        /// 中身がある場合はユーザーが意図して置いた可能性があるため触らない。
+        /// 呼び出し側(ChartEditorApp.Awake)がユーザーへ通知できるよう、書き換えたかを返す。</summary>
+        public static bool RescueLegacySongsRoot(EditorSettings settings)
+        {
+            if (string.IsNullOrEmpty(settings.songsRoot)) return false;
+
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string legacyDefault = Path.Combine(home, "muses", "songs");
+            if (!EditorSettings.PathEquals(settings.songsRoot, legacyDefault)) return false;
+
+            bool isEmpty = !Directory.Exists(settings.songsRoot)
+                || (Directory.GetFiles(settings.songsRoot).Length == 0 && Directory.GetDirectories(settings.songsRoot).Length == 0);
+            if (!isEmpty) return false;
+
+            settings.songsRoot = EditorSettings.DefaultSongsRoot();
+            return true;
         }
 
         public static void Save(EditorSettings settings)

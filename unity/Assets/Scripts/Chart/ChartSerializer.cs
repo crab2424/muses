@@ -23,7 +23,17 @@ namespace Muses.Chart
     /// </summary>
     public static class ChartSerializer
     {
-        // ---------- song.muses ----------
+        /// <summary>editor-ui-rework-r9.md §4: 曲メタと譜面で拡張子を分ける。曲メタのファイル名は
+        /// 常にこれで固定（フォルダ内に1つだけ存在し、§3の「曲プロジェクトかどうか」の判定にも使う）。</summary>
+        public const string SongFileName = "song.museproj";
+        public const string SongExt = ".museproj";
+        public const string ChartExt = ".muses";
+
+        /// <summary>r9以前に書かれた曲メタの旧ファイル名。読み込み時のフォールバックにのみ使う
+        /// （書き出しは常にSongFileName、自動リネームはしない）。</summary>
+        public const string LegacySongFileName = "song.muses";
+
+        // ---------- song.museproj ----------
 
         public static SongMeta ReadSongMeta(string path)
         {
