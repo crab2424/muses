@@ -39,6 +39,12 @@ namespace Muses.ChartTool
         private const int TabTimeline = 0;
         private const int TabPreview = 1;
 
+        // editor-ui-rework-r11.md §4: 右パネルのタブ(曲/表示/結果)。BuildTabsと同じ
+        // ボタン2つ+display切替の自前実装に揃える(TabViewは使わない、既存の理由と同じ)。
+        private const int RightTabSong = 0;
+        private const int RightTabView = 1;
+        private const int RightTabResults = 2;
+
         // ---- 要素の参照（BuildUIで一度だけ引く）----
         private VisualElement uiRoot;
         private VisualElement overlayLayer;
@@ -47,6 +53,8 @@ namespace Muses.ChartTool
         private Label hiSpeedLabel;
         private Button timelineTabButton, previewTabButton;
         private int selectedTabIndex = TabTimeline;
+        private Button rightTabSongButton, rightTabViewButton, rightTabResultsButton;
+        private VisualElement rightTabSongBody, rightTabViewBody, rightTabResultsBody;
 
         private const int MaxSheetLabels = 128;
         private readonly List<Label> sheetLabels = new();
@@ -75,7 +83,8 @@ namespace Muses.ChartTool
         private Label statusTime, statusChartInfo;
         private Button statusValidation;
 
-        private TextField infoTitle, infoArtist, infoJacket, infoDifficulty, infoCharter;
+        private TextField infoTitle, infoArtist, infoJacket, infoCharter;
+        private DropdownField infoDifficulty;
         private IntegerField infoLevel;
         private TextField audioFile;
         private FloatField audioOffset;
@@ -88,7 +97,6 @@ namespace Muses.ChartTool
         private Label statsText;
         private VisualElement presetHost;
         private TextField presetNameField;
-        private Foldout foldInspector, foldValidation;
         private VisualElement validationHost;
         private Toggle validateOnSaveToggle;
 
@@ -138,6 +146,7 @@ namespace Muses.ChartTool
             }
 
             overlayLayer = uiRoot.Q<VisualElement>("overlay-layer");
+            imeBridge = new ImeBridge(uiRoot, overlayLayer);
 
             BuildMenuBar();
             BuildToolbar();
@@ -796,7 +805,10 @@ namespace Muses.ChartTool
             infoTitle = AddTextRow(infoHost, "タイトル", v => { song.title = v; songMetaDirty = true; });
             infoArtist = AddTextRow(infoHost, "アーティスト", v => { song.artist = v; songMetaDirty = true; });
             infoJacket = AddTextRow(infoHost, "ジャケット", v => { song.jacket = v; songMetaDirty = true; });
-            infoDifficulty = AddTextRow(infoHost, "難易度", v => { header.difficulty = v; dirty = true; });
+            infoDifficulty = AddChoiceRow(infoHost, "難易度", DifficultyChoices, v => { header.difficulty = v; dirty = true; });
+            var diffNote = new Label("保存時にファイル名が <難易度>.muses へ変わります。");
+            diffNote.AddToClassList("prop-note");
+            infoHost.Add(diffNote);
             infoLevel = AddIntRow(infoHost, "レベル", v => { header.level = v; dirty = true; });
             infoCharter = AddTextRow(infoHost, "譜面制作者", v => { header.charter = v; dirty = true; });
 
@@ -874,15 +886,49 @@ namespace Muses.ChartTool
             presetHost = uiRoot.Q<VisualElement>("preset-host");
             RebuildPresetList();
 
-            foldInspector = uiRoot.Q<Foldout>("fold-inspector");
             inspectorHost = uiRoot.Q<VisualElement>("inspector-host");
             RebuildInspector();
 
-            foldValidation = uiRoot.Q<Foldout>("fold-validation");
             validationHost = uiRoot.Q<VisualElement>("validation-host");
             validationHost.Clear();
             validateOnSaveToggle = AddToggleRow(validationHost, "保存時に自動実行", v => validateOnSave = v);
             validateOnSaveToggle.SetValueWithoutNotify(validateOnSave);
+
+            BuildRightTabs();
+        }
+
+        /// <summary>editor-ui-rework-r11.md §4: 右パネルのタブ切替。中身(info-host等)はこの前の
+        /// ブロックで既に流し込み済みなので、ここではタブヘッダの生成とdisplay切替だけを持つ
+        /// （BuildTabsと同じ役割分担）。§3の作業状態(rightTabIndex)を初期表示に使う。</summary>
+        private void BuildRightTabs()
+        {
+            var header = uiRoot.Q<VisualElement>("right-tab-header");
+            header.Clear();
+            rightTabSongButton = new Button(() => SelectRightTab(RightTabSong)) { text = "曲" };
+            rightTabViewButton = new Button(() => SelectRightTab(RightTabView)) { text = "表示" };
+            rightTabResultsButton = new Button(() => SelectRightTab(RightTabResults)) { text = "結果" };
+            foreach (var btn in new[] { rightTabSongButton, rightTabViewButton, rightTabResultsButton })
+                btn.AddToClassList("tab-header-btn");
+            header.Add(rightTabSongButton);
+            header.Add(rightTabViewButton);
+            header.Add(rightTabResultsButton);
+
+            rightTabSongBody = uiRoot.Q<VisualElement>("right-tab-song");
+            rightTabViewBody = uiRoot.Q<VisualElement>("right-tab-view");
+            rightTabResultsBody = uiRoot.Q<VisualElement>("right-tab-results");
+
+            SelectRightTab(Mathf.Clamp(rightTabIndex, RightTabSong, RightTabResults));
+        }
+
+        private void SelectRightTab(int index)
+        {
+            rightTabIndex = index;
+            rightTabSongBody.style.display = index == RightTabSong ? DisplayStyle.Flex : DisplayStyle.None;
+            rightTabViewBody.style.display = index == RightTabView ? DisplayStyle.Flex : DisplayStyle.None;
+            rightTabResultsBody.style.display = index == RightTabResults ? DisplayStyle.Flex : DisplayStyle.None;
+            rightTabSongButton.EnableInClassList("tab-header-btn--selected", index == RightTabSong);
+            rightTabViewButton.EnableInClassList("tab-header-btn--selected", index == RightTabView);
+            rightTabResultsButton.EnableInClassList("tab-header-btn--selected", index == RightTabResults);
         }
 
         /// <summary>
@@ -1410,6 +1456,42 @@ namespace Muses.ChartTool
             return f;
         }
 
+        /// <summary>editor-ui-rework-r11.md §1: 固定の選択肢を持つ文字列フィールド（難易度など）。
+        /// AddEnumRowのenum版とほぼ同形だが、選択肢がC#のenumではなく定数配列の場合に使う。</summary>
+        private DropdownField AddChoiceRow(VisualElement parent, string label, IReadOnlyList<string> choices, Action<string> onChange)
+        {
+            var f = new DropdownField { choices = new List<string>(choices) };
+            f.RegisterValueChangedCallback(evt =>
+            {
+                if (suppressUiCallbacks) return;
+                onChange(evt.newValue);
+            });
+            MakePropRow(parent, label, f);
+            return f;
+        }
+
+        /// <summary>editor-ui-rework-r11.md §1.2: 読み込んだ値が既知の選択肢に無い場合、
+        /// 黙って先頭の選択肢に化けさせず、その値を選択肢へ一時的に足して保持する。
+        /// フォーカス中は触らない（RefreshEnumIfUnfocused等と同じ作法）。</summary>
+        private static void RefreshChoiceIfUnfocused(DropdownField field, IReadOnlyList<string> baseChoices, string value)
+        {
+            if (field.focusController?.focusedElement == field) return;
+            value ??= "";
+            if (!baseChoices.Contains(value))
+            {
+                if (field.choices.Count != baseChoices.Count + 1 || field.choices[^1] != value)
+                {
+                    var choices = new List<string>(baseChoices) { value };
+                    field.choices = choices;
+                }
+            }
+            else if (field.choices.Count != baseChoices.Count)
+            {
+                field.choices = new List<string>(baseChoices);
+            }
+            if (field.value != value) field.SetValueWithoutNotify(value);
+        }
+
         // ================= C: ステータスバー / トランスポート(§2.6) =================
 
         private void BuildStatusBar()
@@ -1478,10 +1560,7 @@ namespace Muses.ChartTool
             statusTime = uiRoot.Q<Label>("status-time");
             statusChartInfo = uiRoot.Q<Label>("status-chartinfo");
             statusValidation = uiRoot.Q<Button>("status-validation");
-            statusValidation.clicked += () =>
-            {
-                if (foldValidation != null) foldValidation.value = true;
-            };
+            statusValidation.clicked += () => SelectRightTab(RightTabResults);
         }
 
         private static Button MakeTransportButton(string label, Action onClick)
@@ -1528,7 +1607,7 @@ namespace Muses.ChartTool
                     infoTitle.SetValueWithoutNotify(song.title ?? "");
                     infoArtist.SetValueWithoutNotify(song.artist ?? "");
                     infoJacket.SetValueWithoutNotify(song.jacket ?? "");
-                    infoDifficulty.SetValueWithoutNotify(header.difficulty ?? "");
+                    RefreshChoiceIfUnfocused(infoDifficulty, DifficultyChoices, header.difficulty ?? "");
                     infoLevel.SetValueWithoutNotify(header.level);
                     infoCharter.SetValueWithoutNotify(header.charter ?? "");
                     audioFile.SetValueWithoutNotify(song.audio ?? "");
@@ -1629,7 +1708,9 @@ namespace Muses.ChartTool
                 inspectorSelectionCount = selection.Count;
                 RebuildInspector();
             }
-            else if (slowTick && foldInspector.value)
+            // editor-ui-rework-r11.md §4: インスペクタが常設になったため、以前あった
+            // 「折りたたまれている間はリフレッシュしない」最適化(foldInspector.value)は不要。
+            else if (slowTick)
             {
                 suppressUiCallbacks = true;
                 try
@@ -2075,6 +2156,12 @@ namespace Muses.ChartTool
             openBtn.AddToClassList("tb-btn");
             songsRootField.Add(openBtn);
             MakePropRow(parent, "曲フォルダ", songsRootField);
+
+            // editor-ui-rework-r11.md §2.3: macOSでIMEが実際にどこまで機能するかは実機でしか
+            // 確認できないため、composition/textInputの発火状況とIMEカーソル座標を可視化する
+            // 診断表示。既定OFF、設定として永続化はしない(デバッグ用の一時的なトグルのため)。
+            var imeDebugToggle = AddToggleRow(parent, "IME診断表示", v => imeBridge?.SetDebugOverlayEnabled(v));
+            imeDebugToggle.SetValueWithoutNotify(imeBridge?.DebugOverlayEnabled ?? false);
         }
 
         // ---- タイムラインタブ(§4) ----

@@ -54,6 +54,7 @@ namespace Muses.ChartTool
         [SerializeField] private SeClipSet seClips = new();
 
         private PreviewSystem preview;
+        private ImeBridge imeBridge;
         private float lastPreviewRebuildRealtime = -999f;
         private bool wasPlayingLastFrame;
 
@@ -155,6 +156,17 @@ namespace Muses.ChartTool
         // showEventLane/showHeightLaneを直接参照し、幅の有無では判定しない。
         private bool showEventLane = true;
 
+        // ---- editor-ui-rework-r11.md §3: 作業状態(ズーム/スナップ/レーン表示/右パネルタブ)の記憶 ----
+        // 設定モーダルには出さない値なので、専用のdirtyフラグではなく「直近保存した値」との
+        // 差分を毎フレーム見る方式にする(書き換え箇所を1つ1つdirty化する手間・漏れを避けるため)。
+        private float workspaceSavedPxPerBeat;
+        private int workspaceSavedSnapIndex;
+        private bool workspaceSavedShowHeightLane;
+        private bool workspaceSavedShowEventLane;
+        private int workspaceSavedRightTabIndex;
+        private float workspaceDirtySinceRealtime = -1f;
+        private const float WorkspaceSaveDelaySec = 10f;
+
         // タイムライン追従: ノーツシート内で「現在時刻」を固定表示する高さ(0=上端,1=下端)。
         // scrollTickはこの位置に置かれるtickとして扱う（judgeLineFracが1.0なら従来どおり下端固定）。
         private bool followPlayback = true;
@@ -168,6 +180,9 @@ namespace Muses.ChartTool
         private enum ScrollFollowMode { Smooth, Page }
         private ScrollFollowMode scrollFollowMode = ScrollFollowMode.Smooth;
         private EditorTool currentTool = EditorTool.Select;
+
+        // editor-ui-rework-r11.md §4: 右パネルのタブ(曲/表示/結果)の選択状態。§3の作業状態として記憶する。
+        private int rightTabIndex;
 
         // ---- §7.4-A 選択状態 ----
         // editor-ui-rework-mmw.md §5.2: 選択の粒度は「点」単位（NoteRef）。参照元(MikuMikuWorld)は
@@ -460,6 +475,20 @@ namespace Muses.ChartTool
             preview.SeVolume = settings.seVolume;
             preview.HiSpeed = settings.hiSpeed;
 
+            // editor-ui-rework-r11.md §3.3: 古い設定ファイル(このフィールドが無い版で保存された物)
+            // や将来SnapDenominatorsの要素数を変えた場合でも壊れないよう必ずクランプを通す。
+            var ws = settings.workspace ?? new WorkspaceState();
+            pxPerBeat = Mathf.Clamp(ws.pxPerBeat, ZoomMinPxPerBeat, ZoomMaxPxPerBeat);
+            snapIndex = Mathf.Clamp(ws.snapIndex, 0, SnapDenominators.Length - 1);
+            showHeightLane = ws.showHeightLane;
+            showEventLane = ws.showEventLane;
+            rightTabIndex = Mathf.Clamp(ws.rightTabIndex, 0, 2);
+            workspaceSavedPxPerBeat = pxPerBeat;
+            workspaceSavedSnapIndex = snapIndex;
+            workspaceSavedShowHeightLane = showHeightLane;
+            workspaceSavedShowEventLane = showEventLane;
+            workspaceSavedRightTabIndex = rightTabIndex;
+
             uiDocument = GetComponent<UIDocument>();
             if (uiDocument != null && uiDocument.panelSettings != null)
             {
@@ -521,7 +550,54 @@ namespace Muses.ChartTool
             settings.bgmVolume = preview.BgmVolume;
             settings.seVolume = preview.SeVolume;
             settings.hiSpeed = preview.HiSpeed;
+            WriteWorkspaceState(settings);
             EditorSettingsStore.Save(settings);
+        }
+
+        /// <summary>editor-ui-rework-r11.md §3.2。ライブ値をsettings.workspaceへ写すだけの補助
+        /// （呼び出し元がEditorSettingsStore.Saveを呼ぶ）。SaveSettingsFromLiveFieldsと
+        /// TickWorkspacePersistenceの両方から呼ぶ。</summary>
+        private void WriteWorkspaceState(EditorSettings target)
+        {
+            target.workspace.pxPerBeat = pxPerBeat;
+            target.workspace.snapIndex = snapIndex;
+            target.workspace.showHeightLane = showHeightLane;
+            target.workspace.showEventLane = showEventLane;
+            target.workspace.rightTabIndex = rightTabIndex;
+        }
+
+        /// <summary>editor-ui-rework-r11.md §3.2。ズーム/スナップ/レーン表示/右タブは操作頻度が
+        /// 高く、OnDestroy頼み(異常終了で失う)では心もとないため、変化してから一定時間後に
+        /// 1回だけ書く。専用dirtyフラグを書き換え箇所ごとに立てる代わりに、直近保存した値との
+        /// 差分を毎フレーム見る(値の種類・数が少ないので実測コストは無視できる)。</summary>
+        private void TickWorkspacePersistence()
+        {
+            bool changed = !Mathf.Approximately(pxPerBeat, workspaceSavedPxPerBeat)
+                || snapIndex != workspaceSavedSnapIndex
+                || showHeightLane != workspaceSavedShowHeightLane
+                || showEventLane != workspaceSavedShowEventLane
+                || rightTabIndex != workspaceSavedRightTabIndex;
+
+            if (changed)
+            {
+                if (workspaceDirtySinceRealtime < 0f) workspaceDirtySinceRealtime = Time.unscaledTime;
+            }
+            else
+            {
+                workspaceDirtySinceRealtime = -1f;
+                return;
+            }
+
+            if (Time.unscaledTime - workspaceDirtySinceRealtime < WorkspaceSaveDelaySec) return;
+
+            WriteWorkspaceState(settings);
+            EditorSettingsStore.Save(settings);
+            workspaceSavedPxPerBeat = pxPerBeat;
+            workspaceSavedSnapIndex = snapIndex;
+            workspaceSavedShowHeightLane = showHeightLane;
+            workspaceSavedShowEventLane = showEventLane;
+            workspaceSavedRightTabIndex = rightTabIndex;
+            workspaceDirtySinceRealtime = -1f;
         }
 
         private void Update()
@@ -578,6 +654,7 @@ namespace Muses.ChartTool
             wasPlayingLastFrame = preview.IsPlaying;
 
             TickAutosave();
+            TickWorkspacePersistence();
             SyncModelToUi();
         }
 
@@ -585,6 +662,7 @@ namespace Muses.ChartTool
         {
             if (settings != null) SaveSettingsFromLiveFields();
             preview?.Dispose();
+            imeBridge?.Dispose();
         }
 
         private void OpenChartFromPath()
@@ -1001,7 +1079,7 @@ namespace Muses.ChartTool
 
             validationIssues = ChartValidator.Validate(chart, Cells, preview.AudioLengthSec, song.offsetSec);
             RefreshValidationList();
-            if (foldValidation != null) foldValidation.value = true;
+            SelectRightTab(RightTabResults);
         }
 
 

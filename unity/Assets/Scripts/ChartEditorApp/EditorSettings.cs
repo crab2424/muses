@@ -116,6 +116,19 @@ namespace Muses.ChartTool
         }
     }
 
+    /// <summary>editor-ui-rework-r11.md §3。タイムライン倍率・スナップ・レーン表示・右パネルの
+    /// 選択中タブなど、「設定画面で明示的に選ぶもの」ではなく「編集操作の結果として変わるもの」を
+    /// まとめて持つ。UIから直接編集する項目が無いこと(コード側で書き換えるだけ)を前提にしている。</summary>
+    [Serializable]
+    public class WorkspaceState
+    {
+        public float pxPerBeat = 28f; // ChartEditorApp.ZoomBasePxPerBeatと同値
+        public int snapIndex = 3; // 1/16 既定(ChartEditorApp.snapIndexの既定と同値)
+        public bool showHeightLane = false;
+        public bool showEventLane = true;
+        public int rightTabIndex = 0;
+    }
+
     /// <summary>
     /// editor-ui-rework-r5.md §1。譜面エディタ(ChartEditorApp)の設定。ゲーム本体のプレイヤー設定
     /// （Stage/OffsetSettings.cs、judgeOffsetMs/visualOffsetMs）とは別物で混ぜない。
@@ -161,6 +174,11 @@ namespace Muses.ChartTool
         /// <summary>editor-ui-rework-r5.md §1 Q1: 従来PlayerPrefsだった最後に開いたフォルダも
         /// 設定ファイルへ統合する。</summary>
         public string browseDir = "";
+
+        // ---- 作業状態(editor-ui-rework-r11.md §3) ----
+        // 「設定」ではなく編集操作の副作用で変わる値。設定モーダルには一切出さない
+        // （出す/出さないの境界は「モーダルで明示的に選ぶか」「操作の結果として変わるか」）。
+        public WorkspaceState workspace = new();
 
         /// <summary>editor-ui-rework-r7.md §3.2。曲プロジェクト（song.muses・各難易度・音源・
         /// ジャケット等を1フォルダにまとめたもの、editor-spec.md §1.2の songs/&lt;song-id&gt;/ に相当）

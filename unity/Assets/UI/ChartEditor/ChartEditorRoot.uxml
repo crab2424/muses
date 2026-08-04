@@ -31,31 +31,39 @@
             <!-- B: メインキャンバスのタブ(§2.3)。TabView本体はコードで生成して差し込む -->
             <ui:VisualElement name="tabs-host" class="tabs-host" />
 
-            <!-- D: 右パネル(§2.5)。折りたたみセクションで情報を集約する -->
+            <!--
+                D: 右パネル(§2.5)。editor-ui-rework-r11.md §4: 折りたたみ7段から
+                「タブ3枚(曲/表示/結果)＋常設インスペクタ」へ再構成。タブヘッダは
+                メインキャンバスのタブ(B、上のtabs-host)と同じUSSクラスを再利用する。
+            -->
             <ui:VisualElement name="right-panel" class="right-panel">
-                <ui:ScrollView name="right-scroll" class="right-scroll">
-                    <ui:Foldout text="情報" name="fold-info" value="true" class="section">
+                <ui:VisualElement name="right-tab-header" class="tab-header" />
+                <ui:VisualElement name="right-tab-body" class="right-tab-body">
+                    <ui:ScrollView name="right-tab-song" class="right-scroll">
+                        <ui:Label text="情報" class="subsection-heading" />
                         <ui:VisualElement name="info-host" />
-                    </ui:Foldout>
-                    <ui:Foldout text="音源" name="fold-audio" value="false" class="section">
+                        <ui:Label text="音源" class="subsection-heading" />
                         <ui:VisualElement name="audio-host" />
-                    </ui:Foldout>
-                    <ui:Foldout text="表示" name="fold-view" value="false" class="section">
+                    </ui:ScrollView>
+                    <ui:ScrollView name="right-tab-view" class="right-scroll">
+                        <ui:Label text="表示" class="subsection-heading" />
                         <ui:VisualElement name="view-host" />
-                    </ui:Foldout>
-                    <ui:Foldout text="プリセット" name="fold-preset" value="false" class="section">
+                        <ui:Label text="プリセット" class="subsection-heading" />
                         <ui:VisualElement name="preset-host" />
-                    </ui:Foldout>
-                    <ui:Foldout text="統計" name="fold-stats" value="false" class="section">
+                    </ui:ScrollView>
+                    <ui:ScrollView name="right-tab-results" class="right-scroll">
+                        <ui:Label text="統計" class="subsection-heading" />
                         <ui:Label name="stats-text" class="stats-text" />
-                    </ui:Foldout>
-                    <ui:Foldout text="インスペクタ" name="fold-inspector" value="true" class="section">
-                        <ui:VisualElement name="inspector-host" class="inspector-host" />
-                    </ui:Foldout>
-                    <ui:Foldout text="検証結果" name="fold-validation" value="false" class="section">
+                        <ui:Label text="検証結果" class="subsection-heading" />
                         <ui:VisualElement name="validation-host" />
-                    </ui:Foldout>
-                </ui:ScrollView>
+                    </ui:ScrollView>
+                </ui:VisualElement>
+                <ui:VisualElement name="right-inspector" class="right-inspector">
+                    <ui:Label text="インスペクタ" class="subsection-heading subsection-heading--pinned" />
+                    <ui:ScrollView name="inspector-scroll" class="right-scroll">
+                        <ui:VisualElement name="inspector-host" class="inspector-host" />
+                    </ui:ScrollView>
+                </ui:VisualElement>
             </ui:VisualElement>
         </ui:VisualElement>
 
