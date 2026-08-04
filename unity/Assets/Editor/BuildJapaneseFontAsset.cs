@@ -44,6 +44,22 @@ public static class BuildJapaneseFontAsset
             }
             fontAsset.name = "NotoSansJP SDF";
             AssetDatabase.CreateAsset(fontAsset, FontAssetPath);
+            // material/atlasTexturesはFontAsset.CreateFontAssetが生成した子アセットだが、
+            // サブアセットとしてファイルへ書き込まないとリロード時に参照切れ(m_Materialが
+            // 「存在しなくなった」)を起こす。CreateAsset直後にAddObjectToAssetで明示的に追加する。
+            if (fontAsset.material != null)
+            {
+                fontAsset.material.name = fontAsset.name + " Material";
+                AssetDatabase.AddObjectToAsset(fontAsset.material, fontAsset);
+            }
+            if (fontAsset.atlasTextures != null)
+            {
+                foreach (var tex in fontAsset.atlasTextures)
+                {
+                    if (tex != null && AssetDatabase.GetAssetPath(tex) != FontAssetPath)
+                        AssetDatabase.AddObjectToAsset(tex, fontAsset);
+                }
+            }
             Debug.Log("FontAssetを新規作成しました: " + FontAssetPath);
         }
         else
@@ -65,6 +81,8 @@ public static class BuildJapaneseFontAsset
 #pragma warning disable CS0618
         textSettings.defaultFontAsset = fontAsset;
 #pragma warning restore CS0618
+        if (textSettings.fallbackFontAssets == null)
+            textSettings.fallbackFontAssets = new System.Collections.Generic.List<FontAsset>();
         if (!textSettings.fallbackFontAssets.Contains(fontAsset))
             textSettings.fallbackFontAssets.Add(fontAsset);
         EditorUtility.SetDirty(textSettings);
