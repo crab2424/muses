@@ -40,6 +40,11 @@ namespace Muses.Game
 
         private void Start()
         {
+            // vSyncCount!=0だとtargetFrameRateは無視される（ChartEditorApp.csの表示設定と同じ排他関係）。
+            // 実機(iPad)は120Hz(ProMotion)描画が可能なため、vSyncに委ねず明示的に120を要求する。
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = 120;
+
             OffsetSettings.Load(stageController.Config);
 
             judge = new Judge(stageController.Config, noteView.SetNoteAlpha);
