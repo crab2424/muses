@@ -31,15 +31,25 @@ namespace Muses.Overlay
         [SerializeField] private TouchInputManager input;
         [SerializeField] private bool showHud = true;
 
+        /// <summary>実行時生成(ScriptableObject.CreateInstance)は既定シェーダ/テーマの参照が
+        /// 埋まらずプレイヤービルドで描画できない(ipad-build-issues-r1.md ①)。
+        /// 必ずアセット(Assets/UI/Game/GameOverlayPanelSettings.asset)をInspectorで配線すること。</summary>
+        [SerializeField] private PanelSettings panelSettingsAsset;
+
         /// <summary>Judge はプレーンなC#クラス（MonoBehaviourではない）なので Inspector には出せない。
         /// GameController が生成後にコードから設定する。</summary>
         public Judge Judge { get; set; }
 
-        private PanelSettings panelSettings;
         private UIDocument uiDocument;
         private VisualElement overlayRoot;
         private float hudSongTime;
         private float hudFps;
+
+        // Update()の毎フレームRemoveAllで使う述語。ラムダをフィールドに固定して
+        // 「thisだけをキャプチャする閉包」にすることで、毎フレームのデリゲート確保を避ける。
+        private float cleanupNow;
+        private System.Predicate<HitFlash> flashExpired;
+        private System.Predicate<(Layer layer, int cell, float born)> rippleExpired;
 
         /// <summary>main.ts の frame() 内 HUD 更新相当。GameController が毎フレーム呼ぶ。</summary>
         public void SetHudTime(float songTime, float fps)
@@ -50,13 +60,8 @@ namespace Muses.Overlay
 
         private void Awake()
         {
-            // PreviewSystem.cs と同じ方針: Inspector配線を前提にせず、コードから組み立てる。
-            panelSettings = ScriptableObject.CreateInstance<PanelSettings>();
-            panelSettings.scaleMode = PanelScaleMode.ConstantPixelSize;
-            panelSettings.clearColor = false;
-
             uiDocument = gameObject.AddComponent<UIDocument>();
-            uiDocument.panelSettings = panelSettings;
+            uiDocument.panelSettings = panelSettingsAsset;
             uiDocument.rootVisualElement.pickingMode = PickingMode.Ignore;
 
             overlayRoot = new VisualElement { pickingMode = PickingMode.Ignore };
@@ -67,19 +72,18 @@ namespace Muses.Overlay
             overlayRoot.style.bottom = 0;
             overlayRoot.generateVisualContent += GenerateOverlay;
             uiDocument.rootVisualElement.Add(overlayRoot);
-        }
 
-        private void OnDestroy()
-        {
-            if (panelSettings != null) Destroy(panelSettings);
+            // cleanupNow（thisのフィールド）だけをキャプチャする閉包として1回だけ生成する。
+            flashExpired = f => cleanupNow - f.born < 0f || cleanupNow - f.born >= 0.45f;
+            rippleExpired = r => cleanupNow - r.born < 0f || cleanupNow - r.born >= 0.3f;
         }
 
         private void Update()
         {
             // GL版で毎フレーム行っていたクリーンアップ（描画本体からは分離し、副作用を1箇所にまとめる）。
-            float now = Time.time;
-            if (Judge != null) Judge.Flashes.RemoveAll(f => now - f.born < 0f || now - f.born >= 0.45f);
-            if (input != null) input.Ripples.RemoveAll(r => now - r.born < 0f || now - r.born >= 0.3f);
+            cleanupNow = Time.time;
+            if (Judge != null) Judge.Flashes.RemoveAll(flashExpired);
+            if (input != null) input.Ripples.RemoveAll(rippleExpired);
             overlayRoot.MarkDirtyRepaint();
         }
 
@@ -267,12 +271,18 @@ namespace Muses.Overlay
         private static float PxY(float v) => (v + 1f) / 2f * Screen.height; // y-up（OnGUIのSpaceと合わせて後段でScreen.height-flipする）
         private static float CellU(StageConfig cfg, float cellIdx) => -cfg.U + 2f * cfg.U * cellIdx / cfg.cells;
 
+        // OnGUIは1フレームに複数回(Layout/Repaint)呼ばれるため、GUIStyleは使い回す（毎フレームGC回避）。
+        private GUIStyle cellStyle;
+        private GUIStyle hudLineStyle;
+        private GUIStyle hudJudgeLineStyle;
+
         private void OnGUI()
         {
             if (stageController == null) return;
             var cfg = stageController.Config;
             var d = stageController.Derived;
-            var style = new GUIStyle { fontSize = 10, normal = { textColor = Color.white } };
+            cellStyle ??= new GUIStyle { fontSize = 10, normal = { textColor = Color.white } };
+            var style = cellStyle;
 
             if (showHud) DrawHud();
 
@@ -309,8 +319,10 @@ namespace Muses.Overlay
 
             GUI.Box(new Rect(8, 8, 190, 78), "");
 
-            var line = new GUIStyle { fontSize = 12, normal = { textColor = Color.white } };
-            var judgeLine = new GUIStyle(line) { normal = { textColor = new Color(0.91f, 0.94f, 1f) } };
+            hudLineStyle ??= new GUIStyle { fontSize = 12, normal = { textColor = Color.white } };
+            hudJudgeLineStyle ??= new GUIStyle(hudLineStyle) { normal = { textColor = new Color(0.91f, 0.94f, 1f) } };
+            var line = hudLineStyle;
+            var judgeLine = hudJudgeLineStyle;
 
             string msSuffix = "";
             if (s.lastJudge == "PERFECT+" || s.lastJudge == "PERFECT" || s.lastJudge == "GOOD")

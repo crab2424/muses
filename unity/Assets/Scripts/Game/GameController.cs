@@ -139,6 +139,10 @@ namespace Muses.Game
         {
             HandleDevInput();
 
+            // ipad-build-issues-r1.md ②-B: dspTimeのDSPバッファ量子化(実機で実測23〜25Hz)を
+            // 補間して滑らかにする。判定用JudgeTime()/描画用VisualTime()の両方がこの値を使う。
+            clock.Advance(Time.unscaledDeltaTime);
+
             float t = clock.SongTime;
             float dt = Time.deltaTime;
             fps += (1f / Mathf.Max(dt, 1e-4f) - fps) * 0.08f;

@@ -272,6 +272,7 @@ MonoBehaviour:
   stageController: {fileID: 548285724}
   input: {fileID: 406964926}
   showHud: 1
+  panelSettingsAsset: {fileID: 11400000, guid: 17cc71001d4944288f4d62b698a1d952, type: 2}
 --- !u!1 &406964925
 GameObject:
   m_ObjectHideFlags: 0

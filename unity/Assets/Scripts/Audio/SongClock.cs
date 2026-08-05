@@ -11,6 +11,13 @@ namespace Muses.Audio
     /// メトロノームは簡略化: Web版の先読みスケジューリング（AudioParamへのRampで極めて正確）ではなく、
     /// 毎フレームのポーリングで拍を跨いだ瞬間に単発再生する。クリック音自体は外部アセット無しで、
     /// 短い減衰サイン波を実行時に合成する（Web版の OscillatorNode + GainNode ランプを模したもの）。
+    ///
+    /// フレーム補間について（ipad-build-issues-r1.md ②-B）: AudioSettings.dspTime は
+    /// DSPバッファ単位でしか更新されない（実機で実測: 約23〜25Hz）。これをそのままノーツの
+    /// 描画位置に使うと、描画は120Hzで回っていてもノーツは23〜25Hzでしか動かず「コマ落ち」して見える。
+    /// SongTime は dspTime を「正解」として保持しつつ、dspTime が更新されないフレームは
+    /// Time.unscaledDeltaTime で滑らかに前進させ、次にdspTimeが更新された時点でずれを補正する
+    /// （音との同期精度は保ったまま、見た目だけを滑らかにする）。
     /// </summary>
     public class SongClock
     {
@@ -24,6 +31,15 @@ namespace Muses.Audio
         private readonly AudioClip accentClip;
         private readonly AudioClip normalClip;
 
+        // ---- フレーム補間用の状態 ----
+        private double lastObservedDsp = -1;
+        private double smoothed;
+        /// <summary>この秒数を超えてdspTime基準の値とズレたら、補間せず即座にスナップする
+        /// （Seek直後や大きなハング直後の想定）。</summary>
+        private const double SnapThreshold = 0.05;
+        /// <summary>毎フレーム、ズレのこの割合だけ縮める（音ズレを一気にではなく滑らかに吸収する）。</summary>
+        private const double DriftCorrectionRate = 0.10;
+
         public SongClock(AudioSource source)
         {
             this.source = source;
@@ -36,6 +52,8 @@ namespace Muses.Audio
             t0 = AudioSettings.dspTime;
             nextBeat = 0;
             pausedAt = 0;
+            lastObservedDsp = t0;
+            smoothed = 0;
             Running = true;
         }
 
@@ -55,6 +73,8 @@ namespace Muses.Audio
         {
             if (Running) return;
             t0 = AudioSettings.dspTime - pausedAt;
+            lastObservedDsp = AudioSettings.dspTime;
+            smoothed = pausedAt;
             Running = true;
         }
 
@@ -65,12 +85,46 @@ namespace Muses.Audio
         public void Seek(double songTime)
         {
             songTime = Math.Max(0, songTime);
-            if (Running) t0 = AudioSettings.dspTime - songTime;
-            else pausedAt = songTime;
+            if (Running)
+            {
+                t0 = AudioSettings.dspTime - songTime;
+                lastObservedDsp = AudioSettings.dspTime;
+            }
+            else
+            {
+                pausedAt = songTime;
+            }
+            smoothed = songTime; // Seek直後は補間せず即スナップ
             nextBeat = songTime;
         }
 
-        public float SongTime => Running ? (float)(AudioSettings.dspTime - t0) : (float)pausedAt;
+        /// <summary>
+        /// 毎フレーム呼ぶ想定（GameController.Update()の先頭）。dspTimeが更新されたフレームでは
+        /// そのずれを徐々に吸収し、更新されないフレームは deltaTime で滑らかに前進させる。
+        /// 呼ばなくても SongTime 自体は動くが、その場合は従来どおり dspTime の階段状になる。
+        /// </summary>
+        public void Advance(float unscaledDeltaTime)
+        {
+            if (!Running) return;
+            double dsp = AudioSettings.dspTime;
+            double authoritative = dsp - t0;
+            if (dsp != lastObservedDsp)
+            {
+                lastObservedDsp = dsp;
+                double drift = authoritative - smoothed;
+                smoothed = Math.Abs(drift) > SnapThreshold
+                    ? authoritative
+                    : smoothed + drift * DriftCorrectionRate;
+            }
+            else
+            {
+                smoothed += unscaledDeltaTime;
+                // dspTimeを追い越しすぎないようにクランプ（次の更新までの見積もりが外れた場合の保険）。
+                if (smoothed > authoritative + SnapThreshold) smoothed = authoritative + SnapThreshold;
+            }
+        }
+
+        public float SongTime => Running ? (float)smoothed : (float)pausedAt;
 
         public void TickMetronome(float bpm, bool enabled)
         {
