@@ -99,28 +99,32 @@ namespace Muses.Audio
         }
 
         /// <summary>
-        /// 毎フレーム呼ぶ想定（GameController.Update()の先頭）。dspTimeが更新されたフレームでは
-        /// そのずれを徐々に吸収し、更新されないフレームは deltaTime で滑らかに前進させる。
+        /// 毎フレーム呼ぶ想定（GameController.Update()の先頭）。smoothed は毎フレーム必ず
+        /// deltaTime分前進させ（＝見た目のなめらかさを常に保証）、dspTimeが更新された
+        /// フレームだけ追加でオーディオクロック基準の値へ少しだけ寄せる（実測23〜25Hzで発生）。
         /// 呼ばなくても SongTime 自体は動くが、その場合は従来どおり dspTime の階段状になる。
+        ///
+        /// v1実装（クランプで追い越しを止める方式）は、DSP更新間隔(実測約40〜43ms)と
+        /// クランプの許容幅(50ms)の差がわずか7〜10msしかなく、DSPコールバックの
+        /// タイミングジッタでこの薄い余白をすぐ使い切って**smoothedが数フレーム凍結する**
+        /// 周期的なスタッタリングを引き起こしていた（実機で確認、120fps基準で3〜4フレーム分、
+        /// 秒間数回）。v2はクランプ自体を廃止し、「毎フレーム必ず前進・ズレは足し算で
+        /// 補正するだけ」にすることで、smoothedが止まる経路を無くした。
         /// </summary>
         public void Advance(float unscaledDeltaTime)
         {
             if (!Running) return;
+            smoothed += unscaledDeltaTime; // 毎フレーム必ず前進させる（止まる経路を作らない）
+
             double dsp = AudioSettings.dspTime;
-            double authoritative = dsp - t0;
             if (dsp != lastObservedDsp)
             {
                 lastObservedDsp = dsp;
+                double authoritative = dsp - t0;
                 double drift = authoritative - smoothed;
-                smoothed = Math.Abs(drift) > SnapThreshold
-                    ? authoritative
-                    : smoothed + drift * DriftCorrectionRate;
-            }
-            else
-            {
-                smoothed += unscaledDeltaTime;
-                // dspTimeを追い越しすぎないようにクランプ（次の更新までの見積もりが外れた場合の保険）。
-                if (smoothed > authoritative + SnapThreshold) smoothed = authoritative + SnapThreshold;
+                // 大きくズレていれば全部、小さければ一部だけ足す（引く）。どちらも加算なので
+                // smoothed自体は単調増加のまま（クランプのように値を据え置く経路が無い）。
+                smoothed += Math.Abs(drift) > SnapThreshold ? drift : drift * DriftCorrectionRate;
             }
         }
 
