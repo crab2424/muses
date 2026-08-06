@@ -60,6 +60,16 @@ namespace Muses.Notes
             }
         }
 
+        /// <summary>スライダーを動かしても見た目が変わらない不具合の切り分け用。
+        /// SetFloatが実際にレンダリングへ使われているnotesMaterialへ届いているかを読み戻して確認する。
+        /// notesMaterialがnull(EnsureNotesObject/Build未実行)ならnullを返す。</summary>
+        public float? DebugThicknessFracReadback => notesMaterial != null ? notesMaterial.GetFloat("_ThicknessFrac") : (float?)null;
+
+        /// <summary>同上、レンダリングに使われるMaterial/Shaderの実体確認用。</summary>
+        public string DebugMaterialInfo =>
+            notesMaterial == null ? "notesMaterial=null"
+            : $"mat={notesMaterial.GetInstanceID()} shader={(notesMaterial.shader != null ? notesMaterial.shader.name : "null")} renderer.sharedMaterial={(notesRenderer != null && notesRenderer.sharedMaterial != null ? notesRenderer.sharedMaterial.GetInstanceID().ToString() : "null")} enabled={(notesRenderer != null ? notesRenderer.enabled : (bool?)null)}";
+
         // StageView が GroundPlane/GroundLines/SkyPlane/SkyLines に 3000〜3003 を使う。
         // Notes側にキューを明示しないとデフォルト(3000)でGroundPlaneと同キューになり、
         // 距離ソート次第でほぼ不透明なGroundPlaneが加算合成のノーツを覆い隠してしまう

@@ -474,6 +474,10 @@ namespace Muses.ChartTool
             set { noteView.ThicknessMinFrac = value; MarkDirty(); }
         }
 
+        /// <summary>editor-ui-rework-r13.md §7.1追補: 診断用の読み戻し・状態表示。</summary>
+        public float? DebugThicknessFracReadback => noteView.DebugThicknessFracReadback;
+        public string DebugMaterialInfo => noteView.DebugMaterialInfo;
+
         /// <summary>オートプレイ中のスコア表示（非オートプレイ時はnull）。</summary>
         public string AutoplaySummary
         {

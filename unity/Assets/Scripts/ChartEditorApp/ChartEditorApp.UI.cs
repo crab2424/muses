@@ -2369,10 +2369,16 @@ namespace Muses.ChartTool
             var hiSpeedSlider = AddSliderRow(parent, "ハイスピード(プレビュー)", 0.5f, 4f, v => preview.HiSpeed = v);
             hiSpeedSlider.SetValueWithoutNotify(preview.HiSpeed);
 
-            // editor-ui-rework-r13.md §7.1追補: C#既定値をシーンの調整値(0.06)へ合わせても
-            // プレビューで改善が確認できなかったため、実機で値を振って切り分けられるよう
-            // 調整可能にする（原因切り分け用。切り分け後は既定値の再調整で決着させる想定）。
-            var thicknessSlider = AddSliderRow(parent, "ノーツ厚み(Frac、プレビュー)", 0f, 0.3f, v => preview.ThicknessFrac = v);
+            // editor-ui-rework-r13.md §7.1追補: C#既定値をシーンの調整値(0.06)へ合わせても、
+            // 値を大きく振っても、プレビューで見た目の変化が確認できなかった。SetFloatが
+            // 実際にレンダリングへ使われているMaterialへ届いているかを読み戻して確認する
+            // （notesMaterial=nullや別インスタンスなら、見た目が変わらない理由がここで分かる）。
+            var thicknessSlider = AddSliderRow(parent, "ノーツ厚み(Frac、プレビュー)", 0f, 0.3f, v =>
+            {
+                preview.ThicknessFrac = v;
+                var rb = preview.DebugThicknessFracReadback;
+                statusMessage = $"厚み(Frac)={v:0.###} 読み戻し={(rb.HasValue ? rb.Value.ToString("0.###") : "null")} | {preview.DebugMaterialInfo}";
+            });
             thicknessSlider.SetValueWithoutNotify(preview.ThicknessFrac);
             var thicknessMinSlider = AddSliderRow(parent, "ノーツ厚み下限(MinFrac、プレビュー)", 0f, 0.05f, v => preview.ThicknessMinFrac = v);
             thicknessMinSlider.SetValueWithoutNotify(preview.ThicknessMinFrac);
