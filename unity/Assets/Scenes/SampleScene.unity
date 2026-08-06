@@ -784,7 +784,7 @@ MonoBehaviour:
   noteShader: {fileID: 4800000, guid: a928f7554e8154e6fb940bf955de19b6, type: 3}
   beatLineShader: {fileID: 4800000, guid: 2ab1cb8a45ab74fee95f050a821fab96, type: 3}
   thicknessFrac: 0.06
-  thicknessMinFrac: 0.004
+  thicknessMinFrac: 0.01
 --- !u!4 &827646713
 Transform:
   m_ObjectHideFlags: 0
