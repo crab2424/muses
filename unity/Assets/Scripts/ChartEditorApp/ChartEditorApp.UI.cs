@@ -2327,8 +2327,8 @@ namespace Muses.ChartTool
             var autoFocusToggle = AddToggleRow(parent, "選択時にインスペクタへ切り替える", v => settings.autoFocusInspector = v);
             autoFocusToggle.SetValueWithoutNotify(settings.autoFocusInspector);
 
-            // editor-ui-rework-r13.md §7.5: fps計測表示。IME診断表示と同じくデバッグ用の
-            // 一時的なトグルのため永続化はしない。
+            // editor-ui-rework-r13.md §7.5: fps計測表示。2026-08-06: 常時表示は不要なため
+            // 他の設定項目と同じく永続化・既定OFFに変更（旧: IME診断表示と同じ非永続の一時トグル）。
             var perfToggle = AddToggleRow(parent, "fps計測表示", v => showPerfStats = v);
             perfToggle.SetValueWithoutNotify(showPerfStats);
         }

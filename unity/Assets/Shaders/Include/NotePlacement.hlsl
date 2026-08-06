@@ -19,6 +19,9 @@ CBUFFER_START(UnityPerMaterial)
     float _ZcFarGround;
     float _ThicknessFrac;
     float _ThicknessMinFrac;
+    float _TanHalfPhi;
+    float _VGroundJudge;
+    float _VGroundFar;
 CBUFFER_END
 
 // note-spec.md §5.5。スクロールグループごとの現在の表示位置 X(songTime)。配列で cbuffer の外に置く
@@ -53,22 +56,38 @@ float _GroupX[MUSES_MAX_SCROLL_GROUPS];
 // という2つの症状が出ていた。**どちらも同一の原因**で、d0 は「タイミングの正」ではあっても
 // 「画面上の進み具合の正」ではない、という一点に尽きる。
 //
-// 一方でステージのパネル側は既に `zcFarGround` による層別の収束補正が入っており、
-// **各層の台形は画面 x に関して互いに厳密な射影像**になっている（game-rework-r1.md §1.5-2 が
-// 最遠端についてのみ述べていた性質は、実は帯の全域で成り立つ）。
-// つまりズレていたのはステージ構造ではなくノーツの置き方だけだった。
-//
 // そこで「共有奥行き d0」ではなく「地上レーンの画面上の進み具合」を層間の対応付けに使う:
 // 地上ノーツが自レーンの p% を消化した瞬間、層 L のノーツも自レーンの p% の位置に置く。
 // 判定線 (p=0) と最遠端 (p=1) はどちらも従来と同じ奥行き (_ZJudge / _Far) に落ちるので、
 // **パネルの描画範囲・near/far のフェード・判定は一切変わらず、帯の内側での進み方だけが変わる**。
 //
-// 実装は画面 v を経由せずに済む。求めたいのは「地上と同じ画面 x になる zc」で、
-// x_ndc = U * zcMix / zc = U * (1 + c * (zcJudge/zc - 1)) を層間で等しいと置けば
-//   zc_L = zcJudge_L / (1 + _LaneConverge * (R - 1) / c_L),  R = zcJudge_ground / zc_ground(d0)
-// という四則演算だけの式になる（tan/atan 版と 3.6e-13 まで一致、Python で全層検証済み）。
-// これで画面 x のズレは全層・全奥行きで厳密に 0 になり、正規化速度比も厳密に 1.0 になる。
-// 地上 (layerF=0) は c_L = _LaneConverge となり R が約分されて d0 に戻る（＝恒等、拍線も無変更）。
+// 「画面上の進み具合」は StageDerive.cs の Psi/DepthAt と同じ v(depth)=tan(theta-atan(h/depth))/tanHalfPhi
+// を使う（面の高さ h、depth と1対1対応する本物のスクリーン垂直位置）。地上判定線・最遠端の
+// v 値は cfg.vGroundJudge / Derived.vFar として既に手元にある（zJudge/zFarの導出元入力なので
+// 定義から厳密に一致する。C#側で再計算不要、そのままuniformとして渡すだけでよい）。
+//
+// 【2026-08-06 訂正】初版はこの v(depth) の代わりに X収束用のzc比を流用した除算ベースの式
+// （zc_L = zcJudge_L / (1 + laneConverge*(R-1)/c_L)）で実装したが、これは判定線通過の
+// 約0.1秒後（d0がaG/cosTheta分だけ負に振れた地点、ちょうど「通過中」の範囲）に極を持ち、
+// そこを横切る瞬間に depth が符号反転して画面外へ跳ぶ実害があった（ユーザー報告:
+// 判定線を通っている間、奥行きが無限のノーツが追加で表示される）。tan/atanの二重適用は
+// 角度をいったん有界な範囲へ畳み込むため、同じ入力範囲でこの極を持たない
+// （Pythonで-∞側まで検証済み: 除算ベース版は d0=-6.25 で符号反転して発散、
+// tan/atan版は同じ範囲で単調・有界のまま）。数値的にわずかに重いが（tan/atan各2回、
+// layerF=0の地上ノーツは分岐で従来どおりの恒等式に落ちるため無コスト）、
+// 正しさを優先してこちらを正式版とする。
+float VAt(float h, float depth, float theta)
+{
+    float psi = theta - atan(h / depth);
+    return tan(psi) / _TanHalfPhi;
+}
+
+float DepthFromV(float h, float v, float theta)
+{
+    float psi = theta - atan(v * _TanHalfPhi);
+    return h / tan(psi);
+}
+
 float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out float depthOut)
 {
     // 地上基準の奥行き。タイミングの正であり、厚みもこの空間で足してから再マップする
@@ -77,23 +96,30 @@ float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out fl
     float halfThickness = max(_ZJudge * _ThicknessFrac, d0 * _ThicknessMinFrac);
     d0 += uv1.y * halfThickness;
 
-    float yPlane = uv1.x * _SkyHeight;
-    float a = (_YCam - yPlane) * _SinTheta;
+    float layerF = uv1.x;
+    float yPlane = layerF * _SkyHeight;
+    float hL = _YCam - yPlane;
+
+    float depth;
+    if (layerF <= 1e-6)
+    {
+        depth = d0; // 地上は恒等（拍線もここを通るので無変更）
+    }
+    else
+    {
+        float theta = atan2(_SinTheta, _CosTheta);
+        float pg = (VAt(_YCam, d0, theta) - _VGroundJudge) / (_VGroundFar - _VGroundJudge);
+        float vj = VAt(hL, _ZJudge, theta);
+        float vf = VAt(hL, _Far, theta);
+        float v = vj + pg * (vf - vj);
+        depth = DepthFromV(hL, v, theta);
+    }
+
+    float a = hL * _SinTheta;
     float zcJudge = a + _ZJudge * _CosTheta;
     float zcFar = a + _Far * _CosTheta;
     float c = clamp(_LaneConverge * (zcFar / _ZcFarGround), 0.0, 1.0);
-
-    float aG = _YCam * _SinTheta;
-    float R = (aG + _ZJudge * _CosTheta) / (aG + d0 * _CosTheta); // 地上の zcJudge/zc
-    // _LaneConverge=0（レーンを画面上の長方形にする設定）では x が奥行きに依存しなくなり
-    // この対応付け自体が定義できない。その場合だけ従来どおり d0 をそのまま使う。
-    // denom の下限は、hiSpeed が大きく d0 が _Far を大きく超えたときに符号が反転して
-    // ノーツがカメラ手前へ回り込むのを防ぐため（クランプ時は depth が _Far を大きく超え、
-    // フラグメント側の `depth > _Far` で従来どおり破棄される）。
-    float denom = max(1.0 + _LaneConverge * (R - 1.0) / max(c, 1e-4), 1e-3);
-    float zc = (c > 1e-4) ? (zcJudge / denom) : (a + d0 * _CosTheta);
-    float depth = (zc - a) / _CosTheta;
-
+    float zc = a + depth * _CosTheta;
     float zcMix = lerp(zc, zcJudge, c);
     float x = positionOS.x * _LaneK * zcMix;
     depthOut = depth;

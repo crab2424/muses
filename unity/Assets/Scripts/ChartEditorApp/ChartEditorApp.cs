@@ -68,10 +68,10 @@ namespace Muses.ChartTool
 
         // ---- §3 一般タブ ----
         private int frameRateMode; // 0=VSync, 1=60fps, 2=120fps, 3=無制限
-        // editor-ui-rework-r13.md §7.5: fps計測表示。デバッグ用の一時的なトグルのため
-        // IME診断表示と同じく永続化はしない。§7の対処(FlushAlpha等)の効果を実機なしで
-        // 数値確認するために先に入れる。
-        private bool showPerfStats = true;
+        // editor-ui-rework-r13.md §7.5: fps計測表示。2026-08-06: 当初はデバッグ用の一時的な
+        // トグルとしてIME診断表示と同じく永続化しない・既定ONにしていたが、常時表示は不要なため
+        // 他の設定項目(frameRateMode等)と同じくsettingsへ永続化・既定OFFに変更した。
+        private bool showPerfStats = false;
         private float uiScale = 1f;
         // editor-ui-rework-r5.md §3.4: PanelSettingsアセット自体は書き換えず、
         // Instantiateしたコピーに差し替えてreferenceResolutionだけを倍率で操作する。
@@ -511,6 +511,7 @@ namespace Muses.ChartTool
             autosaveMinutes = settings.autosaveMinutes;
             frameRateMode = settings.frameRateMode;
             uiScale = settings.uiScale;
+            showPerfStats = settings.showPerfStats;
             keyBindings = settings.keyBindings;
             preview.MasterVolume = settings.masterVolume;
             preview.BgmVolume = settings.bgmVolume;
@@ -603,6 +604,7 @@ namespace Muses.ChartTool
             settings.autosaveMinutes = autosaveMinutes;
             settings.frameRateMode = frameRateMode;
             settings.uiScale = uiScale;
+            settings.showPerfStats = showPerfStats;
             settings.keyBindings = keyBindings;
             settings.masterVolume = preview.MasterVolume;
             settings.bgmVolume = preview.BgmVolume;

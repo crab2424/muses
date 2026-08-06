@@ -168,6 +168,9 @@ namespace Muses.ChartTool
         public int frameRateMode = 0;
         /// <summary>PanelSettings.referenceResolutionを割る倍率。1.0で従来どおりの見た目。</summary>
         public float uiScale = 1f;
+        /// <summary>editor-ui-rework-r13.md §7.5。fps計測表示。デバッグ用の一時的なトグルとして
+        /// 導入した際は永続化せず既定ONだったが、常時表示は不要なため2026-08-06に永続化・既定OFFへ変更。</summary>
+        public bool showPerfStats = false;
         /// <summary>editor-ui-rework-r12.md §1.3。ノーツ/イベント選択時に右パネルを
         /// インスペクタタブへ自動的に切り替えるか。「選ぶと消えたように見える」退行を防ぐための既定ON。</summary>
         public bool autoFocusInspector = true;
