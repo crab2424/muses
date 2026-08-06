@@ -178,9 +178,9 @@ Camera:
     y: 0
     width: 1
     height: 1
-  near clip plane: 0.030998915
-  far clip plane: 135.32617
-  field of view: 77
+  near clip plane: 0.04974311
+  far clip plane: 182.72464
+  field of view: 82
   orthographic: 0
   orthographic size: 5
   m_Depth: -1
@@ -207,7 +207,7 @@ Transform:
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
   m_LocalRotation: {x: 0.32556814, y: 0, z: 0, w: 0.94551855}
-  m_LocalPosition: {x: 0, y: 8, z: 0}
+  m_LocalPosition: {x: 0, y: 10, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -491,16 +491,16 @@ MonoBehaviour:
   cam: {fileID: 330585545}
   view: {fileID: 548285723}
   cfg:
-    phiDeg: 77
-    yCam: 8
+    phiDeg: 82
+    yCam: 10
     thetaDeg: 38
-    vSkyJudge: 0.15
+    vSkyJudge: 0.18
     vSkyTop: 1
     vSkyBot: -0.1
     vSplit: -0.1
     vGroundTop: -0.1
     vGroundBot: -1
-    vGroundJudge: -0.75
+    vGroundJudge: -0.55
     farFrac: 0.9
     vBandGround: -0.55
     vBandSky: 0.45
