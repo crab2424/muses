@@ -80,6 +80,9 @@
             <ui:VisualElement class="tool-sep" />
             <ui:Label name="status-chartinfo" class="mono" />
             <ui:VisualElement class="tool-sep" />
+            <!-- editor-ui-rework-r13.md §7.5: fps計測表示（設定モーダルのトグルでON/OFF）。 -->
+            <ui:Label name="status-perf" class="mono" />
+            <ui:VisualElement class="tool-sep" />
             <ui:Button name="status-validation" class="link-btn" />
         </ui:VisualElement>
 

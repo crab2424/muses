@@ -161,7 +161,9 @@ namespace Muses.Stage
             laneLineStepSky = 12,
             skyFloorFromJudge = true,
             groundFillAlpha = 1f,
-            skyFillAlpha = 0.05f,
+            // editor-ui-rework-r13.md §7.1: SampleScene.unity上の調整値(0.2)と乖離していた
+            // （プレビューはStageConfig.Default()をそのまま使うため、シーンの調整が反映されない）。
+            skyFillAlpha = 0.2f,
             bgColor = "#a0b298",
 
             showBand = false,

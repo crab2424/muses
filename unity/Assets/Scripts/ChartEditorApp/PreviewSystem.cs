@@ -228,12 +228,42 @@ namespace Muses.ChartTool
             judge = new Judge(cfg, noteView.SetNoteAlpha);
             judge.Prepare(runtimes);
             judge.Reset();
+            noteView.FlushAlpha(); // r13 §7.3: judge.Resetが書き換えた分をここで確定させる
+            lastBuiltAspect = cam.aspect; // r13 §7.2: このBuildが焼き込んだアスペクト比を記録する
 
             float t = clock.SongTime;
             noteView.UpdateScroll(t, cfg.hiSpeed);
             lastSongTime = t;
 
             TryLoadAudio(audioDir);
+            MarkDirty();
+        }
+
+        // editor-ui-rework-r13.md §7.2: ノーツ頂点はBuild時のcam.aspect(_LaneK等)を焼き込む一方、
+        // StageControllerはcam.aspectの変化を検知してステージ形状だけを毎フレーム作り直す
+        // （StageController.Update）。プレビューはパネル寸法に合わせてRenderTextureのaspectを
+        // 張り替える(EnsureRenderTexture)ため、パネル幅を変えるとステージだけ変形し、ノーツは
+        // 旧アスペクトの幅のまま取り残される（ゲーム本体は起動後にaspectが変わらないため露見しない）。
+        private float lastBuiltAspect = -1f;
+        private float aspectChangedAtRealtime = -1f;
+        private const float AspectRebuildDelaySec = 0.15f;
+
+        /// <summary>アスペクト比の変化が収まってから一定時間後にノーツ頂点だけ作り直す
+        /// （リサイズ中の連打を避けるため）。Judgeの進行状態(スコア・コンボ)は維持できないため、
+        /// Prepareしたうえで現在時刻へSeekし直し「その時刻から素直に見た状態」へ揃える
+        /// （Judge.Seekの既存の意味論そのもの、シークバー操作と同じ扱い）。</summary>
+        private void RebuildNoteGeometryForAspect()
+        {
+            var scrollTimelines = ChartFormat.BuildScrollTimelines(chart);
+            var barTimes = BuildBarTimes(chart);
+            stageController.EnsureBuilt();
+            noteView.Build(cfg, stageController.Derived, chart.notes, scrollTimelines, barTimes);
+            runtimes = noteView.Runtimes;
+            judge.Prepare(runtimes);
+            judge.Seek(clock.SongTime);
+            noteView.FlushAlpha();
+            noteView.UpdateScroll(clock.SongTime, cfg.hiSpeed);
+            lastBuiltAspect = cam.aspect;
             MarkDirty();
         }
 
@@ -471,12 +501,28 @@ namespace Muses.ChartTool
                 {
                     var contacts = AutoplayDriver.Step(judge, cfg, runtimes, prev, cur);
                     judge.Update(cur, contacts);
+                    noteView.FlushAlpha(); // r13 §7.3: 判定を進めたら1フレーム1回だけ転送する
                 }
 
                 if (SePreview) PlayNoteSe(prev, cur);
                 if (Metronome) TickMetronome(prev, cur);
 
                 MarkDirty();
+            }
+
+            // r13 §7.2: RenderTextureのアスペクト変化にノーツ頂点を追従させる。
+            if (RenderEnabled && cam != null && judge != null && !Mathf.Approximately(cam.aspect, lastBuiltAspect))
+            {
+                if (aspectChangedAtRealtime < 0f) aspectChangedAtRealtime = Time.unscaledTime;
+                else if (Time.unscaledTime - aspectChangedAtRealtime >= AspectRebuildDelaySec)
+                {
+                    RebuildNoteGeometryForAspect();
+                    aspectChangedAtRealtime = -1f;
+                }
+            }
+            else
+            {
+                aspectChangedAtRealtime = -1f;
             }
 
             lastSongTime = cur;
@@ -571,6 +617,7 @@ namespace Muses.ChartTool
             clock.Seek(t);
             lastSongTime = clock.SongTime;
             judge?.Seek(lastSongTime);
+            noteView.FlushAlpha(); // r13 §7.3: 停止中のスクロール追従で毎フレーム呼ばれるため必須
             noteView.UpdateScroll(lastSongTime, cfg.hiSpeed);
             MarkDirty();
         }
@@ -580,6 +627,7 @@ namespace Muses.ChartTool
             if (autoplay == on) return;
             autoplay = on;
             judge?.Seek(clock.SongTime);
+            noteView.FlushAlpha(); // r13 §7.3
             MarkDirty();
         }
 

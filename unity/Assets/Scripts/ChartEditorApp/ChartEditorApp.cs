@@ -68,6 +68,10 @@ namespace Muses.ChartTool
 
         // ---- §3 一般タブ ----
         private int frameRateMode; // 0=VSync, 1=60fps, 2=120fps, 3=無制限
+        // editor-ui-rework-r13.md §7.5: fps計測表示。デバッグ用の一時的なトグルのため
+        // IME診断表示と同じく永続化はしない。§7の対処(FlushAlpha等)の効果を実機なしで
+        // 数値確認するために先に入れる。
+        private bool showPerfStats = true;
         private float uiScale = 1f;
         // editor-ui-rework-r5.md §3.4: PanelSettingsアセット自体は書き換えず、
         // Instantiateしたコピーに差し替えてreferenceResolutionだけを倍率で操作する。
@@ -627,8 +631,18 @@ namespace Muses.ChartTool
             workspaceDirtySinceRealtime = -1f;
         }
 
+        // editor-ui-rework-r13.md §7.5: frame timeの移動平均(32フレーム)。§7の対処の効果を
+        // 実機無しで数値確認するための計測手段。
+        private float perfMs;
+        private void TickPerfStats()
+        {
+            float ms = Time.unscaledDeltaTime * 1000f;
+            perfMs = perfMs <= 0f ? ms : perfMs + (ms - perfMs) * (1f / 32f);
+        }
+
         private void Update()
         {
+            TickPerfStats();
             preview.Tick();
 
             // 編集中は毎フレーム再構築しない。ドラッグ終了後・一定間隔をおいて反映する
@@ -1632,9 +1646,12 @@ namespace Muses.ChartTool
                 FillRect(p, new Rect(L.sky.x, y, L.sky.width, thickness), c);
             }
 
-            // ノーツ描画
+            // ノーツ描画。editor-ui-rework-r13.md §3.1: DrawPriority昇順の5パスで重なり順を統一する
+            // （後に描いたものが手前）。chart.notes自体はソートしない(編集のたびキャッシュ無効化が要るため)。
+            for (int drawPass = 0; drawPass < DrawPriorityCount; drawPass++)
             foreach (var note in chart.notes)
             {
+                if (DrawPriority(note) != drawPass) continue;
                 int nStart = note.points[0].tick;
                 int nEnd = note.points[^1].tick;
                 if (nEnd < L.BottomTick - snapTicks * 4 || nStart > L.TopTick + snapTicks * 4) continue;
@@ -1832,9 +1849,12 @@ namespace Muses.ChartTool
 
             var selectedNotes = new HashSet<Note>(SelectedNotesDistinct());
 
+            // editor-ui-rework-r13.md §3.1: シート本体と同じDrawPriority昇順で描く
+            // （選択中を最後に描く既存規則はこの上に乗せる）。
+            for (int drawPass = 0; drawPass < DrawPriorityCount; drawPass++)
             foreach (var note in chart.notes)
             {
-                if (selectedNotes.Contains(note)) continue;
+                if (selectedNotes.Contains(note) || DrawPriority(note) != drawPass) continue;
                 // editor-ui-rework-r3.md §2: 未選択も種別色で描く(色相=種別、αで選択状態)。
                 // 白一色だと同時押しで重なったときにどれがどの種別か当たりが付けられなかった。
                 var c = NoteColor(note);
@@ -1959,12 +1979,20 @@ namespace Muses.ChartTool
         /// </summary>
         private void DrawPlacementGhost(Painter2D p, SheetLayout L)
         {
-            if (draggingNote || !sheetHoverPos.HasValue) return;
+            if (draggingNote) return;
+
+            // editor-ui-rework-r13.md §2.2: 貼り付けモード中は他の配置ツールより優先し、
+            // sheetHoverPosが無くても（コンテキストメニューを開いた直後等）contextMenuPosへ
+            // フォールバックして描く（不具合2の対処。§1のPasteReferencePos参照）。
+            if (pasting)
+            {
+                if (PasteReferencePos.HasValue) DrawPasteGhost(p, L);
+                return;
+            }
+
+            if (!sheetHoverPos.HasValue) return;
             var pos = sheetHoverPos.Value;
             if (!L.rect.Contains(pos)) return;
-
-            // §1: 貼り付けモード中は配置ツールのゴーストより優先。
-            if (pasting) { DrawPasteGhost(p, L); return; }
 
             int snapTicks = SnapTicks;
             int tick = SnapTickTo(Mathf.Max(0, L.YToTick(pos.y)), snapTicks);
@@ -2035,6 +2063,9 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.LayerMove:
                 {
+                    // editor-ui-rework-r13.md §6: 既存のRiser/Diverの上では配置ではなく選択に
+                    // 横取りされる（PlacementBlockedBy）ため、ゴーストも出さない。
+                    if (PlacementBlockedBy(L, pos, EditorTool.LayerMove).HasValue) break;
                     // riser-r2.md §4: Groundクリック→上昇(Riser)、Skyクリック→下降(Diver)。
                     if (layerF != 0f && layerF != 1f) return; // ガターには置けない（他の単発ノーツと同じ）
                     float cellF = CellFFromCenter(rawCell, defaultWidthCells, 1f);
@@ -2228,8 +2259,10 @@ namespace Muses.ChartTool
                 }
                 case EditorTool.LayerMove:
                 {
-                    // riser-r2.md §4: 他の配置ツールと同じく、既存の点の上は選択への横取りを優先する。
-                    var hitExisting = HitTestPoint(L, pos);
+                    // editor-ui-rework-r13.md §6: riser-r2.md §4は他ツールと同じ横取り規則を
+                    // そのまま踏襲していたため、Tap等の上にRiser/Diverを重ねて置けなかった
+                    // （不具合7）。既存のRiser/Diverに当たったときだけ横取りする。
+                    var hitExisting = PlacementBlockedBy(L, pos, EditorTool.LayerMove);
                     if (hitExisting.HasValue)
                     {
                         var hp = hitExisting.Value;
@@ -2498,6 +2531,10 @@ namespace Muses.ChartTool
         {
             var L = CurrentSheetLayout();
             var pos = (Vector2)evt.localPosition;
+            // editor-ui-rework-r13.md §2.2: メニューが開くとポインタがメニュー要素へ移り
+            // OnSheetPointerLeaveでsheetHoverPosがnullになる（不具合2の原因）。右クリック位置を
+            // 憶えておき、PasteReferencePosのフォールバックに使う。
+            contextMenuPos = pos;
             // editor-ui-rework-r5.md §8: どちらの帯も実寸が常に予約されるため、表示/非表示に
             // 関わらずこの範囲内での右クリックはノーツのコンテキストメニュー対象外にする。
             if (L.rightMargin.Contains(pos)) { evt.StopPropagation(); return; }
@@ -2733,6 +2770,21 @@ namespace Muses.ChartTool
             dirty = true;
         }
 
+        /// <summary>editor-ui-rework-r13.md §4/§6: そのツールでposに置こうとしたとき、
+        /// 既存の点への選択の横取りが優先されるならその点を返す（配置しない）。
+        /// OnSheetPointerDownの配置分岐とDrawPlacementGhostが必ず同じ答えを使うための唯一の判定
+        /// （r5の「ゴーストと実際の配置位置を一致させる」原則）。
+        /// LayerMove(層移動⇕)は他ノーツへの重ね置きが主用途(Riser/Diverをインスペクタ経由ではなく
+        /// 直接Tap等の上に置く)なので、既存のRiser/Diverに当たったときだけ横取りする例外にする
+        /// （riser-r2.md §4が他ツールと同じ横取り規則をそのまま踏襲していたのが不具合7の原因）。</summary>
+        private NoteRef? PlacementBlockedBy(SheetLayout L, Vector2 pos, EditorTool tool)
+        {
+            var hit = HitTestPoint(L, pos);
+            if (!hit.HasValue) return null;
+            if (tool == EditorTool.LayerMove && hit.Value.note.kind != NoteKind.Riser) return null;
+            return hit;
+        }
+
         /// <summary>editor-ui-rework-r4.md §4: 指定した点の左右端 ±4px を掴んでいるか。
         /// -1=左端, 0=対象外, +1=右端。単発ノーツ・Slideの各点いずれも同じ判定でよい
         /// （帯のヒットテストではなく、常にその点自身の矩形で判定するため）。</summary>
@@ -2743,7 +2795,9 @@ namespace Muses.ChartTool
             float x0 = L.NoteX(wp.layerF, wp.cellF, forceSky);
             float x1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky);
             float left = Mathf.Min(x0, x1), right = Mathf.Max(x0, x1);
-            const float grab = 4f;
+            // editor-ui-rework-r13.md §5: 掴める範囲を広げる（旧: 一律4px）。細いノーツで中央
+            // （移動ドラッグ用）が消えないよう、片側は幅の30%までに制限する。
+            float grab = Mathf.Clamp((right - left) * 0.30f, 3f, 8f);
             if (Mathf.Abs(pos.x - left) <= grab) return -1;
             if (Mathf.Abs(pos.x - right) <= grab) return 1;
             return 0;
@@ -3188,37 +3242,32 @@ namespace Muses.ChartTool
         /// マウスに追従し、クリックで確定する（参照元MikuMikuWorldのpaste/previewPaste/confirmPasteと
         /// 同じ設計、Editing.cpp:80-176）。
         /// tickはクリップボードが既に0正規化済みなので、確定時のホバーtickへそのまま足すだけで
-        /// 先頭ノーツがカーソルに吸い付く。cellF/layerFは「Vを押した瞬間のホバー位置」との差分を
-        /// 各ノーツの元の値に足す方式にしており、押した直後（マウスを動かす前）は元の横位置・高さの
-        /// まま出る（参照元のpasteLane方式と同じ非対称: tickは絶対位置に吸着、cellF/layerFは相対移動）。
+        /// 先頭ノーツがカーソルに吸い付く。cellF/layerFはeditor-ui-rework-r13.md §1.2の決定により、
+        /// 「クリップボード全体の範囲の中心をカーソルへ合わせる」方式にした（旧: Vを押した瞬間の
+        /// ホバー位置からの相対移動。動かさなければコピー元の列のまま貼られる不具合があった）。
         /// </summary>
         private bool pasting;
         private bool pasteFlip;
-        private float pasteAnchorCell;
-        private float pasteAnchorLayer;
         // editor-ui-rework-r2.md §4: ガター上ではTryPaneAtがnullを返すため、直前の有効なペイン位置を
         // 保持しておく（保持しないとカーソルがガターを通った瞬間にゴーストが盤面中央へ飛ぶ）。
         private float pasteLastValidCell;
         private float pasteLastValidLayer;
+        // editor-ui-rework-r13.md §2: 右クリックでコンテキストメニューを開いた位置。メニューが
+        // 開いている間はポインタがメニュー要素へ移りsheetHoverPosがnullになるため、
+        // PasteReferencePosのフォールバックに使う（不具合2の対処）。
+        private Vector2? contextMenuPos;
 
+        /// <summary>貼り付けの基準に使うシート内座標。ポインタがシート外(コンテキストメニュー上・
+        /// インスペクタ上)にある間は直前の右クリック位置を使う（r13 §2.2）。</summary>
+        private Vector2? PasteReferencePos => sheetHoverPos ?? contextMenuPos;
+
+        /// <summary>editor-ui-rework-r13.md §1: 決定1によりアンカーを取る必要が無くなった
+        /// （中心合わせはComputePasteTransformが毎回クリップボードの範囲から直接求めるため）。
+        /// §2.2: 「ペイン上にマウスを合わせてから」の早期returnも削除（右クリック位置を
+        /// フォールバックに使えるようになったため、レーン外での起動を拒否する理由が無い）。</summary>
         private void EnterPasteMode(bool flip = false)
         {
             if (clipboard.Count == 0 || pasting) return;
-            var L = CurrentSheetLayout();
-            // editor-ui-rework-r3.md §4.1(a): PaneAtはレーン外(余白・ガター・高さレーン)で
-            // (layerF=0.5, cellF=Cells*0.5)という実在しない中間値を返す。TryPaneAtを使わずここで
-            // アンカーを取っていたため、レーン外でVを押すとアンカーがその中間値に固定され、
-            // 後でカーソルをペインへ入れた瞬間にゴーストが最大6セルぶん飛んでいた。
-            var pane = !sheetHoverPos.HasValue ? null : L.TryPaneAt(sheetHoverPos.Value.x);
-            if (!pane.HasValue)
-            {
-                statusMessage = "貼り付け先(Ground/Skyのレーン上)にマウスを合わせてから再度お試しください";
-                return;
-            }
-            pasteAnchorLayer = pane.Value.layerF;
-            pasteAnchorCell = pane.Value.cellF;
-            pasteLastValidLayer = pane.Value.layerF;
-            pasteLastValidCell = pane.Value.cellF;
             pasting = true;
             pasteFlip = flip;
             statusMessage = "貼り付け先をクリックして確定（Escでキャンセル）";
@@ -3226,23 +3275,42 @@ namespace Muses.ChartTool
 
         /// <summary>editor-ui-rework-r2.md §4: ConfirmPasteとDrawPasteGhostで同じ変換を使うための
         /// 共通ヘルパー（両者がずれると「ゴーストの位置でクリックしたのに違う場所に貼られた」になる）。
-        /// スナップ＋盤面内クランプを cellF/layerF それぞれ点群全体に対して1回だけ適用する。</summary>
+        ///
+        /// editor-ui-rework-r13.md §1.2: 決定1により「Vを押した瞬間からの相対移動」をやめ、
+        /// クリップボード全体の範囲の中心をカーソルへ合わせる方式にする（tickだけは従来どおり
+        /// 先頭ノーツの絶対吸着）。cellFは中心合わせのままデルタをスナップすると幅が奇数セルの
+        /// とき左端が格子から0.5セルずれる（単発配置=CellFFromCenterと格子が合わなくなる）ため、
+        /// 左端を先にスナップしてからデルタを求める。layerFはResolveLayerDeltaの点群ごとクランプに
+        /// 中心からのデルタを渡すだけでよい（0〜1の範囲クランプに左右非対称は無いため）。
+        /// </summary>
         private (int hoverTick, float deltaCell, float deltaLayer) ComputePasteTransform(SheetLayout L)
         {
-            var pos = sheetHoverPos.Value;
+            var pos = PasteReferencePos.Value;
             int snapTicks = SnapTicks;
             int hoverTick = SnapTickTo(Mathf.Max(0, L.YToTick(pos.y)), snapTicks);
 
             var pane = L.TryPaneAt(pos.x);
             if (pane.HasValue) { pasteLastValidLayer = pane.Value.layerF; pasteLastValidCell = pane.Value.cellF; }
 
-            float rawDeltaCell = pasteLastValidCell - pasteAnchorCell;
-            float rawDeltaLayer = pasteLastValidLayer - pasteAnchorLayer;
-
             var allPts = new List<Waypoint>();
             foreach (var n in clipboard) allPts.AddRange(n.points);
             float cellStep = clipboard.Exists(n => n.kind == NoteKind.Slide) ? 0.5f : 1f;
-            float deltaCell = ResolveCellDelta(allPts, rawDeltaCell, cellStep);
+
+            float minCell = float.MaxValue, maxEdge = float.MinValue;
+            float minLayer = float.MaxValue, maxLayer = float.MinValue;
+            foreach (var w in allPts)
+            {
+                minCell = Mathf.Min(minCell, w.cellF);
+                maxEdge = Mathf.Max(maxEdge, w.cellF + w.width);
+                minLayer = Mathf.Min(minLayer, w.layerF);
+                maxLayer = Mathf.Max(maxLayer, w.layerF);
+            }
+            float spanW = maxEdge - minCell;
+            float newMin = Mathf.Clamp(SnapCellTo(pasteLastValidCell - spanW * 0.5f, cellStep), 0f, Mathf.Max(0f, Cells - spanW));
+            float deltaCell = newMin - minCell;
+
+            float centerLayer = (minLayer + maxLayer) * 0.5f;
+            float rawDeltaLayer = pasteLastValidLayer - centerLayer;
             float deltaLayer = ResolveLayerDelta(allPts, rawDeltaLayer);
 
             return (hoverTick, deltaCell, deltaLayer);
@@ -3278,7 +3346,7 @@ namespace Muses.ChartTool
 
         private void ConfirmPaste()
         {
-            if (!sheetHoverPos.HasValue) return;
+            if (!PasteReferencePos.HasValue) return;
             var L = CurrentSheetLayout();
             var (hoverTick, deltaCell, deltaLayer) = ComputePasteTransform(L);
 
@@ -3514,21 +3582,30 @@ namespace Muses.ChartTool
         /// §5.2: 選択・ドラッグ・削除の対象は「点」のみ。Slideの帯そのものは対象外
         /// （editor-ui-rework-mmw.md §5.2。参照元(MikuMikuWorld)はhold始点/中継点/終点が独立した
         /// Noteなので、この設計が最初から自然に成り立っている）。
+        ///
+        /// editor-ui-rework-r13.md §3.2: DrawPriority降順×リスト逆順で走査し、
+        /// 描画で手前に見えているノーツが必ず先に当たるようにする（不具合8: Riser/Diverは
+        /// 常に最優先で選択される。専用の分岐は不要、優先度が同じ効果を持つ）。
+        /// §4: クリック許容量を縦±9px・横±6pxまで広げる。縦は隣のスナップ位置と衝突しないよう
+        /// ズーム・スナップ間隔の半分（下限は描画矩形の±4px）で頭打ちにする。
         /// </summary>
         private NoteRef? HitTestPoint(SheetLayout L, Vector2 mouse)
         {
+            float yTol = Mathf.Clamp(L.pxPerTick * SnapTicks * 0.5f, 4f, 9f);
+            for (int pri = DrawPriorityCount - 1; pri >= 0; pri--)
             for (int idx = chart.notes.Count - 1; idx >= 0; idx--)
             {
                 var n = chart.notes[idx];
+                if (DrawPriority(n) != pri) continue;
                 bool forceSky = HasHeightVariation(n);
                 for (int i = 0; i < n.points.Count; i++)
                 {
                     var wp = n.points[i];
                     float y = L.TickToY(wp.tick);
-                    if (Mathf.Abs(mouse.y - y) > 6f) continue;
+                    if (Mathf.Abs(mouse.y - y) > yTol) continue;
                     float x0 = L.NoteX(wp.layerF, wp.cellF, forceSky);
                     float x1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky);
-                    if (mouse.x >= Mathf.Min(x0, x1) - 3 && mouse.x <= Mathf.Max(x0, x1) + 3)
+                    if (mouse.x >= Mathf.Min(x0, x1) - 6 && mouse.x <= Mathf.Max(x0, x1) + 6)
                         return new NoteRef(n, i);
                 }
             }
@@ -3604,6 +3681,21 @@ namespace Muses.ChartTool
             }
             return (last.layerF, last.cellF, last.width);
         }
+
+        /// <summary>editor-ui-rework-r13.md §3: 重なったときにどちらが手前かの優先度
+        /// （大きいほど手前）。ユーザー確定順(下から) slide→tap→flick→extap→riser/diver。
+        /// 描画(GenerateNotesSheet/DrawHeightLane)は昇順、ヒットテスト(HitTestPoint)は降順で
+        /// この1つの関数から導く。片方だけ直すと「見えているのに掴めない」がずれるため。</summary>
+        private static int DrawPriority(Note n) => n.kind switch
+        {
+            NoteKind.Slide => 0,
+            NoteKind.Tap => 1,
+            NoteKind.Flick => 2,
+            NoteKind.ExTap => 3,
+            NoteKind.Riser => 4,
+            _ => 1,
+        };
+        private const int DrawPriorityCount = 5;
 
         private static Color NoteColor(NoteKind k) => k switch
         {

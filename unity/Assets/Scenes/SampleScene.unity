@@ -512,6 +512,8 @@ MonoBehaviour:
     splitHysteresis: 0.05
     layerJudgeRadius: 0.5
     flickWindowMs: 120
+    riserReachFrac: 1
+    handoffWindowMs: 200
     judgeOffsetMs: 0
     visualOffsetMs: 0
     hardFarEdge: 1

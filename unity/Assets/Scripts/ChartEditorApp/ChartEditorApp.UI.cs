@@ -85,7 +85,7 @@ namespace Muses.ChartTool
         private Slider zoomSlider;
         private Label zoomLabel;
         private DropdownField snapDropdown;
-        private Label statusTime, statusChartInfo;
+        private Label statusTime, statusChartInfo, statusPerf;
         private Button statusValidation;
 
         private TextField infoTitle, infoArtist, infoJacket, infoCharter;
@@ -1676,6 +1676,7 @@ namespace Muses.ChartTool
 
             statusTime = uiRoot.Q<Label>("status-time");
             statusChartInfo = uiRoot.Q<Label>("status-chartinfo");
+            statusPerf = uiRoot.Q<Label>("status-perf");
             statusValidation = uiRoot.Q<Button>("status-validation");
             statusValidation.clicked += () => SelectRightTab(RightTabResults);
         }
@@ -1764,6 +1765,14 @@ namespace Muses.ChartTool
                 scrubSlider.highValue = scrubMax;
                 scrubSlider.SetValueWithoutNotify(Mathf.Clamp(preview.SongTime, 0f, scrubMax));
                 statusTime.text = FormatTime(preview.SongTime);
+
+                // editor-ui-rework-r13.md §7.5: fps計測表示。
+                if (statusPerf != null)
+                {
+                    statusPerf.style.display = showPerfStats ? DisplayStyle.Flex : DisplayStyle.None;
+                    if (showPerfStats)
+                        statusPerf.text = $"{perfMs:0.0}ms ({(perfMs > 0f ? 1000f / perfMs : 0f):0}fps)";
+                }
 
                 // 拍子/BPM表示と統計は毎フレーム作り直すとメーター正規化とノーツ全走査で
                 // 無駄なアロケーションが出るので、目で追える程度に間引く。
@@ -1895,7 +1904,7 @@ namespace Muses.ChartTool
         /// <summary>§2.5「統計」セクション。参考画像と同じくノーツ種別ごとの本数と合計コンボ数を出す。</summary>
         private string BuildStatsText()
         {
-            int tap = 0, exTap = 0, slide = 0, flick = 0, combo = 0;
+            int tap = 0, exTap = 0, slide = 0, flick = 0, riser = 0, combo = 0;
             foreach (var n in chart.notes)
             {
                 switch (n.kind)
@@ -1904,11 +1913,13 @@ namespace Muses.ChartTool
                     case NoteKind.ExTap: exTap++; break;
                     case NoteKind.Slide: slide++; break;
                     case NoteKind.Flick: flick++; break;
+                    // editor-ui-rework-r13.md §8-2: Riser/Diverが内訳に出ていなかった(合計には入っていた)。
+                    case NoteKind.Riser: riser++; break;
                 }
                 combo += n.kind == NoteKind.Slide ? n.comboTimes.Count : 1;
             }
             string autoplay = preview.AutoplaySummary;
-            string body = $"Tap {tap}\nEx Tap {exTap}\nSlide {slide}\nFlick {flick}\n合計 {chart.notes.Count} ノーツ / {combo} コンボ";
+            string body = $"Tap {tap}\nEx Tap {exTap}\nSlide {slide}\nFlick {flick}\n層移動(Riser/Diver) {riser}\n合計 {chart.notes.Count} ノーツ / {combo} コンボ";
             return autoplay == null ? body : body + "\n\n" + autoplay;
         }
 
@@ -2315,6 +2326,11 @@ namespace Muses.ChartTool
             // 自動的に切り替えるか。「モーダルで明示的に選ぶ」設定に属する（作業状態(§3)とは別扱い）。
             var autoFocusToggle = AddToggleRow(parent, "選択時にインスペクタへ切り替える", v => settings.autoFocusInspector = v);
             autoFocusToggle.SetValueWithoutNotify(settings.autoFocusInspector);
+
+            // editor-ui-rework-r13.md §7.5: fps計測表示。IME診断表示と同じくデバッグ用の
+            // 一時的なトグルのため永続化はしない。
+            var perfToggle = AddToggleRow(parent, "fps計測表示", v => showPerfStats = v);
+            perfToggle.SetValueWithoutNotify(showPerfStats);
         }
 
         // ---- タイムラインタブ(§4) ----

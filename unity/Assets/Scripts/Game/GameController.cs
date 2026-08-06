@@ -107,6 +107,7 @@ namespace Muses.Game
             songTime = Mathf.Max(0f, songTime);
             clock.Seek(songTime);
             judge.Seek(songTime);
+            noteView.FlushAlpha(); // editor-ui-rework-r13.md §7.3
         }
 
         public void SeekBy(float deltaSeconds) => SeekTo(clock.SongTime + deltaSeconds);
@@ -133,6 +134,7 @@ namespace Muses.Game
             judge.SetConfig(stageController.Config);
             judge.Reset();
             judge.Prepare(noteView.Runtimes); // 縦連判定(中点分割)の実効窓をここで1回だけprecompute
+            noteView.FlushAlpha(); // editor-ui-rework-r13.md §7.3
         }
 
         private void Update()
@@ -149,7 +151,11 @@ namespace Muses.Game
 
             clock.TickMetronome(stageController.Config.bpm, stageController.Config.metronome);
             noteView.UpdateScroll(VisualTime(), stageController.Config.hiSpeed);
-            if (clock.Running) judge.Update(JudgeTime(), input.Contacts.Values);
+            if (clock.Running)
+            {
+                judge.Update(JudgeTime(), input.Contacts.Values);
+                noteView.FlushAlpha(); // editor-ui-rework-r13.md §7.3: メッシュ全体転送を1フレーム1回に限定
+            }
 
             if (overlay != null) overlay.SetHudTime(t, fps);
         }

@@ -25,7 +25,10 @@ namespace Muses.Notes
 
         [Header("タップ/ホールド始点の奥行き厚み（詳細は NotePlacement.hlsl のコメント）")]
         [Tooltip("ワールド固定の厚み。judge線の奥行きに対する割合（半幅）。遠近感を出す本来の厚み")]
-        [SerializeField] private float thicknessFrac = 0.025f;
+        // editor-ui-rework-r13.md §7.1: SampleScene.unity上のInspector調整値(0.06)と乖離していた
+        // （プレビューはこのC#既定値をそのまま使うコード組み立てのrigのため、シーンの調整が
+        // 反映されず「奥行きの厚みが潰れて見える」不具合になっていた）。実測値に合わせる。
+        [SerializeField] private float thicknessFrac = 0.06f;
         [Tooltip("画面上の最小厚みを保つための下限。現在の奥行きに対する割合（半幅）。遠方の点滅防止にのみ効く")]
         [SerializeField] private float thicknessMinFrac = 0.004f;
 
@@ -135,13 +138,27 @@ namespace Muses.Notes
             }
         }
 
-        /// <summary>ノーツの表示状態を更新（0で非表示）。値が変わらないときは何もしない</summary>
+        private bool alphaDirty;
+
+        /// <summary>ノーツの表示状態を更新（0で非表示）。値が変わらないときは何もしない。
+        /// editor-ui-rework-r13.md §7.3: 呼び出しのたびにメッシュ全体(数万頂点)を再アップロード
+        /// していたのが再生中・シーク時のフレームレート悪化の主因だった。ここでは配列を書き換える
+        /// だけにして実転送はFlushAlphaへ切り出す（1フレームに最大1回にまとめるため）。</summary>
         public void SetNoteAlpha(NoteRuntime rt, float alpha)
         {
             if (notesUv0 == null || rt.alpha == alpha) return;
             rt.alpha = alpha;
             for (int i = rt.vStart; i < rt.vStart + rt.vCount; i++) notesUv0[i].x = alpha;
+            alphaDirty = true;
+        }
+
+        /// <summary>SetNoteAlphaで書き換えた分をまとめてGPUへ転送する。judge.Update / judge.Seek /
+        /// noteView.Build を呼んだ直後に1回だけ呼ぶ規則（r13 §7.3）。呼ばなければ描画は更新されない。</summary>
+        public void FlushAlpha()
+        {
+            if (!alphaDirty || notesUv0 == null) return;
             notesMesh.SetUVs(0, notesUv0);
+            alphaDirty = false;
         }
 
         private void ApplyStaticUniforms(StageConfig cfg, in Derived d)
