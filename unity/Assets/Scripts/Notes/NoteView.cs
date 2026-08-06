@@ -209,12 +209,9 @@ namespace Muses.Notes
                 m.SetFloat("_LaneConverge", laneConverge);
                 m.SetFloat("_ZcFarGround", dCopy.zcFarGround);
                 // 2026-08-06: 層別の奥行き再マップ（NotePlacement.hlslのPlaceNote参照）用。
-                // vGroundJudge/vGroundFarは「地上面のv(depth)」の値そのもの
-                // （cfg.vGroundJudgeはzJudgeの、d.vFarはzFarの導出元入力なので、
-                // 定義から厳密に一致する。StageDerive.Deriveでの逆変換のやり直しは不要）。
+                // 判定線・最遠端のv値はシェーダ側で_ZJudge/_Farから直接求めるので渡さない
+                // （そのほうがpgが構成上厳密に[0,1]に収まり、zFarのクランプ時にもズレない）。
                 m.SetFloat("_TanHalfPhi", dCopy.tanHalfPhi);
-                m.SetFloat("_VGroundJudge", cfg.vGroundJudge);
-                m.SetFloat("_VGroundFar", dCopy.vFar);
                 m.SetFloat("_ThicknessFrac", thicknessFrac);
                 m.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
             }

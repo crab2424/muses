@@ -20,8 +20,6 @@ CBUFFER_START(UnityPerMaterial)
     float _ThicknessFrac;
     float _ThicknessMinFrac;
     float _TanHalfPhi;
-    float _VGroundJudge;
-    float _VGroundFar;
 CBUFFER_END
 
 // note-spec.md §5.5。スクロールグループごとの現在の表示位置 X(songTime)。配列で cbuffer の外に置く
@@ -62,20 +60,32 @@ float _GroupX[MUSES_MAX_SCROLL_GROUPS];
 // **パネルの描画範囲・near/far のフェード・判定は一切変わらず、帯の内側での進み方だけが変わる**。
 //
 // 「画面上の進み具合」は StageDerive.cs の Psi/DepthAt と同じ v(depth)=tan(theta-atan(h/depth))/tanHalfPhi
-// を使う（面の高さ h、depth と1対1対応する本物のスクリーン垂直位置）。地上判定線・最遠端の
-// v 値は cfg.vGroundJudge / Derived.vFar として既に手元にある（zJudge/zFarの導出元入力なので
-// 定義から厳密に一致する。C#側で再計算不要、そのままuniformとして渡すだけでよい）。
+// を使う（面の高さ h、depth と1対1対応する本物のスクリーン垂直位置）。
 //
-// 【2026-08-06 訂正】初版はこの v(depth) の代わりに X収束用のzc比を流用した除算ベースの式
-// （zc_L = zcJudge_L / (1 + laneConverge*(R-1)/c_L)）で実装したが、これは判定線通過の
-// 約0.1秒後（d0がaG/cosTheta分だけ負に振れた地点、ちょうど「通過中」の範囲）に極を持ち、
-// そこを横切る瞬間に depth が符号反転して画面外へ跳ぶ実害があった（ユーザー報告:
-// 判定線を通っている間、奥行きが無限のノーツが追加で表示される）。tan/atanの二重適用は
-// 角度をいったん有界な範囲へ畳み込むため、同じ入力範囲でこの極を持たない
-// （Pythonで-∞側まで検証済み: 除算ベース版は d0=-6.25 で符号反転して発散、
-// tan/atan版は同じ範囲で単調・有界のまま）。数値的にわずかに重いが（tan/atan各2回、
-// layerF=0の地上ノーツは分岐で従来どおりの恒等式に落ちるため無コスト）、
-// 正しさを優先してこちらを正式版とする。
+// **再マップするのは帯の内側 [_ZJudge, _Far] だけで、その外側は従来どおり d0 をそのまま使う。**
+// 両端は d0=_ZJudge→depth=_ZJudge / d0=_Far→depth=_Far と厳密に一致するので継ぎ目は出ない
+// （実測 2e-7、float32 の精度そのもの）。この帯の内側では v は [vj, vf] に収まり
+// 地平線から十分離れているため、極が存在しない。
+//
+// 【2026-08-06 訂正1】初版は v(depth) の代わりに X収束用のzc比を流用した除算ベースの式
+// （zc_L = zcJudge_L / (1 + laneConverge*(R-1)/c_L)）で実装したが、判定線通過の約0.1秒後に
+// 極を持ち、depth が符号反転して画面外へ跳ぶ実害があった。
+//
+// 【2026-08-06 訂正2】訂正1で tan/atan ベースに変えた際、**帯の外側を再マップ対象から
+// 外し忘れていた**。pg は帯の外では [0,1] を外れるため、v が地平線(vHorizon=0.982)を
+// 越えた時点で tan(psi) の符号が反転し、**判定線の約2.4秒より先にある全ノーツが
+// 大きな負の depth になる**。負の depth はフラグメント側の `depth > _Far` を通過して
+// しまう（＝破棄されない）ため、それらの頂点がカメラ背後に落ちて三角形が画面全体へ
+// 引き伸ばされた（ユーザー報告: slideやtapが一斉に表示されてよくわからなくなる）。
+// 譜面のほぼ全ノーツが該当するので影響は極めて大きい。
+// **教訓: 検証は「見えている範囲」だけでなく、メッシュに含まれる全ノーツ
+// （＝曲の最初から最後まで、tau が数十〜数百秒）の範囲で行うこと。**
+// 初版の検証が読み先(1.2秒)以内しか見ていなかったのがこの見落としの原因。
+//
+// 地上判定線・最遠端の v 値は uniform で渡さずここで計算する。そうすると pg は構成上
+// 厳密に d0=_ZJudge で 0・d0=_Far で 1 になり、C#側の値とのズレが原理的に生じない
+// （zFar は StageDerive で zJudge*200 のクランプが掛かる場合があり、その際 Derived.vFar とは
+// 一致しなくなる）。layerF=0 の地上ノーツと拍線は分岐で恒等式に落ちるため無コスト。
 float VAt(float h, float depth, float theta)
 {
     float psi = theta - atan(h / depth);
@@ -100,19 +110,17 @@ float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out fl
     float yPlane = layerF * _SkyHeight;
     float hL = _YCam - yPlane;
 
-    float depth;
-    if (layerF <= 1e-6)
-    {
-        depth = d0; // 地上は恒等（拍線もここを通るので無変更）
-    }
-    else
+    // 地上(layerF=0、拍線を含む)は恒等。帯の外側も恒等（上のコメント「訂正2」参照）。
+    float depth = d0;
+    if (layerF > 1e-6 && d0 > _ZJudge && d0 < _Far)
     {
         float theta = atan2(_SinTheta, _CosTheta);
-        float pg = (VAt(_YCam, d0, theta) - _VGroundJudge) / (_VGroundFar - _VGroundJudge);
+        float vgj = VAt(_YCam, _ZJudge, theta);
+        float vgf = VAt(_YCam, _Far, theta);
+        float pg = (VAt(_YCam, d0, theta) - vgj) / (vgf - vgj); // 構成上 [0,1]
         float vj = VAt(hL, _ZJudge, theta);
         float vf = VAt(hL, _Far, theta);
-        float v = vj + pg * (vf - vj);
-        depth = DepthFromV(hL, v, theta);
+        depth = DepthFromV(hL, vj + pg * (vf - vj), theta);
     }
 
     float a = hL * _SinTheta;

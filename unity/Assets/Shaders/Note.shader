@@ -27,8 +27,6 @@ Shader "Muses/Note"
         _ThicknessFrac ("Thickness Frac", Float) = 0.025
         _ThicknessMinFrac ("Thickness Min Frac", Float) = 0.004
         _TanHalfPhi ("Tan Half Phi", Float) = 1
-        _VGroundJudge ("V Ground Judge", Float) = 0
-        _VGroundFar ("V Ground Far", Float) = 1
     }
     SubShader
     {
