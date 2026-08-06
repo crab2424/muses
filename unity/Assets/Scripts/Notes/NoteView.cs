@@ -67,12 +67,32 @@ namespace Muses.Notes
 
         /// <summary>同上、レンダリングに使われるMaterial/Shaderの実体確認用。
         /// GetInstanceID()はこのUnityバージョンでobsolete-as-errorのため、参照一致(ReferenceEquals)で
-        /// 「SetFloatしたMaterialと実際にrendererへ割り当てられているMaterialが同一か」を確認する。</summary>
-        public string DebugMaterialInfo =>
-            notesMaterial == null ? "notesMaterial=null"
-            : $"shader={(notesMaterial.shader != null ? notesMaterial.shader.name : "null")}" +
-              $" sameAsRendererMaterial={(notesRenderer != null && ReferenceEquals(notesRenderer.sharedMaterial, notesMaterial))}" +
-              $" enabled={(notesRenderer != null ? notesRenderer.enabled : (bool?)null)}";
+        /// 「SetFloatしたMaterialと実際にrendererへ割り当てられているMaterialが同一か」を確認する。
+        ///
+        /// editor-ui-rework-r13.md §7.8: uniformは届いているのに見た目が変わらない件の切り分け。
+        /// シェーダは halfThickness = max(_ZJudge*_ThicknessFrac, depth*_ThicknessMinFrac) なので、
+        /// **_ZJudgeが0だと第1項が常に負けて_ThicknessFracが一切効かなくなる**
+        /// （＝「Thickness Min Fracしか反映されていない」という報告そのものの症状）。
+        /// _ZJudgeはApplyStaticUniformsがstageController.Derivedから設定するが、Derivedは構造体なので
+        /// StageController.EnsureBuiltが未実行(cam/view未設定)だと全要素0のまま渡りうる。
+        /// 判定線での厚み(zJudge*frac)と最遠部相当の下限も併記して、どちらが勝っているか一目で分かるようにする。</summary>
+        public string DebugMaterialInfo
+        {
+            get
+            {
+                if (notesMaterial == null) return "notesMaterial=null";
+                float zJudge = notesMaterial.GetFloat("_ZJudge");
+                float far = notesMaterial.GetFloat("_Far");
+                float atJudge = zJudge * thicknessFrac;          // 判定線での第1項
+                float minAtJudge = zJudge * thicknessMinFrac;    // 判定線での第2項
+                return $"shader={(notesMaterial.shader != null ? notesMaterial.shader.name : "null")}" +
+                       $" sameAsRendererMaterial={(notesRenderer != null && ReferenceEquals(notesRenderer.sharedMaterial, notesMaterial))}" +
+                       $" enabled={(notesRenderer != null ? notesRenderer.enabled : (bool?)null)}" +
+                       $" _ZJudge={zJudge:0.###} _Far={far:0.#}" +
+                       $" 判定線での厚み: frac側={atJudge:0.####} min側={minAtJudge:0.####}" +
+                       $" → {(atJudge >= minAtJudge ? "frac側が有効" : "min側が勝っている(fracが効かない)")}";
+            }
+        }
 
         // StageView が GroundPlane/GroundLines/SkyPlane/SkyLines に 3000〜3003 を使う。
         // Notes側にキューを明示しないとデフォルト(3000)でGroundPlaneと同キューになり、

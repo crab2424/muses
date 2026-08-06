@@ -1771,7 +1771,7 @@ namespace Muses.ChartTool
                 {
                     statusPerf.style.display = showPerfStats ? DisplayStyle.Flex : DisplayStyle.None;
                     if (showPerfStats)
-                        statusPerf.text = $"{perfMs:0.0}ms ({(perfMs > 0f ? 1000f / perfMs : 0f):0}fps)";
+                        statusPerf.text = $"{perfMs:0.0}ms ({(perfMs > 0f ? 1000f / perfMs : 0f):0}fps) 最悪{perfWorstMs:0.0}ms | {PerfLimitInfo()}";
                 }
 
                 // 拍子/BPM表示と統計は毎フレーム作り直すとメーター正規化とノーツ全走査で

@@ -131,7 +131,30 @@ namespace Muses.ChartTool
         private SongMeta song = new();
         private ChartData chart = new();
         private ChartFileHeader header = new() { difficulty = "CUBE", level = 1, charter = "", songFile = ChartSerializer.SongFileName };
-        private bool dirty;
+        /// <summary>
+        /// 「保存されていない変更がある」＝保存ボタン・終了時の確認・自動保存が見る印。
+        /// **save/loadでしかfalseに戻らない**（未保存の間はずっとtrue）。
+        ///
+        /// editor-ui-rework-r13.md §7.6: この性質のためUpdate()の
+        /// 「dirtyなら0.3秒おきにpreview.Rebuild」が**未保存の間ずっと0.3秒ごとに走り続けて**いた。
+        /// Rebuildは譜面全体の時刻再解決＋約8万頂点のメッシュ再生成＋Judge作り直しなので、
+        /// 毎秒3回の巨大なCPU/GCスパイクになる（再生中のカクつきの主因）。
+        /// 「保存の必要性」と「プレビューに未反映の変更」は別の概念なので、後者を
+        /// <see cref="previewDirty"/> として分離し、Rebuild後に必ず落とす。
+        /// dirtyへの代入箇所は20か所以上あるためプロパティにして取りこぼしを防ぐ。
+        /// </summary>
+        private bool dirty
+        {
+            get => dirtyBacking;
+            set
+            {
+                dirtyBacking = value;
+                if (value) previewDirty = true;
+            }
+        }
+        private bool dirtyBacking;
+        /// <summary>プレビュー(3D)へまだ反映していない編集がある。Rebuildを1回走らせたら落とす。</summary>
+        private bool previewDirty;
         /// <summary>SongMeta(song.museproj)側だけの変更。chartのdirtyとは別に持ち、保存時に書き戻す。</summary>
         private bool songMetaDirty;
         private string statusMessage = "";
@@ -634,10 +657,33 @@ namespace Muses.ChartTool
         // editor-ui-rework-r13.md §7.5: frame timeの移動平均(32フレーム)。§7の対処の効果を
         // 実機無しで数値確認するための計測手段。
         private float perfMs;
+        /// <summary>直近1秒で最も遅かったフレーム(ms)。平均だけでは0.3秒周期のスパイク(§7.6)や
+        /// コマ落ち(§7.7)のような「たまに重い」症状が平均に埋もれて見えないため併記する。</summary>
+        private float perfWorstMs;
+        private float perfWorstWindowStart;
+        private float perfWorstAccum;
         private void TickPerfStats()
         {
             float ms = Time.unscaledDeltaTime * 1000f;
             perfMs = perfMs <= 0f ? ms : perfMs + (ms - perfMs) * (1f / 32f);
+
+            perfWorstAccum = Mathf.Max(perfWorstAccum, ms);
+            if (Time.unscaledTime - perfWorstWindowStart >= 1f)
+            {
+                perfWorstMs = perfWorstAccum;
+                perfWorstAccum = 0f;
+                perfWorstWindowStart = Time.unscaledTime;
+            }
+        }
+
+        /// <summary>editor-ui-rework-r13.md §7.5: 「60fpsしか出ていない」のが負荷由来なのか
+        /// 表示側の上限(VSync／macOSのProMotionが60Hzに落ちている等)由来なのかを切り分けるため、
+        /// ディスプレイのリフレッシュレートと現在のVSync/targetFrameRate設定を併記する。</summary>
+        private string PerfLimitInfo()
+        {
+            var rr = Screen.currentResolution.refreshRateRatio;
+            float hz = rr.denominator != 0 ? (float)(rr.numerator / (double)rr.denominator) : 0f;
+            return $"disp{hz:0}Hz vsync{QualitySettings.vSyncCount} target{Application.targetFrameRate}";
         }
 
         private void Update()
@@ -648,11 +694,15 @@ namespace Muses.ChartTool
             // 編集中は毎フレーム再構築しない。ドラッグ終了後・一定間隔をおいて反映する
             // （chart.notes を直接ドラッグしている最中にtick→秒の再解決やNoteView再構築を挟むと重い上、無駄）。
             // §7.4の幅変更・§7.5の高さドラッグも同じくchart.notesを直接書き換えるので同列に扱う。
+            // editor-ui-rework-r13.md §7.6: 条件をdirty(=未保存)からpreviewDirty(=プレビュー未反映)へ
+            // 変更した。dirtyはsave/loadでしかfalseに戻らないため、旧条件だと未保存の間ずっと
+            // 0.3秒ごとにRebuild(約8万頂点のメッシュ再生成)が走り続けていた。
             bool draggingAnything = draggingNote || resizingActive || heightDragNote != null;
-            if (dirty && !draggingAnything && Time.unscaledTime - lastPreviewRebuildRealtime > 0.3f)
+            if (previewDirty && !draggingAnything && Time.unscaledTime - lastPreviewRebuildRealtime > 0.3f)
             {
                 preview.Rebuild(song, chart, Path.GetDirectoryName(songPath));
                 lastPreviewRebuildRealtime = Time.unscaledTime;
+                previewDirty = false;
             }
 
             if (followPlayback && preview.IsPlaying)
@@ -774,6 +824,7 @@ namespace Muses.ChartTool
                 EditorSettingsStore.Save(settings);
                 preview.Rebuild(song, chart, dir);
                 lastPreviewRebuildRealtime = Time.unscaledTime;
+                previewDirty = false; // r13 §7.6: 今Rebuildしたので未反映分は無い
                 CheckAutosaveRestore(path);
             }
             catch (Exception ex)
@@ -881,6 +932,7 @@ namespace Muses.ChartTool
                 // 音源ディレクトリが決まらず、新規譜面では保存しても永久に音源が読まれなかった）。
                 preview.Rebuild(song, chart, songDir);
                 lastPreviewRebuildRealtime = Time.unscaledTime;
+                previewDirty = false; // r13 §7.6: 同上
                 if (validateOnSave) RunValidation();
             }
             catch (Exception ex)

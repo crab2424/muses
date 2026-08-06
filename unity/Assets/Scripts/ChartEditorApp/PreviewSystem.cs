@@ -117,9 +117,9 @@ namespace Muses.ChartTool
         }
 
         // ---- render throttle (editor-spec.md §2.2: 再生中のみ更新、停止中は差分があるときだけ) ----
+        // editor-ui-rework-r13.md §7.7: 再生中の1/60秒間引き(RenderIntervalSec)は
+        // コマ落ちの原因だったため廃止。再生中は毎フレーム、停止中はsceneDirtyのときだけ描く。
         private bool sceneDirty = true;
-        private float lastRenderRealtime = -999f;
-        private const float RenderIntervalSec = 1f / 60f;
 
         public PreviewSystem(MonoBehaviour host, Shader stageShader, Shader noteShader, Shader beatLineShader, SeClipSet seClips = null)
         {
@@ -608,9 +608,15 @@ namespace Muses.ChartTool
         private void MaybeRender()
         {
             if (!RenderEnabled || cam == null || rt == null) return;
-            bool shouldRender = clock.Running
-                ? Time.realtimeSinceStartup - lastRenderRealtime >= RenderIntervalSec
-                : sceneDirty;
+            // editor-ui-rework-r13.md §7.7: 旧実装は再生中も「前回描画から1/60秒以上経過」で
+            // 間引いていたが、この閾値はアプリのフレーム間隔そのものと同じ値だった。
+            // 60Hz(VSync)では毎フレームの実測間隔が16.67msをわずかに下回るだけで判定が落ち、
+            // そのフレームは描かれず次フレームまで持ち越される＝不定期なコマ落ちになる
+            // （タイムラインはPainter2Dで毎フレーム描き直すため、プレビューだけがカクついて見えた）。
+            // 120Hz環境では常に2フレームに1回しか描かれず、さらに差が開く。
+            // 再生中はアプリのフレームレート自体がVSync/targetFrameRateで律速されているので、
+            // ここで追加の間引きをする意味がない。毎フレーム描く。
+            bool shouldRender = clock.Running || sceneDirty;
             if (!shouldRender) return;
             // editor-ui-rework-r4.md §8: StageController.Update()との実行順は保証されないため、
             // 描く直前に明示的にEnsureBuiltを呼んでおく(cam.aspectは既に固定済みなので
@@ -618,7 +624,6 @@ namespace Muses.ChartTool
             stageController.EnsureBuilt();
             cam.targetTexture = rt;
             cam.Render();
-            lastRenderRealtime = Time.realtimeSinceStartup;
             sceneDirty = false;
         }
 
