@@ -192,6 +192,12 @@ namespace Muses.ChartTool
         /// ノーツ速度倍率。譜面の属性ではなくエディタ側の設定(音量と同じ扱い)なのでsong.musesには入れない。</summary>
         public float hiSpeed = 1f;
 
+        /// <summary>editor-ui-rework-r13.md §7.9。プレビューのノーツ奥行き厚み（NotePlacement.hlsl）。
+        /// 既定値はユーザーが実機と見比べて確定した値（frac=0.06 / minFrac=0.01）。
+        /// hiSpeedと同じくエディタ側の表示設定なので譜面ファイルには入れない。</summary>
+        public float thicknessFrac = 0.06f;
+        public float thicknessMinFrac = 0.01f;
+
         // ---- ショートカット ----
         public List<KeyBinding> keyBindings = new();
 

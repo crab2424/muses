@@ -27,10 +27,10 @@ namespace Muses.Notes
         [Tooltip("ワールド固定の厚み。judge線の奥行きに対する割合（半幅）。遠近感を出す本来の厚み")]
         // editor-ui-rework-r13.md §7.1: SampleScene.unity上のInspector調整値(0.06)と乖離していた
         // （プレビューはこのC#既定値をそのまま使うコード組み立てのrigのため、シーンの調整が
-        // 反映されず「奥行きの厚みが潰れて見える」不具合になっていた）。実測値に合わせる。
+        // 反映されなかった）。§7.9: 実機と見比べたユーザーがfrac=0.06 / minFrac=0.01で確定。
         [SerializeField] private float thicknessFrac = 0.06f;
         [Tooltip("画面上の最小厚みを保つための下限。現在の奥行きに対する割合（半幅）。遠方の点滅防止にのみ効く")]
-        [SerializeField] private float thicknessMinFrac = 0.004f;
+        [SerializeField] private float thicknessMinFrac = 0.01f;
 
         /// <summary>editor-ui-rework-r13.md §7.1追補: C#既定値をシーンの調整値へ合わせても
         /// プレビューで見た目の改善が確認できなかったため、実機で値を振って原因切り分けできるよう
@@ -57,40 +57,6 @@ namespace Muses.Notes
             {
                 beatMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
                 beatMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
-            }
-        }
-
-        /// <summary>スライダーを動かしても見た目が変わらない不具合の切り分け用。
-        /// SetFloatが実際にレンダリングへ使われているnotesMaterialへ届いているかを読み戻して確認する。
-        /// notesMaterialがnull(EnsureNotesObject/Build未実行)ならnullを返す。</summary>
-        public float? DebugThicknessFracReadback => notesMaterial != null ? notesMaterial.GetFloat("_ThicknessFrac") : (float?)null;
-
-        /// <summary>同上、レンダリングに使われるMaterial/Shaderの実体確認用。
-        /// GetInstanceID()はこのUnityバージョンでobsolete-as-errorのため、参照一致(ReferenceEquals)で
-        /// 「SetFloatしたMaterialと実際にrendererへ割り当てられているMaterialが同一か」を確認する。
-        ///
-        /// editor-ui-rework-r13.md §7.8: uniformは届いているのに見た目が変わらない件の切り分け。
-        /// シェーダは halfThickness = max(_ZJudge*_ThicknessFrac, depth*_ThicknessMinFrac) なので、
-        /// **_ZJudgeが0だと第1項が常に負けて_ThicknessFracが一切効かなくなる**
-        /// （＝「Thickness Min Fracしか反映されていない」という報告そのものの症状）。
-        /// _ZJudgeはApplyStaticUniformsがstageController.Derivedから設定するが、Derivedは構造体なので
-        /// StageController.EnsureBuiltが未実行(cam/view未設定)だと全要素0のまま渡りうる。
-        /// 判定線での厚み(zJudge*frac)と最遠部相当の下限も併記して、どちらが勝っているか一目で分かるようにする。</summary>
-        public string DebugMaterialInfo
-        {
-            get
-            {
-                if (notesMaterial == null) return "notesMaterial=null";
-                float zJudge = notesMaterial.GetFloat("_ZJudge");
-                float far = notesMaterial.GetFloat("_Far");
-                float atJudge = zJudge * thicknessFrac;          // 判定線での第1項
-                float minAtJudge = zJudge * thicknessMinFrac;    // 判定線での第2項
-                return $"shader={(notesMaterial.shader != null ? notesMaterial.shader.name : "null")}" +
-                       $" sameAsRendererMaterial={(notesRenderer != null && ReferenceEquals(notesRenderer.sharedMaterial, notesMaterial))}" +
-                       $" enabled={(notesRenderer != null ? notesRenderer.enabled : (bool?)null)}" +
-                       $" _ZJudge={zJudge:0.###} _Far={far:0.#}" +
-                       $" 判定線での厚み: frac側={atJudge:0.####} min側={minAtJudge:0.####}" +
-                       $" → {(atJudge >= minAtJudge ? "frac側が有効" : "min側が勝っている(fracが効かない)")}";
             }
         }
 

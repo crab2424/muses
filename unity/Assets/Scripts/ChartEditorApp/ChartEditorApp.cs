@@ -516,6 +516,10 @@ namespace Muses.ChartTool
             preview.BgmVolume = settings.bgmVolume;
             preview.SeVolume = settings.seVolume;
             preview.HiSpeed = settings.hiSpeed;
+            // editor-ui-rework-r13.md §7.9: ノーツ奥行き厚み。0はシェーダのmax()で第1項が常に負ける
+            // ＝fracが効かなくなる値なので、古い/壊れた設定ファイルでも下限を切っておく。
+            preview.ThicknessFrac = Mathf.Clamp(settings.thicknessFrac, 0.001f, 0.3f);
+            preview.ThicknessMinFrac = Mathf.Clamp(settings.thicknessMinFrac, 0f, 0.05f);
 
             // editor-ui-rework-r11.md §3.3: 古い設定ファイル(このフィールドが無い版で保存された物)
             // や将来SnapDenominatorsの要素数を変えた場合でも壊れないよう必ずクランプを通す。
@@ -604,6 +608,8 @@ namespace Muses.ChartTool
             settings.bgmVolume = preview.BgmVolume;
             settings.seVolume = preview.SeVolume;
             settings.hiSpeed = preview.HiSpeed;
+            settings.thicknessFrac = preview.ThicknessFrac;       // r13 §7.9
+            settings.thicknessMinFrac = preview.ThicknessMinFrac;
             WriteWorkspaceState(settings);
             EditorSettingsStore.Save(settings);
         }
