@@ -65,10 +65,14 @@ namespace Muses.Notes
         /// notesMaterialがnull(EnsureNotesObject/Build未実行)ならnullを返す。</summary>
         public float? DebugThicknessFracReadback => notesMaterial != null ? notesMaterial.GetFloat("_ThicknessFrac") : (float?)null;
 
-        /// <summary>同上、レンダリングに使われるMaterial/Shaderの実体確認用。</summary>
+        /// <summary>同上、レンダリングに使われるMaterial/Shaderの実体確認用。
+        /// GetInstanceID()はこのUnityバージョンでobsolete-as-errorのため、参照一致(ReferenceEquals)で
+        /// 「SetFloatしたMaterialと実際にrendererへ割り当てられているMaterialが同一か」を確認する。</summary>
         public string DebugMaterialInfo =>
             notesMaterial == null ? "notesMaterial=null"
-            : $"mat={notesMaterial.GetInstanceID()} shader={(notesMaterial.shader != null ? notesMaterial.shader.name : "null")} renderer.sharedMaterial={(notesRenderer != null && notesRenderer.sharedMaterial != null ? notesRenderer.sharedMaterial.GetInstanceID().ToString() : "null")} enabled={(notesRenderer != null ? notesRenderer.enabled : (bool?)null)}";
+            : $"shader={(notesMaterial.shader != null ? notesMaterial.shader.name : "null")}" +
+              $" sameAsRendererMaterial={(notesRenderer != null && ReferenceEquals(notesRenderer.sharedMaterial, notesMaterial))}" +
+              $" enabled={(notesRenderer != null ? notesRenderer.enabled : (bool?)null)}";
 
         // StageView が GroundPlane/GroundLines/SkyPlane/SkyLines に 3000〜3003 を使う。
         // Notes側にキューを明示しないとデフォルト(3000)でGroundPlaneと同キューになり、
