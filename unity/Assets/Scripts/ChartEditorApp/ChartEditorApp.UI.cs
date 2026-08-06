@@ -2369,6 +2369,14 @@ namespace Muses.ChartTool
             var hiSpeedSlider = AddSliderRow(parent, "ハイスピード(プレビュー)", 0.5f, 4f, v => preview.HiSpeed = v);
             hiSpeedSlider.SetValueWithoutNotify(preview.HiSpeed);
 
+            // editor-ui-rework-r13.md §7.1追補: C#既定値をシーンの調整値(0.06)へ合わせても
+            // プレビューで改善が確認できなかったため、実機で値を振って切り分けられるよう
+            // 調整可能にする（原因切り分け用。切り分け後は既定値の再調整で決着させる想定）。
+            var thicknessSlider = AddSliderRow(parent, "ノーツ厚み(Frac、プレビュー)", 0f, 0.3f, v => preview.ThicknessFrac = v);
+            thicknessSlider.SetValueWithoutNotify(preview.ThicknessFrac);
+            var thicknessMinSlider = AddSliderRow(parent, "ノーツ厚み下限(MinFrac、プレビュー)", 0f, 0.05f, v => preview.ThicknessMinFrac = v);
+            thicknessMinSlider.SetValueWithoutNotify(preview.ThicknessMinFrac);
+
             var laneWidthField = AddFloatRow(parent, "レーン幅(px)", v => laneWidthPx = Mathf.Clamp(v, 20f, 100f));
             laneWidthField.SetValueWithoutNotify(laneWidthPx);
         }

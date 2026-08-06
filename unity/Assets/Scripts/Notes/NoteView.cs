@@ -32,6 +32,34 @@ namespace Muses.Notes
         [Tooltip("画面上の最小厚みを保つための下限。現在の奥行きに対する割合（半幅）。遠方の点滅防止にのみ効く")]
         [SerializeField] private float thicknessMinFrac = 0.004f;
 
+        /// <summary>editor-ui-rework-r13.md §7.1追補: C#既定値をシーンの調整値へ合わせても
+        /// プレビューで見た目の改善が確認できなかったため、実機で値を振って原因切り分けできるよう
+        /// 実行時に調整可能にする（プレビュー設定タブのスライダーから使う）。</summary>
+        public float ThicknessFrac
+        {
+            get => thicknessFrac;
+            set { thicknessFrac = value; ApplyThicknessUniforms(); }
+        }
+        public float ThicknessMinFrac
+        {
+            get => thicknessMinFrac;
+            set { thicknessMinFrac = value; ApplyThicknessUniforms(); }
+        }
+
+        private void ApplyThicknessUniforms()
+        {
+            if (notesMaterial != null)
+            {
+                notesMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
+                notesMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+            }
+            if (beatMaterial != null)
+            {
+                beatMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
+                beatMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+            }
+        }
+
         // StageView が GroundPlane/GroundLines/SkyPlane/SkyLines に 3000〜3003 を使う。
         // Notes側にキューを明示しないとデフォルト(3000)でGroundPlaneと同キューになり、
         // 距離ソート次第でほぼ不透明なGroundPlaneが加算合成のノーツを覆い隠してしまう

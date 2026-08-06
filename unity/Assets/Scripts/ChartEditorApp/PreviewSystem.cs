@@ -462,6 +462,18 @@ namespace Muses.ChartTool
             }
         }
 
+        /// <summary>editor-ui-rework-r13.md §7.1追補: 実機で値を振って切り分けるための調整口。</summary>
+        public float ThicknessFrac
+        {
+            get => noteView.ThicknessFrac;
+            set { noteView.ThicknessFrac = value; MarkDirty(); }
+        }
+        public float ThicknessMinFrac
+        {
+            get => noteView.ThicknessMinFrac;
+            set { noteView.ThicknessMinFrac = value; MarkDirty(); }
+        }
+
         /// <summary>オートプレイ中のスコア表示（非オートプレイ時はnull）。</summary>
         public string AutoplaySummary
         {
