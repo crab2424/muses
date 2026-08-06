@@ -21,6 +21,7 @@
     --note-extap: rgb(242, 204, 64);
     --note-slide: rgb(102, 230, 153);
     --note-flick: rgb(242, 115, 77);
+    --note-riser: rgb(74, 255, 160);
 
     --event-bpm: rgb(130, 214, 120);
     --event-meter: rgb(230, 200, 90);
@@ -197,6 +198,7 @@
 .tool-btn--extap { border-left-color: var(--note-extap); }
 .tool-btn--slide { border-left-color: var(--note-slide); }
 .tool-btn--flick { border-left-color: var(--note-flick); }
+.tool-btn--riser { border-left-color: var(--note-riser); }
 .tool-btn--neutral { border-left-color: var(--text-dim); }
 .tool-btn--event { border-left-color: var(--event-bpm); }
 

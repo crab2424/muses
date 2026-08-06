@@ -32,6 +32,7 @@ namespace Muses.ChartTool
             (EditorTool.ExTap, "Ex Tap", "extap"),
             (EditorTool.Slide, "Slide", "slide"),
             (EditorTool.Flick, "Flick", "flick"),
+            (EditorTool.LayerMove, "層移動⇕", "riser"),
             (EditorTool.AddWaypoint, "中継点", "neutral"),
             (EditorTool.Delete, "削除", "neutral"),
             (EditorTool.Event, "イベント", "event"),
@@ -1100,25 +1101,33 @@ namespace Muses.ChartTool
                 bool allSinglePoint = selection.TrueForAll(r => r.note.points.Count == 1);
                 if (allSinglePoint)
                 {
-                    var kindDropdown = new DropdownField { choices = new List<string> { "Tap", "Ex Tap", "Flick" }, index = 0 };
+                    // riser-r2.md §7.2: 上昇/下降も一括変更の選択肢に加える。Riserへ変換する場合の
+                    // layerToは選択ノーツごとのlayerFから個別に決める（§7.3のChangeNoteKindと同じ規則）。
+                    var kindDropdown = new DropdownField { choices = new List<string> { "Tap", "Ex Tap", "Flick", "上昇(Riser)", "下降(Diver)" }, index = 0 };
                     kindDropdown.RegisterValueChangedCallback(evt =>
                     {
                         if (suppressUiCallbacks) return;
-                        NoteKind newKind = evt.newValue switch
-                        {
-                            "Tap" => NoteKind.Tap,
-                            "Ex Tap" => NoteKind.ExTap,
-                            _ => NoteKind.Flick,
-                        };
                         PushUndo(coalesce: false);
-                        foreach (var r in selection) r.note.kind = newKind;
+                        foreach (var r in selection)
+                        {
+                            var wp = r.note.points[0];
+                            switch (evt.newValue)
+                            {
+                                case "Tap": r.note.kind = NoteKind.Tap; wp.layerTo = wp.layerF; break;
+                                case "Ex Tap": r.note.kind = NoteKind.ExTap; wp.layerTo = wp.layerF; break;
+                                case "Flick": r.note.kind = NoteKind.Flick; wp.layerTo = wp.layerF; break;
+                                case "上昇(Riser)": r.note.kind = NoteKind.Riser; wp.layerTo = 1f; break;
+                                default: r.note.kind = NoteKind.Riser; wp.layerTo = 0f; break;
+                            }
+                            r.note.points[0] = wp;
+                        }
                         dirty = true;
                     });
                     MakePropRow(inspectorHost, "種別に一括変更", kindDropdown);
                 }
                 else
                 {
-                    var note2 = new Label("種別の一括変更はTap/Ex Tap/Flickのみ対応（Slideを含む選択では非表示）");
+                    var note2 = new Label("種別の一括変更はTap/Ex Tap/Flick/層移動のみ対応（Slideを含む選択では非表示）");
                     note2.AddToClassList("prop-note");
                     inspectorHost.Add(note2);
                 }
@@ -1127,9 +1136,82 @@ namespace Muses.ChartTool
             }
             else
             {
-                var kindRow = new Label($"種別: {note.kind}");
-                kindRow.AddToClassList("prop-note");
-                inspectorHost.Add(kindRow);
+                if (note.kind == NoteKind.Riser)
+                {
+                    // riser-r2.md §7.1(b): 種別ラベルを層移動として言い換え、方向を専用ドロップダウンで
+                    // 変更できるようにする（layerTo自体の数値編集はBuildWaypointRowsのRiser限定行）。
+                    var wp0 = note.points[0];
+                    var kindRow = new Label(wp0.layerTo > wp0.layerF ? "種別: 層移動（上昇）" : "種別: 層移動（下降）");
+                    kindRow.AddToClassList("prop-note");
+                    inspectorHost.Add(kindRow);
+
+                    var dirChoices = new List<string> { "上昇(Riser)", "下降(Diver)" };
+                    var dirField = AddChoiceRow(inspectorHost, "方向", dirChoices, v =>
+                    {
+                        PushUndo(coalesce: false, "層移動の方向を変更");
+                        var w = note.points[0];
+                        w.layerTo = v == "上昇(Riser)" ? 1f : 0f;
+                        note.points[0] = w;
+                        dirty = true;
+                    });
+                    inspectorRefreshers.Add(() => RefreshChoiceIfUnfocused(dirField, dirChoices,
+                        note.points[0].layerTo > note.points[0].layerF ? "上昇(Riser)" : "下降(Diver)"));
+                }
+                else
+                {
+                    var kindRow = new Label($"種別: {note.kind}");
+                    kindRow.AddToClassList("prop-note");
+                    inspectorHost.Add(kindRow);
+
+                    // riser-r2.md §7.1(a): Tap/Ex Tap/Flickには層移動の付与/解除ドロップダウンを出す。
+                    // 独立ノーツ方式（決定1）のため「同位置(同tick・同cellF・同width)のRiser」を
+                    // 探索して現在の状態にする（明示リンクは持たない、§11-2の割り切り）。
+                    if (note.points.Count == 1)
+                    {
+                        var wp0 = note.points[0];
+                        var lmChoices = new List<string> { "無し" };
+                        if (wp0.layerF < 1f) lmChoices.Add("上昇(Riser)");
+                        if (wp0.layerF > 0f) lmChoices.Add("下降(Diver)");
+
+                        var paired = FindPairedRiser(note);
+                        string current = paired == null ? "無し"
+                            : paired.points[0].layerTo > paired.points[0].layerF ? "上昇(Riser)" : "下降(Diver)";
+
+                        var lmField = AddChoiceRow(inspectorHost, "層移動", lmChoices, v =>
+                        {
+                            PushUndo(coalesce: false, "層移動を付与");
+                            var again = FindPairedRiser(note);
+                            if (v == "無し")
+                            {
+                                if (again != null) chart.notes.Remove(again);
+                            }
+                            else
+                            {
+                                float layerTo = v == "上昇(Riser)" ? 1f : 0f;
+                                if (again != null)
+                                {
+                                    var w = again.points[0];
+                                    w.layerTo = layerTo;
+                                    again.points[0] = w;
+                                }
+                                else
+                                {
+                                    var w = NewWaypoint(wp0.tick, wp0.layerF, wp0.cellF, wp0.width);
+                                    w.layerTo = layerTo;
+                                    chart.notes.Add(new Note { kind = NoteKind.Riser, scrollGroup = note.scrollGroup, points = new List<Waypoint> { w } });
+                                }
+                            }
+                            dirty = true;
+                        });
+                        lmField.SetValueWithoutNotify(current);
+                        inspectorRefreshers.Add(() =>
+                        {
+                            var p = FindPairedRiser(note);
+                            string v = p == null ? "無し" : p.points[0].layerTo > p.points[0].layerF ? "上昇(Riser)" : "下降(Diver)";
+                            RefreshChoiceIfUnfocused(lmField, lmChoices, v);
+                        });
+                    }
+                }
 
                 var groupField = AddIntRow(inspectorHost, "スクロール群", v =>
                 {
@@ -1199,6 +1281,15 @@ namespace Muses.ChartTool
             var layerField = AddSliderRow(host, "layerF", 0f, 1f, v =>
                 MutateWaypoint(note, index, w => { w.layerF = Mathf.Clamp01(v); return w; }));
             inspectorRefreshers.Add(() => RefreshIfUnfocused(layerField, note.points[index].layerF));
+
+            // riser-r2.md §7.1(b): layerToはRiser限定行。高さレーンのドラッグ(§6.3)と同じ値を
+            // キーボードから直接入力できるようにする（部分移動の微調整用）。
+            if (note.kind == NoteKind.Riser)
+            {
+                var layerToField = AddSliderRow(host, "layerTo(移動先)", 0f, 1f, v =>
+                    MutateWaypoint(note, index, w => { w.layerTo = Mathf.Clamp01(v); return w; }));
+                inspectorRefreshers.Add(() => RefreshIfUnfocused(layerToField, note.points[index].layerTo));
+            }
 
             var cellField = AddFloatRow(host, "cellF", v =>
                 MutateWaypoint(note, index, w => { w.cellF = v; return w; }));

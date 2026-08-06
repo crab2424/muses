@@ -55,7 +55,7 @@ Shader "Muses/Note"
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
-                float3 color : TEXCOORD0;
+                float4 color : TEXCOORD0; // riser-r2.md §3.1: alphaも運ぶ（従来はfloat3でrgbのみ）
                 float state : TEXCOORD1;
                 float depth : TEXCOORD2;
                 float near : TEXCOORD3;
@@ -69,7 +69,7 @@ Shader "Muses/Note"
                 float3 os = PlaceNote(IN.positionOS.xyz, IN.uv0, IN.uv1, _GroupX[group], depth);
                 float3 ws = TransformObjectToWorld(os);
                 OUT.positionCS = TransformWorldToHClip(ws);
-                OUT.color = IN.color.rgb;
+                OUT.color = IN.color;
                 OUT.state = IN.uv0.x;
                 OUT.depth = depth;
                 OUT.near = IN.uv0.y;
@@ -83,9 +83,11 @@ Shader "Muses/Note"
                 float aFar = _HardFar > 0.5 ? 1.0 : 1.0 - smoothstep(_Far * 0.7, _Far, IN.depth);
                 // 手前端でフェードアウト。範囲を狭くして面の終端の先へノーツがはみ出さないようにする
                 float aNear = smoothstep(IN.near * 0.90, IN.near, IN.depth);
-                float a = IN.state * aFar * aNear;
+                // riser-r2.md §3.1: 頂点色のalphaも乗せる。既存ノーツは全てalpha=1なので回帰なし。
+                // Riserの半透明な壁はこれで頂点色のalphaを下げるだけで表現できる。
+                float a = IN.state * aFar * aNear * IN.color.a;
                 if (a <= 0.003) discard;
-                return half4(IN.color * (0.7 + 0.6 * IN.state), a);
+                return half4(IN.color.rgb * (0.7 + 0.6 * IN.state), a);
             }
             ENDHLSL
         }

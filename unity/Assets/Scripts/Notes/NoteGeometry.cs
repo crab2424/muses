@@ -97,7 +97,11 @@ namespace Muses.Notes
             var cFlick = new Color(0xff / 255f, 0x4a / 255f, 0xc8 / 255f); // Flick: 仮の専用色（判定はPhase 1後続項目）
             var cSlide = new Color(0x35 / 255f, 0xe8 / 255f, 0xff / 255f);
             var cSlideMarker = Color.white; // note-spec.md §3: Visible中継点。帯(シアン)と区別できる色
-            var cRiser = new Color(0x4a / 255f, 0xff / 255f, 0xa0 / 255f); // Riser: 仮の専用色（note-spec.md §4.6.6）
+            // riser-r2.md §3.1/§3.3: 壁は半透明(alpha 0.35)。Note.shaderが頂点色のalphaを
+            // 拾うようになったのでここで指定するだけで透ける。方向で色を分ける(Riser=緑/Diver=紫)。
+            var cRiser = new Color(0x4a / 255f, 0xff / 255f, 0xa0 / 255f, 0.35f);
+            var cDiver = new Color(0xc8 / 255f, 0x6a / 255f, 0xff / 255f, 0.35f);
+            var cRiserArrow = new Color(1f, 1f, 1f, 0.9f); // riser-r2.md §3.2: 壁の上に乗せる矢印
 
             foreach (var n in notes)
             {
@@ -121,7 +125,8 @@ namespace Muses.Notes
                     // note-spec.md §4.6.6: 時刻を1つだけ持つ垂直な壁。layerF方向にスイープする
                     // （時間でスイープする PushSlideBand とは別の生成関数）。
                     var wp = n.points[0];
-                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cRiser, timeline.XAt(wp.time));
+                    var cWall = wp.layerTo > wp.layerF ? cRiser : cDiver;
+                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cWall, cRiserArrow, timeline.XAt(wp.time));
                 }
                 else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
@@ -248,11 +253,15 @@ namespace Muses.Notes
         /// u（左右端）は各分割点で同じ cellF/width から求めるが、シェーダ側で頂点ごとの layerF 属性
         /// （uv1.x）に応じて LaneX の収束補正が変わるため、ワールド空間では厳密な垂直線にならない
         /// （unity-stage-port-design.md の「最遠端でワールド x は層ごとに違う」と同じ理由。正しい挙動）。
+        /// riser-r2.md §3.2: 壁本体に加え、中央に大きい矢印を1つ重ねて進行方向を示す。
+        /// 矢印は壁と同じ(u, layerF)空間の座標で指定するだけでよい（頂点シェーダのPlaceNoteが
+        /// 層ごとのレーン収束補正を含めて正しく変形してくれるため）。yオフセットは壁と揃え、
+        /// 前後関係は積む順序（壁→矢印）だけで決める。
         /// </summary>
         private static void PushRiserWall(
             Waypoint wp, Derived d,
             PushFn push, Func<float, float> nearOf,
-            Func<float, float> uAt, Func<float, float, float> yAt, Color c, float centerTime)
+            Func<float, float> uAt, Func<float, float, float> yAt, Color wallColor, Color arrowColor, float centerTime)
         {
             const int steps = 12;
             float u0 = uAt(wp.cellF);
@@ -261,7 +270,7 @@ namespace Muses.Notes
             (float y, float near) At(float layerF) =>
                 (yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, nearOf(layerF));
 
-            void EmitQuad(float layerA, float layerB)
+            void EmitQuad(float layerA, float layerB, Color c)
             {
                 var a = At(layerA);
                 var b = At(layerB);
@@ -277,8 +286,35 @@ namespace Muses.Notes
             {
                 float lA = wp.layerF + (wp.layerTo - wp.layerF) * i / steps;
                 float lB = wp.layerF + (wp.layerTo - wp.layerF) * (i + 1) / steps;
-                EmitQuad(lA, lB);
+                EmitQuad(lA, lB, wallColor);
             }
+
+            // ---- 矢印（中央に1つ、進行方向を向いたシェブロン） ----
+            float uc = (u0 + u1) * 0.5f;
+            float halfW = (u1 - u0) * 0.30f;
+            float dir = Mathf.Sign(wp.layerTo - wp.layerF);
+            float span = Mathf.Abs(wp.layerTo - wp.layerF);
+            float lMid = (wp.layerF + wp.layerTo) * 0.5f;
+            float armH = span * 0.34f;
+            float thick = span * 0.16f;
+            float lTip = lMid + dir * armH * 0.5f;
+            float lBase = lMid - dir * armH * 0.5f;
+
+            // 左腕・右腕とも4隅がu/layerFとも異なる四角形なので、EmitQuadの2u×2layer前提には乗らない。
+            // 頂点1つずつ座標を指定する汎用の四角形をここだけ別に組む。
+            void EmitFreeQuad((float u, float l) p0, (float u, float l) p1, (float u, float l) p2, (float u, float l) p3)
+            {
+                var a = At(p0.l); var b = At(p1.l); var c2 = At(p2.l); var e = At(p3.l);
+                push(p0.u, a.y, centerTime, p0.l, arrowColor, a.near);
+                push(p1.u, b.y, centerTime, p1.l, arrowColor, b.near);
+                push(p2.u, c2.y, centerTime, p2.l, arrowColor, c2.near);
+                push(p0.u, a.y, centerTime, p0.l, arrowColor, a.near);
+                push(p2.u, c2.y, centerTime, p2.l, arrowColor, c2.near);
+                push(p3.u, e.y, centerTime, p3.l, arrowColor, e.near);
+            }
+
+            EmitFreeQuad((uc - halfW, lBase), (uc - halfW, lBase + dir * thick), (uc, lTip + dir * thick), (uc, lTip));
+            EmitFreeQuad((uc + halfW, lBase), (uc + halfW, lBase + dir * thick), (uc, lTip + dir * thick), (uc, lTip));
         }
     }
 }

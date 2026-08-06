@@ -76,6 +76,7 @@ namespace Muses.ChartTool
                 new(CommandIds.ToolExTap, "ツール", "Ex Tap", () => SelectTool(EditorTool.ExTap)),
                 new(CommandIds.ToolSlide, "ツール", "Slide", () => SelectTool(EditorTool.Slide)),
                 new(CommandIds.ToolFlick, "ツール", "Flick", () => SelectTool(EditorTool.Flick)),
+                new(CommandIds.ToolLayerMove, "ツール", "層移動", () => SelectTool(EditorTool.LayerMove)),
                 new(CommandIds.ToolAddWaypoint, "ツール", "中継点", () => SelectTool(EditorTool.AddWaypoint)),
                 new(CommandIds.ToolDelete, "ツール", "削除", () => SelectTool(EditorTool.Delete)),
                 new(CommandIds.ToolEvent, "ツール", "イベント", () => SelectTool(EditorTool.Event)),

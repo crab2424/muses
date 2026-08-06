@@ -55,6 +55,14 @@ namespace Muses.Chart
                 points = new List<Waypoint> { WP(beats, layer == Layer.Sky ? 1f : 0f, cell, width) },
             };
 
+            // riser-r2.md §10 item1: 見た目確認用。fromLayer=Groundなら上昇(Riser)、Skyなら下降(Diver)。
+            Note Riser1(float beats, Layer fromLayer, float cell, float width)
+            {
+                var w = WP(beats, fromLayer == Layer.Sky ? 1f : 0f, cell, width);
+                w.layerTo = fromLayer == Layer.Sky ? 0f : 1f;
+                return new Note { kind = NoteKind.Riser, points = new List<Waypoint> { w } };
+            }
+
             for (int L = 0; L < loops; L++)
             {
                 // 旧実装の「3秒のリードイン」を拍数に換算（3秒 = 3 * bpm / 60 拍）
@@ -125,6 +133,10 @@ namespace Muses.Chart
                 // 31拍のウラ: Flick確認用（item8実装の見た目確認、地上/空中1本ずつ）
                 chart.notes.Add(Flick1(t0Beat + 31.5f, Layer.Ground, C(6), W(2)));
                 chart.notes.Add(Flick1(t0Beat + 31.75f, Layer.Sky, C(9), W(2)));
+
+                // 31.5拍〜: Riser/Diver確認用（riser-r2.md §10 item1、地上→空中/空中→地上を1本ずつ）
+                chart.notes.Add(Riser1(t0Beat + 31.5f, Layer.Ground, C(2), W(2)));
+                chart.notes.Add(Riser1(t0Beat + 31.75f, Layer.Sky, C(4), W(2)));
             }
 
             chart.notes.Sort((a, c2) => a.points[0].tick.CompareTo(c2.points[0].tick));

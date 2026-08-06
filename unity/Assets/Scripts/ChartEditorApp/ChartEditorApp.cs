@@ -41,7 +41,7 @@ namespace Muses.ChartTool
         // editor-ui-rework-r4.md §6: Eventはイベントレーン(BPM/拍子/ソフラン)への追加専用ツール。
         // 参照元(MikuMikuWorld)もInsertBPM/InsertTimeSignをTap/Hold/Flickと同じ列挙・同じ
         // ツールボックスの一員として持っており、モードに関わらず追加できていた旧実装は独自仕様だった。
-        private enum EditorTool { Select, Tap, ExTap, Slide, Flick, AddWaypoint, Delete, Event }
+        private enum EditorTool { Select, Tap, ExTap, Slide, Flick, LayerMove, AddWaypoint, Delete, Event }
 
         private const int Cells = 12;
         private static readonly int[] SnapDenominators = { 4, 8, 12, 16, 24, 32, 48, 64 };
@@ -234,7 +234,7 @@ namespace Muses.ChartTool
         private void InvalidateWidthAnchor() => widthAnchorCenter = null;
 
         private static bool IsPlacementTool(EditorTool tool) =>
-            tool is EditorTool.Tap or EditorTool.ExTap or EditorTool.Slide or EditorTool.Flick;
+            tool is EditorTool.Tap or EditorTool.ExTap or EditorTool.Slide or EditorTool.Flick or EditorTool.LayerMove;
 
         /// <summary>editor-ui-rework-r6.md §1。← で拡大(sign=+1) / → で縮小(sign=-1)。選択があれば
         /// 選択中の点(中継点含む)の幅を、無ければ配置ツールの既定幅を変える（選択優先、§9 Q2）。</summary>
@@ -347,6 +347,7 @@ namespace Muses.ChartTool
             // 消えたNoteへの参照を掴んだままにしないようここでも切る。
             heightDragNote = null;
             heightDragPointIndex = -1;
+            heightDragTargetIsLayerTo = false;
             heightEasingCycleCandidate = null;
         }
 
@@ -438,6 +439,9 @@ namespace Muses.ChartTool
         // 高さレーン上での waypoint ドラッグ（layerF の直接編集）
         private Note heightDragNote;
         private int heightDragPointIndex = -1;
+        // riser-r2.md §6.2: heightDragPointIndex==-1は「ドラッグ中でない」の番兵として既に使われて
+        // いるため、layerToハンドルの識別には専用のフラグを使う（Riser限定、layerToはWaypointに無い）。
+        private bool heightDragTargetIsLayerTo;
         // editor-ui-rework-r2.md §6.3: 高さレーンでのクリック(ドラッグ無し)はeasingHを巡回する
         // （シート本体のeasingCycleCandidateの高さレーン版）。
         private Vector2 heightDragStartScreenPos;
@@ -1501,6 +1505,36 @@ namespace Muses.ChartTool
                 new Color(col.r, col.g, col.b, alpha));
         }
 
+        /// <summary>riser-r2.md §5.1: Riser/Diverをノーツシート上に描く。他ノーツの上に重ねる用途があるため、
+        /// 下が透けるよう薄い塗り+枠線+矢印パターンの3層で描く（不透明な矩形は使わない）。
+        /// 時間軸方向には張り出さない（既存の8px矩形と同じ高さ）。</summary>
+        private static void DrawRiserGlyph(Painter2D p, SheetLayout L, Waypoint wp, Color col)
+        {
+            float y = L.TickToY(wp.tick);
+            if (y < L.rect.y - 8 || y > L.rect.yMax + 8) return;
+            float x0 = L.NoteX(wp.layerF, wp.cellF, forceSky: false);
+            float x1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky: false);
+            var rect = Rect.MinMaxRect(Mathf.Min(x0, x1), y - 4, Mathf.Max(x0, x1), y + 4);
+
+            FillRect(p, rect, new Color(col.r, col.g, col.b, 0.28f));
+            FillRectOutline(p, rect, col, 1.5f);
+
+            bool up = wp.layerTo > wp.layerF;
+            const float triW = 7f, triH = 6f, spacing = 9f;
+            int count = Mathf.Max(1, Mathf.FloorToInt((rect.width - 2f) / spacing));
+            float totalW = count * spacing;
+            float startX = rect.center.x - totalW * 0.5f + spacing * 0.5f;
+            var arrowCol = Color.white;
+            for (int i = 0; i < count; i++)
+            {
+                float cx = startX + i * spacing;
+                var tip = up ? new Vector2(cx, y - triH * 0.5f) : new Vector2(cx, y + triH * 0.5f);
+                var baseA = up ? new Vector2(cx - triW * 0.5f, y + triH * 0.5f) : new Vector2(cx - triW * 0.5f, y - triH * 0.5f);
+                var baseB = up ? new Vector2(cx + triW * 0.5f, y + triH * 0.5f) : new Vector2(cx + triW * 0.5f, y - triH * 0.5f);
+                FillTriangle(p, tip, baseA, baseB, arrowCol);
+            }
+        }
+
         /// <summary>editor-ui-rework-r2.md §1: 中継点は常に存在を示す（markerによる非表示をやめる）。
         /// Visible(コンボ点)は塗りつぶし、None/Invisible(コンボにならない)は輪郭のみで区別する。
         /// editor-ui-rework-r3.md §1: シート本体では点ではなく、始点/終点(DrawEndpointGlyph)と同じ
@@ -1605,8 +1639,14 @@ namespace Muses.ChartTool
                 int nEnd = note.points[^1].tick;
                 if (nEnd < L.BottomTick - snapTicks * 4 || nStart > L.TopTick + snapTicks * 4) continue;
 
-                Color col = NoteColor(note.kind);
-                if (note.points.Count == 1)
+                Color col = NoteColor(note);
+                if (note.kind == NoteKind.Riser)
+                {
+                    // riser-r2.md §2/§5: layerF!=layerToでも開始層(layerF)のペインにだけ描く
+                    // （Slideの高さレーンforceSky方式とは違い、Riserは常に開始層側に固定）。
+                    DrawRiserGlyph(p, L, note.points[0], col);
+                }
+                else if (note.points.Count == 1)
                 {
                     var wp = note.points[0];
                     float y = L.TickToY(wp.tick);
@@ -1797,19 +1837,25 @@ namespace Muses.ChartTool
                 if (selectedNotes.Contains(note)) continue;
                 // editor-ui-rework-r3.md §2: 未選択も種別色で描く(色相=種別、αで選択状態)。
                 // 白一色だと同時押しで重なったときにどれがどの種別か当たりが付けられなかった。
-                var c = NoteColor(note.kind);
+                var c = NoteColor(note);
                 DrawHeightCurve(p, L, note, new Color(c.r, c.g, c.b, 0.28f), selected: false);
             }
 
             // 選択中を後に描くことで、重なっても選択中が手前に出る。
             foreach (var note in selectedNotes)
-                DrawHeightCurve(p, L, note, NoteColor(note.kind), selected: true);
+                DrawHeightCurve(p, L, note, NoteColor(note), selected: true);
         }
 
         /// <summary>selectedがfalseのときは点を輪郭のみで描き（§1のmarker区別は選択中にのみ適用)、
         /// カーブ・点とも渡されたcol(既に非選択用の低alpha)をそのまま使う。</summary>
         private void DrawHeightCurve(Painter2D p, SheetLayout L, Note note, Color col, bool selected)
         {
+            if (note.kind == NoteKind.Riser)
+            {
+                DrawRiserHeightHandles(p, L, note, col, selected);
+                return;
+            }
+
             var pts = note.points;
 
             for (int i = 0; i < pts.Count - 1; i++)
@@ -1856,6 +1902,50 @@ namespace Muses.ChartTool
                     var outlineCol = grabbed ? Color.yellow : selected ? Color.white : col;
                     FillRectOutline(p, new Rect(x - 4, y - 4, 8, 8), outlineCol, 1f);
                 }
+            }
+        }
+
+        /// <summary>riser-r2.md §6.1: Riserはpoints.Count==1なので通常のDrawHeightCurveでは
+        /// layerFの点しか出ない。同じtickにlayerF(始点、四角)とlayerTo(移動先、矢じり)を
+        /// 横並びで描き、水平線で結ぶことで「真横に2点」という草案どおりの見た目にする。</summary>
+        private void DrawRiserHeightHandles(Painter2D p, SheetLayout L, Note note, Color col, bool selected)
+        {
+            var wp = note.points[0];
+            float y = L.TickToY(wp.tick);
+            if (y < L.rect.y - 8f || y > L.rect.yMax + 8f) return;
+
+            float xFrom = L.LayerToX(wp.layerF);
+            float xTo = L.LayerToX(wp.layerTo);
+            FillLine(p, new Vector2(xFrom, y), new Vector2(xTo, y), col, 2f);
+
+            bool grabbedFrom = selected && ReferenceEquals(note, heightDragNote) && heightDragPointIndex == 0 && !heightDragTargetIsLayerTo;
+            bool grabbedTo = selected && ReferenceEquals(note, heightDragNote) && heightDragPointIndex == 0 && heightDragTargetIsLayerTo;
+
+            // 始点(layerF): 既存の始点/終点と同じ8px四角で統一。
+            if (selected)
+            {
+                FillRect(p, new Rect(xFrom - 4, y - 4, 8, 8), grabbedFrom ? Color.yellow : Color.white);
+                FillRect(p, new Rect(xFrom - 2.5f, y - 2.5f, 5, 5), col);
+            }
+            else
+            {
+                FillRectOutline(p, new Rect(xFrom - 4, y - 4, 8, 8), col, 1f);
+            }
+
+            // 終点(layerTo): 矢じり(三角)で描き、始点の四角と区別する。移動方向(x軸上)を向く。
+            float dir = xTo >= xFrom ? 1f : -1f;
+            var tip = new Vector2(xTo + dir * 5f, y);
+            var baseA = new Vector2(xTo - dir * 1f, y - 5f);
+            var baseB = new Vector2(xTo - dir * 1f, y + 5f);
+            if (selected)
+            {
+                FillTriangle(p, tip, baseA, baseB, grabbedTo ? Color.yellow : Color.white);
+            }
+            else
+            {
+                FillLine(p, tip, baseA, col, 1f);
+                FillLine(p, baseA, baseB, col, 1f);
+                FillLine(p, baseB, tip, col, 1f);
             }
         }
 
@@ -1941,6 +2031,16 @@ namespace Muses.ChartTool
                             DrawGhostPoint(p, L, tick, layerF, cellF, defaultWidthCells, col, previewForceSky);
                         }
                     }
+                    break;
+                }
+                case EditorTool.LayerMove:
+                {
+                    // riser-r2.md §4: Groundクリック→上昇(Riser)、Skyクリック→下降(Diver)。
+                    if (layerF != 0f && layerF != 1f) return; // ガターには置けない（他の単発ノーツと同じ）
+                    float cellF = CellFFromCenter(rawCell, defaultWidthCells, 1f);
+                    float layerTo = layerF < 0.5f ? 1f : 0f;
+                    var ghostWp = new Waypoint { tick = tick, layerF = layerF, layerTo = layerTo, cellF = cellF, width = defaultWidthCells };
+                    DrawRiserGlyph(p, L, ghostWp, layerTo > layerF ? RiserColor : DiverColor);
                     break;
                 }
                 case EditorTool.AddWaypoint:
@@ -2123,6 +2223,30 @@ namespace Muses.ChartTool
                     // を押すと、選択されたばかりのノーツの方が優先されてゴースト側の幅を変えられない
                     // ため）。配置前の選択も同時に消す（残っているとそちらへ流れて同じ問題が再発する）。
                     ClearSelection();
+                    dirty = true;
+                    break;
+                }
+                case EditorTool.LayerMove:
+                {
+                    // riser-r2.md §4: 他の配置ツールと同じく、既存の点の上は選択への横取りを優先する。
+                    var hitExisting = HitTestPoint(L, pos);
+                    if (hitExisting.HasValue)
+                    {
+                        var hp = hitExisting.Value;
+                        if (evt.shiftKey) ToggleSelectionMembership(hp);
+                        else if (!selection.Contains(hp)) SetSingleSelection(hp);
+                        if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        break;
+                    }
+
+                    if (layerF != 0f && layerF != 1f) break; // ガターには置かない
+                    float cellF = CellFFromCenter(rawCell, defaultWidthCells, 1f);
+                    var wp = NewWaypoint(tick, layerF, cellF, defaultWidthCells);
+                    wp.layerTo = layerF < 0.5f ? 1f : 0f; // Groundクリック→上昇(Riser) / Skyクリック→下降(Diver)
+                    var riserNote = new Note { kind = NoteKind.Riser, points = new List<Waypoint> { wp } };
+                    PushUndo(coalesce: false, "層移動を配置");
+                    chart.notes.Add(riserNote);
+                    ClearSelection(); // r7 §1と同じ理由（連続配置中の幅ショートカットを効かせるため）
                     dirty = true;
                     break;
                 }
@@ -2444,6 +2568,18 @@ namespace Muses.ChartTool
                 if (hpv.note.kind != NoteKind.Tap) menu.AddItem("Tapに変更", false, () => ChangeNoteKind(hpv.note, NoteKind.Tap));
                 if (hpv.note.kind != NoteKind.ExTap) menu.AddItem("Ex Tapに変更", false, () => ChangeNoteKind(hpv.note, NoteKind.ExTap));
                 if (hpv.note.kind != NoteKind.Flick) menu.AddItem("Flickに変更", false, () => ChangeNoteKind(hpv.note, NoteKind.Flick));
+
+                // riser-r2.md §7.3: layerFが0/1の単発ノーツなら上昇/下降のどちらか一方が有効
+                // （layerTo>layerFがRiser、layerTo<layerFがDiverの本質。§4.6.1）。既にその方向の
+                // Riserなら出さない。
+                var wp0 = hpv.note.points[0];
+                bool isRiser = hpv.note.kind == NoteKind.Riser;
+                bool isUp = isRiser && wp0.layerTo > wp0.layerF;
+                bool isDown = isRiser && wp0.layerTo < wp0.layerF;
+                if (wp0.layerF < 1f && !isUp)
+                    menu.AddItem("上昇(Riser)に変更", false, () => ChangeNoteKind(hpv.note, NoteKind.Riser, 1f));
+                if (wp0.layerF > 0f && !isDown)
+                    menu.AddItem("下降(Diver)に変更", false, () => ChangeNoteKind(hpv.note, NoteKind.Riser, 0f));
             }
             else if (bandHit != null)
             {
@@ -2458,11 +2594,14 @@ namespace Muses.ChartTool
             evt.StopPropagation();
         }
 
-        /// <summary>指定したノーツ群の中から、posに最も近いwaypointを探す。</summary>
-        private static (Note note, int index, float dist) FindClosestHeightPoint(SheetLayout L, Vector2 pos, IEnumerable<Note> notes)
+        /// <summary>指定したノーツ群の中から、posに最も近い高さレーンのハンドルを探す。
+        /// riser-r2.md §6.2: Riserはlayerf(始点)に加えlayerTo(移動先)も掴めるハンドルとして候補に含める
+        /// （layerToはWaypointではないのでNoteRefには載らず、isLayerToフラグで別途区別する）。</summary>
+        private static (Note note, int index, bool isLayerTo, float dist) FindClosestHeightPoint(SheetLayout L, Vector2 pos, IEnumerable<Note> notes)
         {
             Note bestNote = null;
             int bestIndex = -1;
+            bool bestIsLayerTo = false;
             float bestDist = float.MaxValue;
             foreach (var note in notes)
             {
@@ -2470,13 +2609,27 @@ namespace Muses.ChartTool
                 {
                     var wp = note.points[i];
                     float dist = Vector2.Distance(pos, new Vector2(L.LayerToX(wp.layerF), L.TickToY(wp.tick)));
-                    if (dist >= bestDist) continue;
-                    bestDist = dist;
-                    bestNote = note;
-                    bestIndex = i;
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        bestNote = note;
+                        bestIndex = i;
+                        bestIsLayerTo = false;
+                    }
+                    if (note.kind == NoteKind.Riser)
+                    {
+                        float distTo = Vector2.Distance(pos, new Vector2(L.LayerToX(wp.layerTo), L.TickToY(wp.tick)));
+                        if (distTo < bestDist)
+                        {
+                            bestDist = distTo;
+                            bestNote = note;
+                            bestIndex = i;
+                            bestIsLayerTo = true;
+                        }
+                    }
                 }
             }
-            return (bestNote, bestIndex, bestDist);
+            return (bestNote, bestIndex, bestIsLayerTo, bestDist);
         }
 
         /// <summary>
@@ -2491,9 +2644,9 @@ namespace Muses.ChartTool
         {
             const float grabRadius = 14f;
 
-            var (note, index, dist) = FindClosestHeightPoint(L, pos, SelectedNotesDistinct());
+            var (note, index, isLayerTo, dist) = FindClosestHeightPoint(L, pos, SelectedNotesDistinct());
             if (note == null || dist > grabRadius)
-                (note, index, dist) = FindClosestHeightPoint(L, pos, chart.notes);
+                (note, index, isLayerTo, dist) = FindClosestHeightPoint(L, pos, chart.notes);
 
             if (note == null || dist > grabRadius)
             {
@@ -2501,6 +2654,8 @@ namespace Muses.ChartTool
                 return;
             }
 
+            // riser-r2.md §6.2: layerToハンドルはWaypointではないのでNoteRefには載せず、
+            // 選択自体は実体の点(NoteRef(note, index))にする。
             var hit = new NoteRef(note, index);
             if (evt.shiftKey) ToggleSelectionMembership(hit);
             else if (!selection.Contains(hit)) SetSingleSelection(hit);
@@ -2510,6 +2665,7 @@ namespace Muses.ChartTool
             PushUndo(coalesce: false, "高さ編集"); // ドラッグ開始時点(変更前)を1手として記録する
             heightDragNote = note;
             heightDragPointIndex = index;
+            heightDragTargetIsLayerTo = isLayerTo;
             heightDragStartScreenPos = pos;
             // §6.3: easingHは「この点から次の点まで」の意味を持つので、始点/中継点(次の区間を持つ点)
             // にのみ巡回対象を設定する。終点や単発ノーツの点はドラッグのみ。
@@ -2544,11 +2700,36 @@ namespace Muses.ChartTool
         private static float ResolveInsertLayer(Note note, int tick, float mouseLayerF) =>
             HasHeightVariation(note) ? InterpAtTick(note, tick).layerF : mouseLayerF;
 
-        private void ChangeNoteKind(Note note, NoteKind kind)
+        /// <summary>riser-r2.md §7.1: 独立ノーツ方式（決定1）でのRiserの「同位置」判定。明示リンクは
+        /// 持たず、同tick・同cellF・同widthのRiserを毎回探索する（§11-2の割り切り、詳細は設計md参照）。</summary>
+        private Note FindPairedRiser(Note anchor)
         {
-            if (note.points.Count != 1 || note.kind == kind) return;
+            if (anchor.points.Count != 1) return null;
+            var wp = anchor.points[0];
+            foreach (var n in chart.notes)
+            {
+                if (n.kind != NoteKind.Riser || ReferenceEquals(n, anchor)) continue;
+                var rwp = n.points[0];
+                if (rwp.tick == wp.tick && Mathf.Approximately(rwp.cellF, wp.cellF) && Mathf.Approximately(rwp.width, wp.width))
+                    return n;
+            }
+            return null;
+        }
+
+        /// <summary>riser-r2.md §7.3: layerToも指定できるよう拡張。他種別→Riserは呼び出し側が
+        /// layerToを渡す。Riser→他種別はlayerToをlayerFに戻す（V13警告を残さないため必須）。
+        /// Riser→Riser（方向反転など、kindが同じでlayerToだけ違う）も通せるよう早期returnを緩めている。</summary>
+        private void ChangeNoteKind(Note note, NoteKind kind, float? layerTo = null)
+        {
+            if (note.points.Count != 1) return;
+            var wp = note.points[0];
+            bool sameKind = note.kind == kind;
+            bool sameLayerTo = !layerTo.HasValue || Mathf.Approximately(wp.layerTo, layerTo.Value);
+            if (sameKind && sameLayerTo) return;
             PushUndo(coalesce: false, "種別変更");
             note.kind = kind;
+            wp.layerTo = kind == NoteKind.Riser ? (layerTo ?? (wp.layerF < 0.5f ? 1f : 0f)) : wp.layerF;
+            note.points[0] = wp;
             dirty = true;
         }
 
@@ -2609,7 +2790,12 @@ namespace Muses.ChartTool
                 float layer = L.XToLayer(pos.x);
                 // 単発ノーツ(Tap/Ex Tap/Flick)はGround/Skyのどちらかにしか存在できないため0/1にスナップする。
                 // Slideの中継点は§7.5どおり連続値を許す（層を跨ぐ高さカーブを作るのが本レーンの目的）。
-                wp.layerF = heightDragNote.points.Count == 1 ? Mathf.Round(layer) : layer;
+                // riser-r2.md §6.3: Riserはnote-spec §4.6.1で部分的な層移動を許しているため、
+                // 単発ノーツだが例外的に連続値を通す（layerF・layerToのどちらのハンドルでも）。
+                bool continuous = heightDragNote.kind == NoteKind.Riser || heightDragNote.points.Count > 1;
+                float v = continuous ? layer : Mathf.Round(layer);
+                if (heightDragTargetIsLayerTo) wp.layerTo = Mathf.Clamp01(v);
+                else wp.layerF = Mathf.Clamp01(v);
                 heightDragNote.points[heightDragPointIndex] = wp;
                 dirty = true;
                 evt.StopPropagation();
@@ -2685,6 +2871,12 @@ namespace Muses.ChartTool
                 wp.tick = Mathf.Max(0, wp.tick + deltaTick);
                 wp.cellF += deltaCell;
                 wp.layerF += deltaLayer;
+                // riser-r2.md §6.4: layerFが変わったとき、layerToが0/1(全移動)のときだけ反対側へ
+                // 自動反転する。高さレーンで調整した部分移動(中間値)は保持する
+                // （origin.layerTo=ドラッグ開始時点の値を見て判定、既定のまま置いたRiserを別の層へ
+                // 移す操作が自然に追従するようにするため）。
+                if (r.note.kind == NoteKind.Riser && (Mathf.Approximately(origin.layerTo, 0f) || Mathf.Approximately(origin.layerTo, 1f)))
+                    wp.layerTo = wp.layerF < 0.5f ? 1f : 0f;
                 r.note.points[r.index] = wp;
             }
             dirty = true;
@@ -2741,6 +2933,7 @@ namespace Muses.ChartTool
                 heightEasingCycleCandidate = null;
                 heightDragNote = null;
                 heightDragPointIndex = -1;
+                heightDragTargetIsLayerTo = false;
                 if (notesSheet.HasPointerCapture(evt.pointerId)) notesSheet.ReleasePointer(evt.pointerId);
                 return;
             }
@@ -3120,7 +3313,7 @@ namespace Muses.ChartTool
 
             foreach (var src in clipboard)
             {
-                var col = NoteColor(src.kind);
+                var col = NoteColor(src);
                 var pts = new List<Waypoint>(src.points.Count);
                 foreach (var srcWp in src.points)
                 {
@@ -3371,6 +3564,11 @@ namespace Muses.ChartTool
         {
             tick = tick,
             layerF = layerF,
+            // riser-r2.md §7.3の調査で判明: layerToを明示しないとstruct既定値0のままになり、
+            // layerF!=0(Sky配置等)のとき保存時に非Riserノーツへ余計な"to="が出力される潜在バグが
+            // あった（ChartSerializer.MakeWaypointは読み込み時にlayerTo=layerFを既定にしているのと
+            // 非対称だった）。ここでも同じ既定にして揃える。
+            layerTo = layerF,
             cellF = cellF,
             width = width,
             easing = Easing.Linear,
@@ -3413,8 +3611,22 @@ namespace Muses.ChartTool
             NoteKind.ExTap => new Color(0.95f, 0.8f, 0.25f),
             NoteKind.Slide => new Color(0.4f, 0.9f, 0.6f),
             NoteKind.Flick => new Color(0.95f, 0.45f, 0.3f),
+            NoteKind.Riser => RiserColor,
             _ => Color.white,
         };
+
+        // riser-r2.md §3.3/§5.2: ゲーム側(NoteGeometry.cs)と同じ色。Riserは方向(layerTo>layerF)で
+        // 上昇/下降を色分けするため kind だけでは決まらず、Note を受け取るオーバーロードが要る。
+        private static readonly Color RiserColor = new(0x4a / 255f, 0xff / 255f, 0xa0 / 255f);
+        private static readonly Color DiverColor = new(0xc8 / 255f, 0x6a / 255f, 0xff / 255f);
+
+        /// <summary>riser-r2.md §5.2: NoteColor(NoteKind)はRiser/Diverを区別できない
+        /// （方向はkindではなくlayerTo/layerFの大小関係で決まるため）。Noteを持つ呼び出し元は
+        /// こちらを使う。Noteを持たない箇所（複数選択の一括変更ドロップダウン等）はNoteKind版を使う。</summary>
+        private static Color NoteColor(Note note) =>
+            note.kind == NoteKind.Riser
+                ? (note.points[0].layerTo > note.points[0].layerF ? RiserColor : DiverColor)
+                : NoteColor(note.kind);
 
         // ---------- §4 layerFの濃淡表現 ----------
 

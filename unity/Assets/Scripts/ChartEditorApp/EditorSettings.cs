@@ -35,6 +35,8 @@ namespace Muses.ChartTool
         public const string ToolExTap = "tool.extap";
         public const string ToolSlide = "tool.slide";
         public const string ToolFlick = "tool.flick";
+        // riser-r2.md §4。
+        public const string ToolLayerMove = "tool.layerMove";
         public const string ToolAddWaypoint = "tool.addWaypoint";
         public const string ToolDelete = "tool.delete";
         public const string ToolEvent = "tool.event";
@@ -281,6 +283,8 @@ namespace Muses.ChartTool
             new KeyBinding(CommandIds.ToolAddWaypoint, new KeyChord(KeyCode.Alpha6)),
             new KeyBinding(CommandIds.ToolDelete, new KeyChord(KeyCode.Alpha7)),
             new KeyBinding(CommandIds.ToolEvent, new KeyChord(KeyCode.Alpha8)),
+            // riser-r2.md §4。既存ツールの数字を詰め替えると混乱するため末尾のAlpha9に割り当てる。
+            new KeyBinding(CommandIds.ToolLayerMove, new KeyChord(KeyCode.Alpha9)),
 
             new KeyBinding(CommandIds.PlayToggle, new KeyChord(KeyCode.Space)),
             // 参照元はBackspaceだが、muses ではEditDeleteと衝突するため変更する(editor-ui-rework-r5.md §5.3)。
