@@ -153,7 +153,7 @@ namespace Muses.ChartTool
 
     /// <summary>
     /// editor-ui-rework-r5.md §1。譜面エディタ(ChartEditorApp)の設定。ゲーム本体のプレイヤー設定
-    /// （Stage/OffsetSettings.cs、judgeOffsetMs/visualOffsetMs）とは別物で混ぜない。
+    /// （Muses.Game.PlayerSettings、judgeOffsetMs/visualOffsetMs等）とは別物で混ぜない。
     /// </summary>
     [Serializable]
     public class EditorSettings

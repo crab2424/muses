@@ -38,6 +38,10 @@ namespace Muses.Gameplay
 
         private StageConfig cfg;
         private readonly Action<NoteRuntime, float> setAlpha;
+        /// <summary>song-play-flow-r1.md §7。判定成立(MISS以外)のたび呼ぶヒットSE用コールバック。
+        /// Seek()中の過去ノーツの読み飛ばしでは呼ばれない(CommitJudgementはUpdate()経由の
+        /// 実際の判定成立時にしか呼ばれないため)。</summary>
+        private readonly Action<JudgeKind> onJudged;
         private List<NoteRuntime> runtimes = new();
         private int cursor;
 
@@ -46,10 +50,12 @@ namespace Muses.Gameplay
         private readonly Dictionary<NoteRuntime, (float lo, float hi)> chainWindows = new();
 
         /// <param name="setAlpha">ノーツの表示アルファを設定するコールバック（通常は NoteView.SetNoteAlpha）</param>
-        public Judge(StageConfig cfg, Action<NoteRuntime, float> setAlpha)
+        /// <param name="onJudged">判定成立(MISS以外)のたび呼ぶヒットSEコールバック（省略可）</param>
+        public Judge(StageConfig cfg, Action<NoteRuntime, float> setAlpha, Action<JudgeKind> onJudged = null)
         {
             this.cfg = cfg;
             this.setAlpha = setAlpha;
+            this.onJudged = onJudged;
         }
 
         public void SetConfig(StageConfig cfg) => this.cfg = cfg;
@@ -325,6 +331,7 @@ namespace Muses.Gameplay
             };
             Score.lastMs = ms;
             Flashes.Add(new HitFlash { layer = layer, cell = cell, width = width, born = songTime, kind = judged });
+            onJudged?.Invoke(judged);
         }
 
         private void CommitMiss(Layer layer, int cell, float width, float songTime)

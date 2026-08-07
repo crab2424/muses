@@ -12,10 +12,10 @@ namespace Muses.Game
 {
     /// <summary>
     /// main.ts 相当の統括役。Stage/Notes/Input/Judge/Clock を束ねてゲームループを回す。
+    /// 「1曲をプレイする」責務に限定し、画面遷移（タイトル/ロード/結果）は AppController が持つ
+    /// （song-play-flow-r1.md §2.3）。
     ///
     /// 簡略化した点（TS版との差分）:
-    /// - Web版は AudioContext のユーザー操作要件があるため「Startボタン」を挟むが、
-    ///   Unity にはその制約が無いので Start() で自動的にゲームを開始する。
     /// - リサイズ（アスペクト比変化）時に StageController は自動で再導出されるが、
     ///   NoteView 側は Rechart() を呼ぶまで追従しない（この点はTS版のresize連動より簡略）。
     /// </summary>
@@ -26,16 +26,23 @@ namespace Muses.Game
         [SerializeField] private TouchInputManager input;
         [SerializeField] private StageOverlay overlay;
         [SerializeField] private AudioSource metronomeSource;
-        [SerializeField] private float chartSeconds = 600f;
+        [SerializeField] private AudioSource musicSource;
+        [SerializeField] private AudioSource seSource;
+        /// <summary>AppController から一度も LoadChart() されないままの開発時セーフティネット用
+        /// （エディタでこのシーンだけ単独Playしたときに何も表示されないと確認しづらいため）。</summary>
+        [SerializeField] private float demoChartSeconds = 600f;
 
         private SongClock clock;
+        private HitSePlayer hitSe;
         private Judge judge;
         private Chart.ChartData chart = new();
+        private Chart.SongMeta song;
         private float fps = 60f;
 
         private void Awake()
         {
             clock = new SongClock(metronomeSource);
+            hitSe = new HitSePlayer(seSource);
         }
 
         private void Start()
@@ -45,9 +52,7 @@ namespace Muses.Game
             QualitySettings.vSyncCount = 0;
             Application.targetFrameRate = 120;
 
-            OffsetSettings.Load(stageController.Config);
-
-            judge = new Judge(stageController.Config, noteView.SetNoteAlpha);
+            judge = new Judge(stageController.Config, noteView.SetNoteAlpha, hitSe.OnJudged);
             if (overlay != null) overlay.Judge = judge;
 
             input.Init(() => clock.SongTime);
@@ -56,7 +61,11 @@ namespace Muses.Game
                 if (clock.Running) judge.OnEnter(e, JudgeTime());
             };
 
-            StartGame();
+            // song-play-flow-r1.md §2.3: 実際の開始はAppController.LoadSong→StartGame()が駆動する。
+            // ここでは「まだ何も無い」状態にせず、開発時にこのシーンを単独Playしても
+            // すぐ確認できるようデモ譜面だけ仕込んでおく（AppControllerが無ければ動かないよりまし）。
+            if (chart.notes.Count == 0)
+                chart = ChartBuilder.BuildDemoChart(stageController.Config.bpm, demoChartSeconds, stageController.Config.cells);
         }
 
         /// <summary>judgeOffsetMs を適用した、判定にだけ使う時刻。音と入力のズレ補正用</summary>
@@ -65,7 +74,31 @@ namespace Muses.Game
         /// <summary>visualOffsetMs を適用した、ノーツ描画位置にだけ使う時刻。音と描画のズレ補正用</summary>
         private float VisualTime() => clock.SongTime + stageController.Config.visualOffsetMs / 1000f;
 
-        /// <summary>main.ts の restart() 相当。譜面を作り直して頭から再生する（implementation-roadmap.md 項目F）。</summary>
+        /// <summary>song-play-flow-r1.md §3.2。AppController がロード完了後に呼ぶ。musicClip が null
+        /// なら無音のフリーランクロックになる（音源無し譜面・デモ譜面向け）。</summary>
+        public void LoadChart(Chart.ChartData newChart, Chart.SongMeta newSong, AudioClip musicClip)
+        {
+            chart = newChart;
+            song = newSong;
+            clock.SetMusic(musicSource, musicClip, newSong?.offsetSec ?? 0f);
+        }
+
+        /// <summary>§6.2/§6.4。設定変更のたび（設定画面を閉じたとき・ロード完了直後）に呼ぶ。
+        /// ステージ角度等の「頂点に焼き込まれる値」はここに含めない（§6.2でv1では設定に出さない判断）。</summary>
+        public void ApplyPlayerSettings(PlayerSettings ps)
+        {
+            var cfg = stageController.Config;
+            cfg.judgeOffsetMs = ps.judgeOffsetMs;
+            cfg.visualOffsetMs = ps.visualOffsetMs;
+            cfg.hiSpeed = ps.hiSpeed;
+            cfg.metronome = ps.metronome;
+            noteView.ThicknessFrac = ps.noteThickness;
+            AudioListener.volume = ps.masterVolume;
+            if (musicSource != null) musicSource.volume = ps.bgmVolume;
+            if (seSource != null) seSource.volume = ps.seVolume;
+        }
+
+        /// <summary>main.ts の restart() 相当。ノーツを作り直して頭から再生する（implementation-roadmap.md 項目F）。</summary>
         public void StartGame()
         {
             paused = false;
@@ -75,6 +108,36 @@ namespace Muses.Game
 
         public bool Paused => paused;
         private bool paused;
+
+        /// <summary>Result画面・エディタから読む用。判定成立コールバックの外から直接触らないこと。</summary>
+        public Score Score => judge?.Score;
+
+        /// <summary>song-play-flow-r1.md §8.1。終了条件の算出に使う。最終ノーツの終端時刻(秒)。
+        /// ノーツが1つも無ければ0。</summary>
+        public float LastNoteEndTime()
+        {
+            float end = 0f;
+            foreach (var n in chart.notes) end = Mathf.Max(end, ChartMath.NoteEnd(n));
+            return end;
+        }
+
+        /// <summary>音源終端の譜面時間(秒)。音源が無ければ null。</summary>
+        public float? AudioEndTime()
+        {
+            if (musicSource == null || musicSource.clip == null) return null;
+            return musicSource.clip.length - (song?.offsetSec ?? 0f);
+        }
+
+        /// <summary>note-spec.md §7。Score.ComputeScoreの分母N。SlideはcomboTimesの数、それ以外は1
+        /// （PreviewSystemの表示ラベル計算(PreviewSystem.cs:491-492)と同じ数え方）。</summary>
+        public int TotalComboPoints()
+        {
+            int total = 0;
+            foreach (var n in chart.notes) total += n.kind == NoteKind.Slide ? n.comboTimes.Count : 1;
+            return total;
+        }
+
+        public float SongTime => clock.SongTime;
 
         public void Pause()
         {
@@ -95,8 +158,16 @@ namespace Muses.Game
             if (paused) Resume(); else Pause();
         }
 
-        /// <summary>即座リスタート（implementation-roadmap.md 項目F）。譜面を作り直して頭から再生する。</summary>
+        /// <summary>即座リスタート（implementation-roadmap.md 項目F）。同じ譜面を頭から再生する。</summary>
         public void Retry() => StartGame();
+
+        /// <summary>song-play-flow-r1.md §2.3。タイトルへ戻るときに呼ぶ。時計を完全に止める
+        /// （Pause()と違い、次はStartGame()で頭から始まる想定）。</summary>
+        public void StopToIdle()
+        {
+            clock.Stop();
+            paused = false;
+        }
 
         /// <summary>
         /// implementation-roadmap.md 項目D。任意の曲時刻へジャンプする。エディタのスクラブ操作の想定口。
@@ -126,11 +197,20 @@ namespace Muses.Game
             if (kb.rightArrowKey.wasPressedThisFrame) SeekBy(5f);
         }
 
+        /// <summary>song-play-flow-r1.md §8.2。同じ譜面でのリトライではメッシュ(約8万頂点)を
+        /// 作り直さない。LoadChart()が新しい ChartData インスタンスを渡す前提で、参照が変わって
+        /// いなければ「同じ譜面」とみなす（ステージ角度・アスペクト比はv1ではプレイ中に変わらない
+        /// ため、参照比較だけで安全に判定できる）。</summary>
+        private Chart.ChartData lastBuiltChart;
+
         private void Rechart()
         {
-            chart = ChartBuilder.BuildDemoChart(stageController.Config.bpm, chartSeconds, stageController.Config.cells);
-            var scrollTimelines = Chart.ChartFormat.BuildScrollTimelines(chart); // note-spec.md §5.5
-            noteView.Build(stageController.Config, stageController.Derived, chart.notes, scrollTimelines);
+            if (!ReferenceEquals(chart, lastBuiltChart))
+            {
+                var scrollTimelines = Chart.ChartFormat.BuildScrollTimelines(chart); // note-spec.md §5.5
+                noteView.Build(stageController.Config, stageController.Derived, chart.notes, scrollTimelines);
+                lastBuiltChart = chart;
+            }
             judge.SetConfig(stageController.Config);
             judge.Reset();
             judge.Prepare(noteView.Runtimes); // 縦連判定(中点分割)の実効窓をここで1回だけprecompute

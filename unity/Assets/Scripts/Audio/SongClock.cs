@@ -18,6 +18,13 @@ namespace Muses.Audio
     /// SongTime は dspTime を「正解」として保持しつつ、dspTime が更新されないフレームは
     /// Time.unscaledDeltaTime で滑らかに前進させ、次にdspTimeが更新された時点でずれを補正する
     /// （音との同期精度は保ったまま、見た目だけを滑らかにする）。
+    ///
+    /// 楽曲再生について（song-play-flow-r1.md §4.2）: AudioSource.time は読まない
+    /// （PreviewClockが正として使っているが、あちらもdspTimeと同じDSPバッファ単位でしか
+    /// 更新されずiPadでは同じ問題が起きる）。dspTime を唯一の正としたまま、音源は
+    /// PlayScheduled で dspTime 基準の時刻へ「貼り付ける」だけにする。これにより
+    /// 「音が実際に鳴り始める瞬間」と「songTimeがその値になる瞬間」が dspTime 上で
+    /// 厳密に一致し、上記のフレーム補間はそのまま生きる。
     /// </summary>
     public class SongClock
     {
@@ -27,9 +34,21 @@ namespace Muses.Audio
         private double pausedAt;
         public bool Running { get; private set; }
 
-        private readonly AudioSource source;
+        private readonly AudioSource metronomeSource;
         private readonly AudioClip accentClip;
         private readonly AudioClip normalClip;
+
+        // ---- 楽曲再生 ----
+        private AudioSource musicSource;
+        private AudioClip musicClip;
+        /// <summary>音源先頭 → 譜面tick0のズレ(秒)。SongMeta.offsetSecをそのまま渡す想定。</summary>
+        public float Offset { get; private set; }
+
+        /// <summary>AudioSource.Play()は「次のミックスブロック境界」まで待つため、
+        /// 48kHz/バッファ256サンプルでも最大5.3msの開始遅延ゆらぎが乗る。PlayScheduledで
+        /// dspTime基準のサンプル精度の開始時刻を指定し、これを消す（PreviewClockと同値）。
+        /// Seek中の再スケジュールにはこのリードは使わない（PreviewClock.Seekと同じ判断）。</summary>
+        private const double ScheduleLeadSec = 0.05;
 
         // ---- フレーム補間用の状態 ----
         private double lastObservedDsp = -1;
@@ -40,21 +59,37 @@ namespace Muses.Audio
         /// <summary>毎フレーム、ズレのこの割合だけ縮める（音ズレを一気にではなく滑らかに吸収する）。</summary>
         private const double DriftCorrectionRate = 0.10;
 
-        public SongClock(AudioSource source)
+        public SongClock(AudioSource metronomeSource)
         {
-            this.source = source;
+            this.metronomeSource = metronomeSource;
             accentClip = BuildClickClip(1600f);
             normalClip = BuildClickClip(1000f);
         }
 
+        /// <summary>song-play-flow-r1.md §3.2/§4.2。曲の読み込み完了時に呼ぶ。
+        /// clip が null なら「音源無しの無音クロック」に戻る（従来どおりの挙動）。</summary>
+        public void SetMusic(AudioSource source, AudioClip clip, float offsetSec)
+        {
+            musicSource = source;
+            musicClip = clip;
+            Offset = offsetSec;
+        }
+
         public void Start()
         {
-            t0 = AudioSettings.dspTime;
             nextBeat = 0;
             pausedAt = 0;
-            lastObservedDsp = t0;
-            smoothed = 0;
             Running = true;
+
+            double startDsp = AudioSettings.dspTime + ScheduleLeadSec;
+            t0 = startDsp;
+            lastObservedDsp = AudioSettings.dspTime;
+            // Start()呼び出し直後は dspTime < startDsp（リード分だけ未来）なので、
+            // 真の値(=dspTime-t0)はわずかに負になる。0へスナップせず真の値を直接採用することで、
+            // Advance()の補正を待たずに最初から正確にする。
+            smoothed = lastObservedDsp - t0;
+
+            ScheduleMusicAt(0.0, startDsp);
         }
 
         /// <summary>
@@ -66,16 +101,32 @@ namespace Muses.Audio
             if (!Running) return;
             pausedAt = AudioSettings.dspTime - t0;
             Running = false;
+            // 予約済みでまだ鳴り始めていない場合を含め、次のResume/Seekで必ず予約し直すので
+            // Stop()で統一する（AudioSource.Pause()は「予約中でまだ再生開始していない」状態の
+            // 挙動が不定なため避ける、PreviewClockと同じ判断）。
+            musicSource?.Stop();
         }
 
         /// <summary>Pause() で止めた地点から再開する。</summary>
         public void Resume()
         {
             if (Running) return;
-            t0 = AudioSettings.dspTime - pausedAt;
-            lastObservedDsp = AudioSettings.dspTime;
-            smoothed = pausedAt;
             Running = true;
+
+            double startDsp = AudioSettings.dspTime + ScheduleLeadSec;
+            t0 = startDsp - pausedAt;
+            lastObservedDsp = AudioSettings.dspTime;
+            smoothed = lastObservedDsp - t0;
+
+            ScheduleMusicAt(pausedAt, startDsp);
+        }
+
+        /// <summary>完全に停止する（曲を終える・タイトルへ戻る等）。Start()で再度頭から始められる。</summary>
+        public void Stop()
+        {
+            Running = false;
+            pausedAt = 0;
+            musicSource?.Stop();
         }
 
         /// <summary>
@@ -87,8 +138,12 @@ namespace Muses.Audio
             songTime = Math.Max(0, songTime);
             if (Running)
             {
-                t0 = AudioSettings.dspTime - songTime;
-                lastObservedDsp = AudioSettings.dspTime;
+                // Start/Resumeと違いここではリードを使わない（PreviewClock.Seekと同じ判断:
+                // 既に鳴っている状態からの差し替えなので、境界待ちのゆらぎより即時性を優先する）。
+                double dspAnchor = AudioSettings.dspTime;
+                t0 = dspAnchor - songTime;
+                lastObservedDsp = dspAnchor;
+                ScheduleMusicAt(songTime, dspAnchor);
             }
             else
             {
@@ -96,6 +151,25 @@ namespace Muses.Audio
             }
             smoothed = songTime; // Seek直後は補間せず即スナップ
             nextBeat = songTime;
+        }
+
+        /// <summary>指定した songTime に音源上の対応位置が鳴るよう、dspAnchor 時刻へ予約する。
+        /// audioTime(=songTime+Offset) が負（前奏区間の途中）なら、音源自体はaudioTime=0地点から
+        /// 鳴らし開始をその分だけ未来のdspTimeへ予約するだけで正確に表現できる
+        /// （PreviewClock r8 §1.3と同じ考え方）。clipの範囲外（末尾より後）は鳴らす音が無い。</summary>
+        private void ScheduleMusicAt(double songTime, double dspAnchor)
+        {
+            if (musicSource == null || musicClip == null) return;
+            musicSource.Stop();
+
+            double audioTime = songTime + Offset;
+            double clipLen = musicClip.length;
+            if (audioTime >= clipLen) return; // 末尾区間: 鳴らす音が無い
+
+            double startAudio = Math.Max(0.0, Math.Min(audioTime, clipLen - 0.001));
+            musicSource.time = (float)startAudio;
+            double preRoll = audioTime < 0.0 ? -audioTime : 0.0;
+            musicSource.PlayScheduled(dspAnchor + preRoll);
         }
 
         /// <summary>
@@ -132,7 +206,7 @@ namespace Muses.Audio
 
         public void TickMetronome(float bpm, bool enabled)
         {
-            if (!Running || source == null) return;
+            if (!Running || metronomeSource == null) return;
             float b = 60f / bpm;
             float ahead = SongTime + 0.05f;
             while (nextBeat < ahead)
@@ -140,7 +214,7 @@ namespace Muses.Audio
                 if (enabled && nextBeat >= 0)
                 {
                     bool accent = nextBeat % (b * 4f) < b * 0.5f;
-                    source.PlayOneShot(accent ? accentClip : normalClip, accent ? 0.5f : 0.25f);
+                    metronomeSource.PlayOneShot(accent ? accentClip : normalClip, accent ? 0.5f : 0.25f);
                 }
                 nextBeat += b;
             }

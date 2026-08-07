@@ -322,76 +322,43 @@ namespace Muses.ChartTool
             if (Time.unscaledTime - lastLoadAttemptRealtime < FailedLoadRetryCooldownSec) return;
             lastLoadAttemptRealtime = Time.unscaledTime;
 
-            if (!File.Exists(path))
-            {
-                musicSource.clip = null;
-                LoadState = AudioLoadState.NotFound;
-                LoadMessage = $"見つかりません: {path}";
-                return;
-            }
-
-            // editor-ui-rework-r6.md §0.1/§4.1(c): UnityはOgg Vorbisしかデコードできず、
-            // Opusコンテナ(近年のffmpegがoutput.oggに既定で選ぶ)は読めても無音になる/失敗するだけで
-            // 原因が分からない。ヘッダ先頭を読んで先に弾き、はっきりした案内を出す。
-            string ext = Path.GetExtension(path).ToLowerInvariant();
-            if (ext == ".ogg" && LooksLikeOpus(path))
-            {
-                LoadState = AudioLoadState.Unsupported;
-                LoadMessage = "Opus形式は再生できません。Vorbisに変換してください（例: ffmpeg -i 元ファイル -c:a libvorbis -q:a 6 出力ファイル）";
-                return;
-            }
-
-            // editor-ui-rework-r7.md §2.4/Q6: ogg(Vorbis)以外にwav/mp3も読めるようにする
-            // （エディタ内で試すだけならこの2つはUnity標準のAudioTypeでそのまま扱える）。
-            AudioType audioType = ext switch
-            {
-                ".wav" => AudioType.WAV,
-                ".mp3" => AudioType.MPEG,
-                _ => AudioType.OGGVORBIS,
-            };
-
             LoadState = AudioLoadState.Loading;
             LoadMessage = "";
-            host.StartCoroutine(LoadAudioCoroutine(path, audioType));
+            int myToken = ++seCoroutineToken;
+            host.StartCoroutine(Muses.Audio.AudioFileLoader.Load(host, path, (result, clip, message) =>
+            {
+                if (myToken != seCoroutineToken) return; // 途中で別の曲に切り替わっていたら破棄
+                OnAudioLoaded(path, result, clip, message);
+            }));
         }
 
         private string lastAttemptedPath;
 
-        /// <summary>Oggコンテナの先頭ページ内に"OpusHead"シグネチャがあるかどうか。
-        /// 数十バイト読むだけなので同期I/Oで十分。editor-ui-rework-r7.md §3.3:
-        /// 音源インポート（コピー）時の水際チェックにも使うためpublicにしてある。</summary>
-        public static bool LooksLikeOpus(string path)
-        {
-            try
-            {
-                using var fs = File.OpenRead(path);
-                var buf = new byte[64];
-                int read = fs.Read(buf, 0, buf.Length);
-                string header = System.Text.Encoding.ASCII.GetString(buf, 0, read);
-                return header.Contains("OpusHead");
-            }
-            catch
-            {
-                return false;
-            }
-        }
+        /// <summary>song-play-flow-r1.md §3.2で Muses.Audio.AudioFileLoader へ移設した。
+        /// editor-ui-rework-r7.md §3.3: 音源インポート（コピー）時の水際チェックにも使うため、
+        /// 呼び出し側の互換のためここへの転送だけ残す。</summary>
+        public static bool LooksLikeOpus(string path) => Muses.Audio.AudioFileLoader.LooksLikeOpus(path);
 
-        private IEnumerator LoadAudioCoroutine(string path, AudioType audioType)
+        private void OnAudioLoaded(string path, Muses.Audio.AudioLoadResult result, AudioClip clip, string message)
         {
-            int myToken = ++seCoroutineToken;
-            string uri = "file://" + path.Replace("\\", "/");
-            using var www = UnityWebRequestMultimedia.GetAudioClip(uri, audioType);
-            yield return www.SendWebRequest();
-            if (myToken != seCoroutineToken) yield break; // 途中で別の曲に切り替わっていたら破棄
-
-            if (www.result != UnityWebRequest.Result.Success)
+            switch (result)
             {
-                LoadState = AudioLoadState.DecodeFailed;
-                LoadMessage = $"読み込みに失敗しました ({path}): {www.error}";
-                Debug.LogWarning($"PreviewSystem: 音源の読み込みに失敗しました ({path}): {www.error}");
-                yield break;
+                case Muses.Audio.AudioLoadResult.NotFound:
+                    musicSource.clip = null;
+                    LoadState = AudioLoadState.NotFound;
+                    LoadMessage = message;
+                    return;
+                case Muses.Audio.AudioLoadResult.Unsupported:
+                    LoadState = AudioLoadState.Unsupported;
+                    LoadMessage = message;
+                    return;
+                case Muses.Audio.AudioLoadResult.DecodeFailed:
+                    LoadState = AudioLoadState.DecodeFailed;
+                    LoadMessage = message;
+                    Debug.LogWarning($"PreviewSystem: 音源の読み込みに失敗しました: {message}");
+                    return;
             }
-            var clip = DownloadHandlerAudioClip.GetContent(www);
+
             bool wasRunning = clock.Running;
             float at = clock.SongTime;
             // Running中にclipを差し替えると「音源無し(silent)クロック」の Running=true のまま

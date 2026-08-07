@@ -85,7 +85,8 @@ namespace Muses.Stage
         /// <summary>
         /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
         /// （実機の出力レイテンシ分、判定を「音が実際に鳴った後」にずらす想定）。
-        /// 実機キャリブレーション用の値なので <see cref="OffsetSettings"/> でPlayerPrefsに永続化する。
+        /// 実機キャリブレーション用の値なので Muses.Game.PlayerSettings でJSON永続化する
+        /// （song-play-flow-r1.md §6.4、旧OffsetSettings.csのPlayerPrefs方式から移行）。
         /// </summary>
         public float judgeOffsetMs;
         /// <summary>
