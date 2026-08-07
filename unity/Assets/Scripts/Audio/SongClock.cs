@@ -67,12 +67,16 @@ namespace Muses.Audio
         }
 
         /// <summary>song-play-flow-r1.md §3.2/§4.2。曲の読み込み完了時に呼ぶ。
-        /// clip が null なら「音源無しの無音クロック」に戻る（従来どおりの挙動）。</summary>
+        /// clip が null なら「音源無しの無音クロック」に戻る（従来どおりの挙動）。
+        /// AudioSource.clip への実際の割り当てはここで行う（ScheduleMusicAtはtime/PlayScheduledしか
+        /// 触らないため、ここで代入し忘れるとclipが空のまま再生を試みてUnityの警告だけが出て
+        /// 無音になる——実機確認で発覚した不具合）。</summary>
         public void SetMusic(AudioSource source, AudioClip clip, float offsetSec)
         {
             musicSource = source;
             musicClip = clip;
             Offset = offsetSec;
+            if (musicSource != null) musicSource.clip = clip;
         }
 
         public void Start()
