@@ -2378,6 +2378,10 @@ namespace Muses.ChartTool
             var thicknessMinSlider = AddSliderRow(parent, "ノーツ厚み下限(MinFrac、プレビュー)", 0f, 0.05f, v => preview.ThicknessMinFrac = v);
             thicknessMinSlider.SetValueWithoutNotify(preview.ThicknessMinFrac);
 
+            // note-visual-r1.md §3.2/§9-1: 空中ノーツの厚み補正。1.0(補正なし)〜1.96(地上と完全一致)。
+            var skyThicknessSlider = AddSliderRow(parent, "空中ノーツ厚み補正(プレビュー)", 1f, 1.96f, v => preview.SkyThicknessMul = v);
+            skyThicknessSlider.SetValueWithoutNotify(preview.SkyThicknessMul);
+
             var laneWidthField = AddFloatRow(parent, "レーン幅(px)", v => laneWidthPx = Mathf.Clamp(v, 20f, 100f));
             laneWidthField.SetValueWithoutNotify(laneWidthPx);
         }

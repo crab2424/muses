@@ -19,6 +19,9 @@ Shader "Muses/NoteBeatLine"
         _ThicknessFrac ("Thickness Frac", Float) = 0.025
         _ThicknessMinFrac ("Thickness Min Frac", Float) = 0.004
         _TanHalfPhi ("Tan Half Phi", Float) = 1
+        // 拍線は常に地上(layerF=0)なので効かないが、NoteView.csが両マテリアルへ同じ
+        // uniform一式を渡すのでプロパティとしては用意しておく（note-visual-r1.md §3.2）。
+        _SkyThicknessMul ("Sky Thickness Mul", Float) = 1.96
     }
     SubShader
     {

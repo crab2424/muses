@@ -200,6 +200,9 @@ namespace Muses.ChartTool
         /// hiSpeedと同じくエディタ側の表示設定なので譜面ファイルには入れない。</summary>
         public float thicknessFrac = 0.06f;
         public float thicknessMinFrac = 0.01f;
+        /// <summary>note-visual-r1.md §3.2/§9-1。空中ノーツの画面上の厚みを地上と揃える係数。
+        /// 既定1.96はユーザー確定値（奥行き再マップ後の空中/地上の画面厚み比0.509の逆数、理論上の上限）。</summary>
+        public float skyThicknessMul = 1.96f;
 
         // ---- ショートカット ----
         public List<KeyBinding> keyBindings = new();

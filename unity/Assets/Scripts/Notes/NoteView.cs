@@ -32,6 +32,17 @@ namespace Muses.Notes
         [Tooltip("画面上の最小厚みを保つための下限。現在の奥行きに対する割合（半幅）。遠方の点滅防止にのみ効く")]
         [SerializeField] private float thicknessMinFrac = 0.01f;
 
+        [Tooltip("note-visual-r1.md §3: 空中ノーツの画面上の厚みを地上と揃える係数。既定1.96は" +
+            "奥行き再マップ後の空中/地上の画面厚み比(0.509)の逆数（理論上、地上と完全一致する上限）。" +
+            "layerFで連続的に補間するため、層を跨ぐSlideでも自然に効く。")]
+        [SerializeField] private float skyThicknessMul = 1.96f;
+
+        public float SkyThicknessMul
+        {
+            get => skyThicknessMul;
+            set { skyThicknessMul = value; ApplyThicknessUniforms(); }
+        }
+
         /// <summary>editor-ui-rework-r13.md §7.1追補: C#既定値をシーンの調整値へ合わせても
         /// プレビューで見た目の改善が確認できなかったため、実機で値を振って原因切り分けできるよう
         /// 実行時に調整可能にする（プレビュー設定タブのスライダーから使う）。</summary>
@@ -52,11 +63,13 @@ namespace Muses.Notes
             {
                 notesMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
                 notesMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                notesMaterial.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
             if (beatMaterial != null)
             {
                 beatMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
                 beatMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                beatMaterial.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
         }
 
@@ -118,6 +131,8 @@ namespace Muses.Notes
             notesMesh.SetUVs(0, notesUv0);
             notesMesh.SetUVs(1, Pack(data.layerF, data.side));
             notesMesh.SetUVs(2, Pack(data.group, null));
+            // note-visual-r1.md §3-3/§8-3: SDF描画(角丸+輪郭線)用のローカルUV。
+            notesMesh.SetUVs(3, data.localUv);
             var tris = new int[data.positions.Length];
             for (int i = 0; i < tris.Length; i++) tris[i] = i;
             notesMesh.SetTriangles(tris, 0);
@@ -214,6 +229,7 @@ namespace Muses.Notes
                 m.SetFloat("_TanHalfPhi", dCopy.tanHalfPhi);
                 m.SetFloat("_ThicknessFrac", thicknessFrac);
                 m.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                m.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
 
             Apply(notesMaterial);

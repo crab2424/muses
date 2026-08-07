@@ -6,6 +6,7 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Chart;
+using Muses.Stage;
 
 namespace Muses.ChartTool
 {
@@ -521,6 +522,8 @@ namespace Muses.ChartTool
             // ＝fracが効かなくなる値なので、古い/壊れた設定ファイルでも下限を切っておく。
             preview.ThicknessFrac = Mathf.Clamp(settings.thicknessFrac, 0.001f, 0.3f);
             preview.ThicknessMinFrac = Mathf.Clamp(settings.thicknessMinFrac, 0f, 0.05f);
+            // note-visual-r1.md §3.2/§9-1: 1.0(補正なし)〜1.96(地上と完全一致)の範囲でスライダー調整可能。
+            preview.SkyThicknessMul = Mathf.Clamp(settings.skyThicknessMul, 1f, 1.96f);
 
             // editor-ui-rework-r11.md §3.3: 古い設定ファイル(このフィールドが無い版で保存された物)
             // や将来SnapDenominatorsの要素数を変えた場合でも壊れないよう必ずクランプを通す。
@@ -612,6 +615,7 @@ namespace Muses.ChartTool
             settings.hiSpeed = preview.HiSpeed;
             settings.thicknessFrac = preview.ThicknessFrac;       // r13 §7.9
             settings.thicknessMinFrac = preview.ThicknessMinFrac;
+            settings.skyThicknessMul = preview.SkyThicknessMul;   // note-visual-r1.md §3.2
             WriteWorkspaceState(settings);
             EditorSettingsStore.Save(settings);
         }
@@ -1780,7 +1784,8 @@ namespace Muses.ChartTool
                             float wx0 = L.NoteX(wp.layerF, wp.cellF, forceSky: true);
                             float wx1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky: true);
                             var wr = Rect.MinMaxRect(Mathf.Min(wx0, wx1), y - 3, Mathf.Max(wx0, wx1), y + 3);
-                            DrawWaypointGlyph(p, wr, wp.marker, new Color(1f, 1f, 1f, HeightAlpha(wp.layerF)));
+                            // note-visual-r1.md §7: マーカーは始点(帯)と同じ色相、alphaは層に依らず常に高く保つ。
+                            DrawWaypointGlyph(p, wr, wp.marker, NoteColors.SlideMarkerColor(wp.layerF));
                         }
                     }
                     else
@@ -1811,7 +1816,8 @@ namespace Muses.ChartTool
                             float wx0 = L.NoteX(wp.layerF, wp.cellF, forceSky: false);
                             float wx1 = L.NoteX(wp.layerF, wp.cellF + wp.width, forceSky: false);
                             var wr = Rect.MinMaxRect(Mathf.Min(wx0, wx1), y - 3, Mathf.Max(wx0, wx1), y + 3);
-                            DrawWaypointGlyph(p, wr, wp.marker, Color.white);
+                            // note-visual-r1.md §7: マーカーは始点(帯)と同じ色相、alphaは層に依らず常に高く保つ。
+                            DrawWaypointGlyph(p, wr, wp.marker, NoteColors.SlideMarkerColor(wp.layerF));
                         }
                     }
 
@@ -3757,28 +3763,38 @@ namespace Muses.ChartTool
         };
         private const int DrawPriorityCount = 5;
 
+        // note-visual-r1.md §4.3: 色はゲーム側(NoteGeometry.cs)と共通の NoteColors に一元化。
+        // 従来このファイルにも別リテラルがありドリフトしていた。
         private static Color NoteColor(NoteKind k) => k switch
         {
-            NoteKind.Tap => new Color(0.3f, 0.8f, 0.9f),
-            NoteKind.ExTap => new Color(0.95f, 0.8f, 0.25f),
-            NoteKind.Slide => new Color(0.4f, 0.9f, 0.6f),
-            NoteKind.Flick => new Color(0.95f, 0.45f, 0.3f),
+            NoteKind.Tap => NoteColors.Tap,
+            NoteKind.ExTap => NoteColors.ExTap,
+            // Slideはlayer依存だがNote(waypoint)が無いと分からないので、既定(Ground)を代表色にする。
+            NoteKind.Slide => NoteColors.SlideGround,
+            NoteKind.Flick => NoteColors.Flick,
             NoteKind.Riser => RiserColor,
             _ => Color.white,
         };
 
         // riser-r2.md §3.3/§5.2: ゲーム側(NoteGeometry.cs)と同じ色。Riserは方向(layerTo>layerF)で
         // 上昇/下降を色分けするため kind だけでは決まらず、Note を受け取るオーバーロードが要る。
-        private static readonly Color RiserColor = new(0x4a / 255f, 0xff / 255f, 0xa0 / 255f);
-        private static readonly Color DiverColor = new(0xc8 / 255f, 0x6a / 255f, 0xff / 255f);
+        private static readonly Color RiserColor = NoteColors.Riser;
+        private static readonly Color DiverColor = NoteColors.Diver;
 
         /// <summary>riser-r2.md §5.2: NoteColor(NoteKind)はRiser/Diverを区別できない
         /// （方向はkindではなくlayerTo/layerFの大小関係で決まるため）。Noteを持つ呼び出し元は
-        /// こちらを使う。Noteを持たない箇所（複数選択の一括変更ドロップダウン等）はNoteKind版を使う。</summary>
-        private static Color NoteColor(Note note) =>
-            note.kind == NoteKind.Riser
-                ? (note.points[0].layerTo > note.points[0].layerF ? RiserColor : DiverColor)
-                : NoteColor(note.kind);
+        /// こちらを使う。Noteを持たない箇所（複数選択の一括変更ドロップダウン等）はNoteKind版を使う。
+        /// note-visual-r1.md §4.2/§7: Slideはlayer依存の色にする。エディタは1ノーツ=1色で描く
+        /// 既存の設計（高さはHeightAlphaの濃淡で別途表現）を踏襲し、高さ変化のあるSlideは
+        /// 強制的にSkyペインへ描く既存仕様(HasHeightVariation)に合わせてSky色を代表色にする。</summary>
+        private static Color NoteColor(Note note)
+        {
+            if (note.kind == NoteKind.Riser)
+                return note.points[0].layerTo > note.points[0].layerF ? RiserColor : DiverColor;
+            if (note.kind == NoteKind.Slide)
+                return HasHeightVariation(note) ? NoteColors.SlideSky : NoteColors.SlideColor(note.points[0].layerF);
+            return NoteColor(note.kind);
+        }
 
         // ---------- §4 layerFの濃淡表現 ----------
 

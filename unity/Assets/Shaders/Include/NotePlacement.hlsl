@@ -20,6 +20,7 @@ CBUFFER_START(UnityPerMaterial)
     float _ThicknessFrac;
     float _ThicknessMinFrac;
     float _TanHalfPhi;
+    float _SkyThicknessMul;
 CBUFFER_END
 
 // note-spec.md §5.5。スクロールグループごとの現在の表示位置 X(songTime)。配列で cbuffer の外に置く
@@ -100,13 +101,18 @@ float DepthFromV(float h, float v, float theta)
 
 float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out float depthOut)
 {
+    float layerF = uv1.x;
+
     // 地上基準の奥行き。タイミングの正であり、厚みもこの空間で足してから再マップする
     // （そうすると画面上の厚みも地上と揃う。空中だけ薄く見える問題も同時に解消する）。
     float d0 = _ZJudge + (positionOS.z - groupX) * _Speed;
-    float halfThickness = max(_ZJudge * _ThicknessFrac, d0 * _ThicknessMinFrac);
+    // note-visual-r1.md §3: 奥行き再マップ後、空中ノーツの画面上の厚みは地上のちょうど0.509倍
+    // （奥行きに依らず一定）になる。_SkyThicknessMul(既定1.96=1/0.509)で地上と一致させる。
+    // layerFで連続的に補間するのは、層を跨ぐSlideが中間のlayerFを取り得るため。
+    float halfThickness = max(_ZJudge * _ThicknessFrac, d0 * _ThicknessMinFrac)
+        * lerp(1.0, _SkyThicknessMul, layerF);
     d0 += uv1.y * halfThickness;
 
-    float layerF = uv1.x;
     float yPlane = layerF * _SkyHeight;
     float hL = _YCam - yPlane;
 

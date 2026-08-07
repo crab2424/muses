@@ -474,6 +474,13 @@ namespace Muses.ChartTool
             set { noteView.ThicknessMinFrac = value; MarkDirty(); }
         }
 
+        /// <summary>note-visual-r1.md §3.2: 空中ノーツの画面上の厚みを地上と揃える係数。</summary>
+        public float SkyThicknessMul
+        {
+            get => noteView.SkyThicknessMul;
+            set { noteView.SkyThicknessMul = value; MarkDirty(); }
+        }
+
         /// <summary>オートプレイ中のスコア表示（非オートプレイ時はnull）。</summary>
         public string AutoplaySummary
         {
