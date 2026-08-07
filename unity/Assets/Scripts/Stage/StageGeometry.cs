@@ -67,7 +67,13 @@ namespace Muses.Stage
             };
         }
 
-        /// <summary>0xRRGGBB (sRGB) から Unity の Color へ。Material.SetColor 経由で Linear へ変換される前提</summary>
+        /// <summary>0xRRGGBB (sRGB) から Unity の Color へ。Material.SetColor 経由で Linear へ変換される前提。
+        ///
+        /// **注意（2026-08-07）**: この「SetColor が変換してくれる」前提が成り立つのは
+        /// マテリアルの Color プロパティ経由の場合だけ。**メッシュの頂点色は Unity が変換しない**ので、
+        /// 頂点色に載せる場合は呼び出し側で .linear へ変換すること
+        /// （ノーツがこれを取りこぼしており、全ノーツが 4aa3ff→93d1ff 相当に明るく出ていた。
+        ///   NoteGeometry.Build の ToVertexColor を参照）。</summary>
         public static Color ColorFromHex(uint hex, float alpha = 1f)
         {
             float r = ((hex >> 16) & 0xFF) / 255f;

@@ -3752,16 +3752,11 @@ namespace Muses.ChartTool
         /// （大きいほど手前）。ユーザー確定順(下から) slide→tap→flick→extap→riser/diver。
         /// 描画(GenerateNotesSheet/DrawHeightLane)は昇順、ヒットテスト(HitTestPoint)は降順で
         /// この1つの関数から導く。片方だけ直すと「見えているのに掴めない」がずれるため。</summary>
-        private static int DrawPriority(Note n) => n.kind switch
-        {
-            NoteKind.Slide => 0,
-            NoteKind.Tap => 1,
-            NoteKind.Flick => 2,
-            NoteKind.ExTap => 3,
-            NoteKind.Riser => 4,
-            _ => 1,
-        };
-        private const int DrawPriorityCount = 5;
+        /// 定義は Muses.Chart.NoteDrawOrder に移した（プレビュー/ゲーム本体の
+        /// NoteGeometry.Build と共有するため。2026-08-07: 共有前はプレビューだけ
+        /// 譜面リスト順で積んでおり、タイムラインと重なり順が食い違っていた）。
+        private static int DrawPriority(Note n) => NoteDrawOrder.Priority(n);
+        private const int DrawPriorityCount = NoteDrawOrder.Count;
 
         // note-visual-r1.md §4.3: 色はゲーム側(NoteGeometry.cs)と共通の NoteColors に一元化。
         // 従来このファイルにも別リテラルがありドリフトしていた。

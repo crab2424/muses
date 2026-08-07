@@ -18,12 +18,20 @@ namespace Muses.Notes
         public float[] side;
         /// <summary>note-spec.md §5.5。頂点が属するスクロールグループ（NoteView が _GroupX[] を引くためのインデックス）</summary>
         public float[] group;
-        /// <summary>note-visual-r1.md §1.5/§8-3。フラグメントシェーダのSDF描画用ローカルUV（TEXCOORD3）。
-        /// Note.shaderのモード判定は (aSide, localUv.y) の組で行う（NoteGeometryのPush呼び出し規約）:
-        /// - side!=0（タップ系の薄い板）: 矩形内の単位正方形座標(0..1, 0..1)で角丸+輪郭線に使う。
-        /// - side==0 かつ localUv.y==0（Slide帯）: xのみ意味を持つ（0=左端/1=右端）。
-        ///   輪郭線・中央線は端/中央(x)方向のみ（帯を時間方向に分割しても継ぎ目が出ないように）。
-        /// - side==0 かつ localUv.y&lt;0（Riserの縁線・矢印など）: SDF処理をせず頂点色をそのまま使う。</summary>
+        /// <summary>note-visual-r1.md §1.5/§8-3。フラグメントシェーダのSDF描画用（TEXCOORD3）。
+        /// x = 横方向のローカル座標(0=左端/1=右端)、**y = 種別タグ**。
+        ///
+        /// y はプリミティブ内の全頂点で同じ値にすること（＝補間しても値が変わらないこと）が必須:
+        /// - y=1  タップ系の薄い板。厚み方向の座標は side（-1..+1）から導く。角丸+輪郭線のSDF。
+        /// - y=0  Slide帯。x のみ意味を持つ。輪郭線・中央線は x 方向のみに引く
+        ///        （帯を時間方向に分割しても継ぎ目が出ないように）。
+        /// - y=-1 Riserの縁線・矢印など。SDF処理をせず頂点色をそのまま使う。
+        ///
+        /// 2026-08-07: 旧実装はタグを (side, localUv.y) の組で表現していたが、**side は頂点シェーダが
+        /// 厚みを付けるための座標で面の内部では -1→+1 に補間される**ため、`abs(side)>0.5` は
+        /// 「タップ系」ではなく「タップ系の厚みの外側半分」を意味してしまっていた。タップの中央50%が
+        /// Slide帯の分岐へ落ち、中央に縦線・境目に横線が出て内部の色も別処理になっていた。
+        /// タグは補間で不変な値でなければならない。</summary>
         public Vector2[] localUv;
         public List<NoteRuntime> runtimes;
 
@@ -71,10 +79,21 @@ namespace Muses.Notes
             var uv3Arr = new List<Vector2>();
             var runtimes = new List<NoteRuntime>();
 
+            // 2026-08-07: プロジェクトは Linear カラースペース(m_ActiveColorSpace:1)。
+            // NoteColors の値は sRGB の16進(#4aa3ff 等)をそのまま Color にしたものだが、
+            // **メッシュの頂点色は Unity が変換しない**ため、シェーダはこれをリニア値として
+            // 受け取り、最終のリニア→sRGB変換で明るく出てしまう
+            // （実測: 4aa3ff→93d1ff / ffd54a→ffec92 / ff4a4a→ff9393。これは正確に
+            //   LinearToSRGB(値) の関係になっていた）。頂点色へ載せる直前でリニアへ変換する。
+            // NoteColors 自体は変換しない: エディタの2Dピアノロール(UI Toolkit)は sRGB 空間で
+            // 描くため、そちらは元の値のままが正しい（実際タイムラインの色は正しく見えていた）。
+            Color ToVertexColor(Color c) =>
+                QualitySettings.activeColorSpace == ColorSpace.Linear ? c.linear : c;
+
             void Push(float u, float y, float time, float layerF, Color c, float nearD, float localU, float localV)
             {
                 pos.Add(new Vector3(u, y, time));
-                col.Add(c);
+                col.Add(ToVertexColor(c));
                 st.Add(1f);
                 nearArr.Add(nearD);
                 layerArr.Add(layerF);
@@ -92,17 +111,20 @@ namespace Muses.Notes
                 float[] uu = { u0, u1, u1, u0 };
                 float[] su = { -1f, -1f, 1f, 1f };
                 float[] lu = { 0f, 1f, 1f, 0f };
-                float[] lv = { 0f, 0f, 1f, 1f };
                 int[] idx = { 0, 1, 2, 0, 2, 3 };
+                var cv = ToVertexColor(c); // 上記コメント参照（頂点色はリニアで載せる）
                 foreach (var i in idx)
                 {
                     pos.Add(new Vector3(uu[i], y, centerTime));
-                    col.Add(c);
+                    col.Add(cv);
                     st.Add(1f);
                     nearArr.Add(nearD);
                     layerArr.Add(layerF);
                     sideArr.Add(su[i]);
-                    uv3Arr.Add(new Vector2(lu[i], lv[i]));
+                    // localUv.y は「種別タグ」なので4頂点とも同じ値(1)にする。厚み方向の座標は
+                    // side から導く（side*0.5+0.5 は旧 localUv.y={0,0,1,1} と完全に同値）。
+                    // NoteMeshData.localUv のコメントに理由あり。
+                    uv3Arr.Add(new Vector2(lu[i], 1f));
                 }
             }
 
@@ -117,8 +139,22 @@ namespace Muses.Notes
             var cDiver = new Color(NoteColors.Diver.r, NoteColors.Diver.g, NoteColors.Diver.b, 0.9f);
             var cRiserArrow = new Color(1f, 1f, 1f, 0.9f); // riser-r2.md §3.2 由来。矢印は白のまま
 
-            foreach (var n in notes)
+            // 2026-08-07: 重なり順を NoteDrawOrder（エディタのタイムラインと共有）に揃える。
+            // 従来は notes リスト順（＝おおむね追加順）で積んでいたため、同じ譜面でも
+            // タイムラインとプレビュー/ゲームで前後関係が食い違っていた（ユーザー報告）。
+            // Note.shader は ZWrite Off / ZTest Always なので、メッシュ内の頂点順がそのまま
+            // 前後関係になる（note-visual-r1.md §5.3）。
+            //
+            // ただし runtimes は Judge が「開始時刻順ソート済み」を前提に cursor を単調前進
+            // させる（Judge.Prepare / Judge.Seek）ため、**入力の notes 順のまま**作る必要がある。
+            // そこで頂点範囲だけ元のインデックスに退避しておき、runtimes は後段でまとめて作る。
+            var vRange = new (int start, int count)[notes.Count];
+
+            for (int pass = 0; pass < NoteDrawOrder.Count; pass++)
+            for (int ni = 0; ni < notes.Count; ni++)
             {
+                var n = notes[ni];
+                if (NoteDrawOrder.Priority(n) != pass) continue;
                 int vStart = st.Count;
                 var timeline = TimelineFor(n.scrollGroup);
 
@@ -167,12 +203,18 @@ namespace Muses.Notes
                 float gIdx = n.scrollGroup;
                 while (groupArr.Count < st.Count) groupArr.Add(gIdx);
 
+                vRange[ni] = (vStart, st.Count - vStart);
+            }
+
+            // Judge が前提とする「開始時刻順」を保つため、入力の notes 順で作る（上記コメント参照）。
+            for (int ni = 0; ni < notes.Count; ni++)
+            {
                 runtimes.Add(new NoteRuntime
                 {
-                    note = n,
+                    note = notes[ni],
                     state = NoteState.Pending,
-                    vStart = vStart,
-                    vCount = st.Count - vStart,
+                    vStart = vRange[ni].start,
+                    vCount = vRange[ni].count,
                     alpha = 1f,
                 });
             }

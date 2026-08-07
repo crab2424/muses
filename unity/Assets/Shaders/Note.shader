@@ -104,23 +104,50 @@ Shader "Muses/Note"
                 float a = IN.state * aFar * aNear * IN.color.a;
                 if (a <= 0.003) discard;
 
-                float3 rgb = IN.color.rgb * (0.7 + 0.6 * IN.state);
+                // note-visual-r1.md 実機フィードバック(2026-08-07): 従来は常時state=1で
+                // rgb*1.3の固定オーバーブライトになっており、彩度の高い色ほどクリップして
+                // エディタ側(NoteColors生値)より薄く見えていた。倍率をやめ生値をそのまま使う。
+                float3 rgb = IN.color.rgb;
                 const float3 kOutlineColor = float3(1, 1, 1); // note-visual-r1.md §2.2/§9-6: 白固定
 
-                if (abs(IN.side) > 0.5)
+                // 種別の判定は localUv.y（プリミティブ内で定数のタグ）で行う。
+                // 2026-08-07: 以前は abs(IN.side)>0.5 で判定していたが、side は厚みを付けるための
+                // 座標で面の内部では -1→+1 に補間されるため、タップの中央50%がSlide帯の分岐へ
+                // 落ちていた（NoteGeometry.NoteMeshData.localUv のコメント参照）。
+                if (IN.localUv.y > 0.5)
                 {
                     // ---- タップ形状（Tap/ExTap/Flick/Slideマーカー）: 角丸 + スクリーン空間一定幅の
                     // 白い輪郭線（note-visual-r1.md §2.2）。fwidth(dist)は「distがピクセルあたり
                     // どれだけ変化するか」＝透視変形込みのスクリーン空間換算係数になるため、
                     // これをアンチエイリアス幅・輪郭幅の単位として使うと自動的に画面上で一定幅になる。
-                    float2 p = IN.localUv - 0.5;
-                    float dist = RoundedBoxSDF(p, float2(0.5, 0.5), 0.16);
-                    float aa = max(fwidth(dist), 1e-5);
-                    float shapeAlpha = 1.0 - smoothstep(0.0, aa, dist);
+                    // 実機フィードバック(2026-08-07): dist(スカラー)にfwidthを掛けると、
+                    // ノーツが横に広く縦に薄い(このステージの遠近圧縮の帰結)場合、薄い方の
+                    // 軸のスケールがaa全体を支配し、輪郭が塗りをほぼ飲み込んで彩度の高い色でも
+                    // 白っぽく見えていた。座標を軸ごとにpx単位へ変換してから距離を測ることで
+                    // 異方性に対応する（変換後は「1=1px」なのでaa/outlineWは定数でよい）。
+                    // 厚み方向の座標は side から導く（QuadThinの4頂点で -1/+1 なので
+                    // side*0.5+0.5 は旧 localUv.y={0,0,1,1} と完全に同値）。
+                    float2 uv = float2(IN.localUv.x, IN.side * 0.5 + 0.5);
+                    float2 p = uv - 0.5;
+                    float2 duv = float2(max(fwidth(uv.x), 1e-5), max(fwidth(uv.y), 1e-5));
+                    float2 pPx = p / duv;
+                    float2 bPx = float2(0.5, 0.5) / duv;      // 画面上の半サイズ(px) x=幅方向 / y=厚み方向
+                    float rPx = min(0.16 / max(duv.x, duv.y), min(bPx.x, bPx.y) * 0.9); // SDFの定義上 r<=min(b) が要る
+                    float dist = RoundedBoxSDF(pPx, bPx, rPx);
+                    float shapeAlpha = 1.0 - smoothstep(0.0, 1.0, dist);
                     if (shapeAlpha <= 0.003) discard;
-                    float outlineW = 1.5 * aa; // 輪郭の太さ（画面上で約1.5px相当）
-                    float core = smoothstep(0.0, aa, dist + outlineW); // 0=輪郭付近 / 1=内側
-                    rgb = lerp(kOutlineColor, rgb, core);
+
+                    // 輪郭線の太さは軸ごとに決める（2026-08-07: 両軸1.5px固定だと遠方で白一色になった）。
+                    // 幅(x)方向: 「隣接ノーツの分離」という本来の役割(§2.2)があり、ノーツは遠方でも
+                    //   幅方向には十分なpx数を持つので、常に1.5pxを狙う。
+                    // 厚み(y)方向: 画面上の厚みは奥行きで23倍変わる(§3.1: 判定線で約14px、最遠部は
+                    //   1px未満)。固定幅だと遠方で輪郭が塗りを完全に食い潰すため、半サイズに応じて
+                    //   細らせ、1pxを切るあたりで0にする（＝遠方のノーツは輪郭なしの塗りだけになる）。
+                    const float kOutlinePx = 1.5;
+                    float2 w = min(kOutlinePx, max(0.0, bPx - 0.75) * 0.5);
+                    float2 dEdge = (0.5 - abs(p)) / duv; // 各軸で端からの距離(px)
+                    float2 outAxis = 1.0 - smoothstep(w - 0.5, w + 0.5, dEdge);
+                    rgb = lerp(rgb, kOutlineColor, max(outAxis.x, outAxis.y));
                     a *= shapeAlpha;
                 }
                 else if (IN.localUv.y > -0.5)
@@ -136,7 +163,7 @@ Shader "Muses/Note"
                     float lineMask = saturate(edgeMask + centerMask);
                     rgb = lerp(rgb, kOutlineColor, lineMask);
                 }
-                // else: side==0 かつ localUv.y<0（Riserの縁線・矢印等）→ SDF処理なし、頂点色そのまま。
+                // else: localUv.y<0（Riserの縁線・矢印等）→ SDF処理なし、頂点色そのまま。
 
                 if (a <= 0.003) discard;
                 return half4(rgb, a);
