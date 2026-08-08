@@ -70,6 +70,8 @@ namespace Muses.ChartTool
                 new(CommandIds.EditDelete, "編集", "削除", DeleteSelectionOrEvent,
                     () => selection.Count > 0 || selectedEventKind != EventKind.None),
                 new(CommandIds.EditFlipSelected, "編集", "選択を反転", FlipSelected, () => selection.Count > 0),
+                new(CommandIds.SheetActivate, "編集", "配置・選択(クリック相当)", ActivateSheetAtCursor,
+                    () => pasting ? PasteReferencePos.HasValue : sheetHoverPos.HasValue),
 
                 new(CommandIds.ToolSelect, "ツール", "選択", () => SelectTool(EditorTool.Select)),
                 new(CommandIds.ToolTap, "ツール", "Tap", () => SelectTool(EditorTool.Tap)),

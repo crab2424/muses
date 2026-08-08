@@ -2223,6 +2223,21 @@ namespace Muses.ChartTool
 
         private float sheetScrollAccum;
 
+        /// <summary>CommandIds.SheetActivate(既定Enter)。マウスカーソルのシート上の位置に対して、
+        /// 左クリックしたのと同じ配置・選択を行う。ドラッグは伴わないため、既存ノーツを掴んでも
+        /// 選択されるだけで移動・幅変更・矩形選択は始まらない(PerformSheetActivate参照)。</summary>
+        private void ActivateSheetAtCursor()
+        {
+            notesSheet.Focus();
+            if (pasting)
+            {
+                ConfirmPaste();
+                return;
+            }
+            if (!sheetHoverPos.HasValue) return;
+            PerformSheetActivate(sheetHoverPos.Value, shiftKey: false, pointerId: null);
+        }
+
         private void OnSheetPointerDown(PointerDownEvent evt)
         {
             notesSheet.Focus(); // KeyDown（Deleteでの削除）を受け取れるようにする
@@ -2245,8 +2260,19 @@ namespace Muses.ChartTool
             }
             if (evt.button != 0) return;
 
+            PerformSheetActivate((Vector2)evt.localPosition, evt.shiftKey, evt.pointerId);
+            evt.StopPropagation();
+        }
+
+        /// <summary>OnSheetPointerDownの本体ロジック。マウスクリックとキーボード操作
+        /// (既定Enter、CommandIds.SheetActivate)の両方から呼べるよう、PointerDownEvent依存を
+        /// 外に出した。pointerIdがnull（＝キーボード起動）のときは、ドラッグ／矩形選択／幅リサイズを
+        /// 開始しない（ポインタキャプチャが無いままdraggingNote等のフラグだけ立つと、後続の
+        /// PointerMove/Upが来ず状態が固まったままになるため）。配置・選択そのものはドラッグを
+        /// 伴わないのでキーボードからも問題なく実行できる。</summary>
+        private void PerformSheetActivate(Vector2 pos, bool shiftKey, int? pointerId)
+        {
             var L = CurrentSheetLayout();
-            var pos = (Vector2)evt.localPosition;
             int snapTicks = SnapTicks;
 
             int rawTick = Mathf.Max(0, L.YToTick(pos.y));
@@ -2265,11 +2291,10 @@ namespace Muses.ChartTool
                 {
                     HandleEventLaneClick(L, pos, tick);
                 }
-                else if (!evt.shiftKey)
+                else if (!shiftKey)
                 {
                     ClearEventSelection();
                 }
-                evt.StopPropagation();
                 return;
             }
 
@@ -2280,8 +2305,7 @@ namespace Muses.ChartTool
             // 実際の編集処理を呼ぶ。
             if (L.heightLane.Contains(pos))
             {
-                if (showHeightLane) HandleHeightLanePointerDown(L, pos, evt);
-                evt.StopPropagation();
+                if (showHeightLane) HandleHeightLanePointerDown(L, pos, shiftKey, pointerId);
                 return;
             }
 
@@ -2299,9 +2323,9 @@ namespace Muses.ChartTool
                     if (hitExisting.HasValue)
                     {
                         var hp = hitExisting.Value;
-                        if (evt.shiftKey) ToggleSelectionMembership(hp);
+                        if (shiftKey) ToggleSelectionMembership(hp);
                         else if (!selection.Contains(hp)) SetSingleSelection(hp);
-                        if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        if (selection.Contains(hp) && pointerId.HasValue) BeginPointDrag(rawTick, rawCell, layerF, pos, pointerId.Value);
                         break;
                     }
 
@@ -2332,9 +2356,9 @@ namespace Muses.ChartTool
                     if (hitExisting.HasValue)
                     {
                         var hp = hitExisting.Value;
-                        if (evt.shiftKey) ToggleSelectionMembership(hp);
+                        if (shiftKey) ToggleSelectionMembership(hp);
                         else if (!selection.Contains(hp)) SetSingleSelection(hp);
-                        if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        if (selection.Contains(hp) && pointerId.HasValue) BeginPointDrag(rawTick, rawCell, layerF, pos, pointerId.Value);
                         break;
                     }
 
@@ -2358,9 +2382,9 @@ namespace Muses.ChartTool
                     if (hitExisting.HasValue)
                     {
                         var hp = hitExisting.Value;
-                        if (evt.shiftKey) ToggleSelectionMembership(hp);
+                        if (shiftKey) ToggleSelectionMembership(hp);
                         else if (!selection.Contains(hp)) SetSingleSelection(hp);
-                        if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        if (selection.Contains(hp) && pointerId.HasValue) BeginPointDrag(rawTick, rawCell, layerF, pos, pointerId.Value);
                         break;
                     }
 
@@ -2412,15 +2436,15 @@ namespace Muses.ChartTool
                             if (hp.note.kind == NoteKind.Slide)
                             {
                                 if (!selection.Contains(hp)) SetSingleSelection(hp);
-                                BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                                if (pointerId.HasValue) BeginPointDrag(rawTick, rawCell, layerF, pos, pointerId.Value);
                                 // easingは始点/中継点(=次の区間を持つ点)にのみ意味がある。終点はドラッグのみ。
                                 easingCycleCandidate = hp.index < hp.note.points.Count - 1 ? hp : (NoteRef?)null;
                             }
                             else
                             {
-                                if (evt.shiftKey) ToggleSelectionMembership(hp);
+                                if (shiftKey) ToggleSelectionMembership(hp);
                                 else if (!selection.Contains(hp)) SetSingleSelection(hp);
-                                if (selection.Contains(hp)) BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                                if (selection.Contains(hp) && pointerId.HasValue) BeginPointDrag(rawTick, rawCell, layerF, pos, pointerId.Value);
                             }
                             break;
                         }
@@ -2467,7 +2491,7 @@ namespace Muses.ChartTool
                         // 前提が消えているため撤廃（Slideの各点も掴める）。既に選択済みグループの
                         // 一員なら選択を維持し、グループ全体へ同じ差分を適用する（移動ドラッグと同じ規則）。
                         int edgeSign = EdgeGrabSign(L, hn, pos);
-                        if (edgeSign != 0 && !evt.shiftKey)
+                        if (edgeSign != 0 && !shiftKey && pointerId.HasValue)
                         {
                             if (!selection.Contains(hn)) SetSingleSelection(hn);
                             InvalidateWidthAnchor();
@@ -2478,12 +2502,11 @@ namespace Muses.ChartTool
                             foreach (var r in selection) resizeOriginByRef[r] = r.note.points[r.index];
                             dragOriginRawCell = rawCell;
                             dragLastValidCell = rawCell;
-                            notesSheet.CapturePointer(evt.pointerId);
-                            evt.StopPropagation();
+                            notesSheet.CapturePointer(pointerId.Value);
                             return;
                         }
 
-                        if (evt.shiftKey)
+                        if (shiftKey)
                         {
                             ToggleSelectionMembership(hn);
                         }
@@ -2494,29 +2517,31 @@ namespace Muses.ChartTool
                             SetSingleSelection(hn);
                         }
 
-                        if (selection.Contains(hn))
-                            BeginPointDrag(rawTick, rawCell, layerF, pos, evt);
+                        if (selection.Contains(hn) && pointerId.HasValue)
+                            BeginPointDrag(rawTick, rawCell, layerF, pos, pointerId.Value);
                     }
                     else
                     {
                         // §7.4-A 空白ドラッグ→矩形選択。Shiftなしなら既存選択をクリアしてから開始する。
-                        if (!evt.shiftKey) ClearSelection();
+                        if (!shiftKey) ClearSelection();
                         ClearEventSelection();
-                        rectSelecting = true;
-                        rectAdditive = evt.shiftKey;
-                        rectStartPos = pos;
-                        rectCurrentPos = pos;
-                        notesSheet.CapturePointer(evt.pointerId);
+                        if (pointerId.HasValue)
+                        {
+                            rectSelecting = true;
+                            rectAdditive = shiftKey;
+                            rectStartPos = pos;
+                            rectCurrentPos = pos;
+                            notesSheet.CapturePointer(pointerId.Value);
+                        }
                     }
                     break;
                 }
             }
-            evt.StopPropagation();
         }
 
         /// <summary>選択中の点のドラッグを開始する（§5.2-3: 掴んだ点だけを動かす）。
         /// Select/Slide両ツールの点ドラッグ開始処理を共通化。</summary>
-        private void BeginPointDrag(int rawTick, float rawCell, float layerF, Vector2 pos, PointerDownEvent evt)
+        private void BeginPointDrag(int rawTick, float rawCell, float layerF, Vector2 pos, int pointerId)
         {
             InvalidateWidthAnchor();
             PushUndo(coalesce: false, "移動"); // ドラッグ開始時点(変更前)を1手として記録する
@@ -2536,7 +2561,7 @@ namespace Muses.ChartTool
             dragOriginByRef = new Dictionary<NoteRef, Waypoint>();
             foreach (var r in selection)
                 dragOriginByRef[r] = r.note.points[r.index];
-            notesSheet.CapturePointer(evt.pointerId);
+            notesSheet.CapturePointer(pointerId);
         }
 
         /// <summary>editor-ui-rework-r3.md §4 規則3: 選択が複数ノーツにまたがる場合、1つでも
@@ -2743,7 +2768,7 @@ namespace Muses.ChartTool
         /// クリックした点はシート本体と同じ規則で選択状態にもする（Shift=トグル、
         /// 既存グループの一員なら選択維持、外れたら単一選択）。
         /// </summary>
-        private void HandleHeightLanePointerDown(SheetLayout L, Vector2 pos, PointerDownEvent evt)
+        private void HandleHeightLanePointerDown(SheetLayout L, Vector2 pos, bool shiftKey, int? pointerId)
         {
             const float grabRadius = 14f;
 
@@ -2753,17 +2778,18 @@ namespace Muses.ChartTool
 
             if (note == null || dist > grabRadius)
             {
-                if (!evt.shiftKey) ClearSelection();
+                if (!shiftKey) ClearSelection();
                 return;
             }
 
             // riser-r2.md §6.2: layerToハンドルはWaypointではないのでNoteRefには載せず、
             // 選択自体は実体の点(NoteRef(note, index))にする。
             var hit = new NoteRef(note, index);
-            if (evt.shiftKey) ToggleSelectionMembership(hit);
+            if (shiftKey) ToggleSelectionMembership(hit);
             else if (!selection.Contains(hit)) SetSingleSelection(hit);
 
             if (!selection.Contains(hit)) return; // Shiftトグルで選択解除された場合はドラッグしない
+            if (!pointerId.HasValue) return; // キーボード起動: ドラッグ開始には追従できる継続入力が無い
 
             PushUndo(coalesce: false, "高さ編集"); // ドラッグ開始時点(変更前)を1手として記録する
             heightDragNote = note;
@@ -2777,7 +2803,7 @@ namespace Muses.ChartTool
             // Slideツールのcaseの中でしか設定されないのと対称にする。
             heightEasingCycleCandidate = currentTool == EditorTool.Slide && index < note.points.Count - 1
                 ? hit : (NoteRef?)null;
-            notesSheet.CapturePointer(evt.pointerId);
+            notesSheet.CapturePointer(pointerId.Value);
         }
 
         private void InsertWaypointInto(Note note, SheetLayout L, Vector2 pos, int tick)
@@ -3349,7 +3375,12 @@ namespace Muses.ChartTool
         /// 左端を先にスナップしてからデルタを求める。layerFはResolveLayerDeltaの点群ごとクランプに
         /// 中心からのデルタを渡すだけでよい（0〜1の範囲クランプに左右非対称は無いため）。
         /// </summary>
-        private (int hoverTick, float deltaCell, float deltaLayer) ComputePasteTransform(SheetLayout L)
+        /// <summary>反転貼り付け(pasteFlip)は、このタプルのgroupCellSum(=クリップボードの範囲の
+        /// minCell+maxEdge)を使って呼び出し側で「自分自身の範囲内」でcellFを鏡像反転してから
+        /// deltaCellを足す(FlipCellFのような盤面中央=Cells基準の反転を後から掛けると、
+        /// 反転貼り付け中はカーソルを右に動かすとゴーストが左へ動く逆転が起きるため。
+        /// 詳細はConfirmPaste/DrawPasteGhostのコメント参照)。</summary>
+        private (int hoverTick, float deltaCell, float deltaLayer, float groupCellSum) ComputePasteTransform(SheetLayout L)
         {
             var pos = PasteReferencePos.Value;
             int snapTicks = SnapTicks;
@@ -3379,7 +3410,7 @@ namespace Muses.ChartTool
             float rawDeltaLayer = pasteLastValidLayer - centerLayer;
             float deltaLayer = ResolveLayerDelta(allPts, rawDeltaLayer);
 
-            return (hoverTick, deltaCell, deltaLayer);
+            return (hoverTick, deltaCell, deltaLayer, minCell + maxEdge);
         }
 
         /// <summary>cellFを盤面中央で鏡像反転する。反転貼り付け(pasteFlip)と選択の反転(FlipSelected)で共用。</summary>
@@ -3414,7 +3445,7 @@ namespace Muses.ChartTool
         {
             if (!PasteReferencePos.HasValue) return;
             var L = CurrentSheetLayout();
-            var (hoverTick, deltaCell, deltaLayer) = ComputePasteTransform(L);
+            var (hoverTick, deltaCell, deltaLayer, groupCellSum) = ComputePasteTransform(L);
 
             PushUndo(coalesce: false, pasteFlip ? "反転貼り付け" : "貼り付け");
             var pasted = new List<Note>();
@@ -3425,9 +3456,12 @@ namespace Muses.ChartTool
                 {
                     var wp = n.points[i];
                     wp.tick = Mathf.Max(0, wp.tick + hoverTick);
-                    wp.cellF += deltaCell;
+                    // 反転はクリップボード自身の範囲内(groupCellSum)で先に鏡像反転してからdeltaCellを
+                    // 足す。盤面全体(Cells)基準で反転してからdeltaCellを足すと、反転貼り付け中だけ
+                    // カーソルの左右移動とゴーストの移動方向が逆になる不具合があった。
+                    float cellF = pasteFlip ? groupCellSum - wp.cellF - wp.width : wp.cellF;
+                    wp.cellF = cellF + deltaCell;
                     wp.layerF += deltaLayer;
-                    if (pasteFlip) wp.cellF = FlipCellF(wp.cellF, wp.width);
                     n.points[i] = wp;
                 }
                 chart.notes.Add(n);
@@ -3443,7 +3477,7 @@ namespace Muses.ChartTool
         /// （§7のDrawPlacementGhost同様、実際に確定する位置とゴーストを一致させるため）。</summary>
         private void DrawPasteGhost(Painter2D p, SheetLayout L)
         {
-            var (hoverTick, deltaCell, deltaLayer) = ComputePasteTransform(L);
+            var (hoverTick, deltaCell, deltaLayer, groupCellSum) = ComputePasteTransform(L);
 
             foreach (var src in clipboard)
             {
@@ -3453,9 +3487,10 @@ namespace Muses.ChartTool
                 {
                     var wp = srcWp;
                     wp.tick = Mathf.Max(0, wp.tick + hoverTick);
-                    wp.cellF += deltaCell;
+                    // ConfirmPasteと同じ順序(範囲内で反転→deltaCellを足す)にする。
+                    float cellF = pasteFlip ? groupCellSum - wp.cellF - wp.width : wp.cellF;
+                    wp.cellF = cellF + deltaCell;
                     wp.layerF += deltaLayer;
-                    if (pasteFlip) wp.cellF = FlipCellF(wp.cellF, wp.width);
                     pts.Add(wp);
                 }
 

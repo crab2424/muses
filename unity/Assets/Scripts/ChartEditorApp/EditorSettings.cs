@@ -29,6 +29,8 @@ namespace Muses.ChartTool
         public const string EditSelectAll = "edit.selectAll";
         public const string EditDelete = "edit.delete";
         public const string EditFlipSelected = "edit.flipSelected";
+        // ノーツの配置・選択など、シート上のクリックと同じ役割をキーボードから担う(既定Enter)。
+        public const string SheetActivate = "sheet.activate";
 
         public const string ToolSelect = "tool.select";
         public const string ToolTap = "tool.tap";
@@ -97,6 +99,8 @@ namespace Muses.ChartTool
             KeyCode.Delete => "Delete",
             KeyCode.Backspace => "Backspace",
             KeyCode.Escape => "Esc",
+            KeyCode.Return => "Enter",
+            KeyCode.KeypadEnter => "Enter",
             KeyCode.Equals => "+",
             KeyCode.Minus => "-",
             KeyCode.LeftBracket => "[",
@@ -286,6 +290,9 @@ namespace Muses.ChartTool
                 new KeyChord(KeyCode.Delete),
                 new KeyChord(KeyCode.Backspace)),
             new KeyBinding(CommandIds.EditFlipSelected, new KeyChord(KeyCode.F, primary: true)),
+            new KeyBinding(CommandIds.SheetActivate,
+                new KeyChord(KeyCode.Return),
+                new KeyChord(KeyCode.KeypadEnter)),
 
             new KeyBinding(CommandIds.ToolSelect, new KeyChord(KeyCode.Alpha1)),
             new KeyBinding(CommandIds.ToolTap, new KeyChord(KeyCode.Alpha2)),
