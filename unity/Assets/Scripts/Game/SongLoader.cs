@@ -66,19 +66,35 @@ namespace Muses.Game
 
             foreach (var root in SearchRoots(userOverrideRoot))
             {
-                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+                bool exists = !string.IsNullOrEmpty(root) && Directory.Exists(root);
+                Debug.Log($"SongLoader: 探索 root='{root}' exists={exists}");
+                if (!exists) continue;
 
                 IEnumerable<string> dirs;
                 try { dirs = Directory.GetDirectories(root).OrderBy(d => d); }
-                catch { continue; }
+                catch (System.Exception ex)
+                {
+                    Debug.LogWarning($"SongLoader: {root} の列挙に失敗しました: {ex.Message}");
+                    continue;
+                }
 
                 foreach (var dir in dirs)
                 {
                     string songId = Path.GetFileName(dir);
-                    if (!seenIds.Add(songId)) continue; // 優先順位の高い探索パスで既出
+                    Debug.Log($"SongLoader:   候補フォルダ '{dir}' (songId='{songId}')");
+                    if (!seenIds.Add(songId))
+                    {
+                        Debug.Log($"SongLoader:     優先順位の高い探索パスで既出のためスキップ: {songId}");
+                        continue;
+                    }
 
                     string songMetaPath = ResolveSongMetaPath(dir);
-                    if (songMetaPath == null) continue; // song.museprojが無い＝曲フォルダではない
+                    if (songMetaPath == null)
+                    {
+                        Debug.Log($"SongLoader:     song.museproj(または旧song.muses)が見つからないためスキップ: {dir}");
+                        continue;
+                    }
+                    Debug.Log($"SongLoader:     曲メタを発見: {songMetaPath}");
 
                     SongMeta meta;
                     try { meta = ChartSerializer.ReadSongMeta(songMetaPath); }
@@ -94,12 +110,17 @@ namespace Muses.Game
                         foreach (var chartPath in Directory.GetFiles(dir, "*" + ChartSerializer.ChartExt).OrderBy(f => f))
                             difficulties.Add(new SongDifficultyEntry(Path.GetFileNameWithoutExtension(chartPath), chartPath));
                     }
-                    catch { /* 譜面ファイルが1つも読めなくても曲メタだけは一覧に出す */ }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogWarning($"SongLoader: {dir} の譜面ファイル列挙に失敗しました: {ex.Message}");
+                    }
+                    Debug.Log($"SongLoader:     難易度 {difficulties.Count} 件: {string.Join(", ", difficulties.ConvertAll(d => d.difficulty))}");
 
                     result.Add(new SongEntry(songId, dir, meta, difficulties));
                 }
             }
 
+            Debug.Log($"SongLoader: Enumerate完了。曲 {result.Count} 件見つかりました。");
             return result;
         }
 
