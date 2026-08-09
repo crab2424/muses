@@ -81,7 +81,15 @@ namespace Muses.Overlay
         private void Update()
         {
             // GL版で毎フレーム行っていたクリーンアップ（描画本体からは分離し、副作用を1箇所にまとめる）。
-            cleanupNow = Time.time;
+            //
+            // 時刻の基準は songTime（SetHudTimeで毎フレーム受け取る値）でなければならない:
+            // Judge.Flashes.born も TouchInputManager.Ripples.born も songTime で記録される
+            // （Judge.CommitJudgement / TouchInputManager.Emit、いずれも clock.SongTime 由来）。
+            // cbf9c70 で clock.Start() が「シーン開始時」から「タイトル画面のSTART押下時」へ
+            // 移ったため、Time.time と songTime が「タイトル画面に居た時間」だけ乖離するようになり、
+            // now - born が常に 0.45 を超えて**判定演出・リップルが一切描画されなくなっていた**
+            // （それ以前はどちらもほぼ0始まりだったので偶然一致していた）。
+            cleanupNow = hudSongTime;
             if (Judge != null) Judge.Flashes.RemoveAll(flashExpired);
             if (input != null) input.Ripples.RemoveAll(rippleExpired);
             overlayRoot.MarkDirtyRepaint();
@@ -153,7 +161,7 @@ namespace Muses.Overlay
 
             var cfg = stageController.Config;
             var d = stageController.Derived;
-            float now = Time.time;
+            float now = hudSongTime; // Update()のcleanupNowと同じ理由でsongTime基準（born と単位を揃える）
             var p = mgc.painter2D;
 
             float PxX(float u) => OvX(w, u);

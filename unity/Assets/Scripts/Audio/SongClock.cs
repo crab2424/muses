@@ -79,6 +79,21 @@ namespace Muses.Audio
             if (musicSource != null) musicSource.clip = clip;
         }
 
+        /// <summary>song-play-flow-r1.md §6.2追補(2026-08-09)。楽曲オフセット(Offset)だけを
+        /// 更新する。Seek()と違い songTime(t0/smoothed/nextBeat)には触れないため、
+        /// GameController側でJudge/Scoreを巻き戻す必要がない（設定画面での微調整用）。
+        /// 再生中なら音源の予約をやり直して即座に反映する（Seekと同じ「リード無しの
+        /// 即時再スケジュール」）。一時停止中はOffsetを書き換えるだけで、次のResume()が
+        /// ScheduleMusicAt経由で新しい値を自然に使う。</summary>
+        public void UpdateOffset(float offsetSec)
+        {
+            Offset = offsetSec;
+            if (!Running) return;
+            double dspAnchor = AudioSettings.dspTime;
+            double curSongTime = dspAnchor - t0;
+            ScheduleMusicAt(curSongTime, dspAnchor);
+        }
+
         public void Start()
         {
             nextBeat = 0;

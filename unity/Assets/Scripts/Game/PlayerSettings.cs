@@ -20,6 +20,11 @@ namespace Muses.Game
         public string difficulty = "";
 
         // ---- オフセット(§6.2)。実機キャリブレーション用の最重要項目 ----
+        /// <summary>楽曲オフセット(ms)。譜面エディタで設定される SongMeta.offsetSec(秒)への
+        /// 微調整用の加算値（2026-08-09追加）。エディタ側の値を上書きするのではなく、
+        /// 実際に音源へ渡す Offset は「エディタ値 + これ」の合計になる
+        /// （GameController.ApplyPlayerSettings参照）。</summary>
+        public float songOffsetMs;
         public float judgeOffsetMs;
         public float visualOffsetMs;
 

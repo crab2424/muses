@@ -362,9 +362,17 @@ namespace Muses.Game
             difficultyDropdown.RegisterValueChangedCallback(evt => settings.difficulty = evt.newValue);
             scroll.Add(difficultyDropdown);
 
-            scroll.Add(MakeSliderRow("判定オフセット(ms)", -150f, 150f, () => settings.judgeOffsetMs,
+            // 楽曲オフセット(2026-08-09追加): 譜面エディタで設定したSongMeta.offsetSecを
+            // 上書きするのではなく、実機での微調整分をここで加算する
+            // （GameController.ApplyPlayerSettings: totalSongOffsetSec = song.offsetSec + これ）。
+            scroll.Add(MakeSliderRow("楽曲オフセット(ms)", -1000f, 1000f, () => settings.songOffsetMs,
+                v => settings.songOffsetMs = v, v => $"{v:F0} ms"));
+            // 可変幅は±1000ms（ユーザー要望、2026-08-09）。±150msでは端まで振っても体感差が
+            // 分かりにくく、そもそも効いているかの切り分けができなかったため。判定窓(GOOD半幅100ms)
+            // より十分広い範囲を取れるので、意図的に大きくずらして確認する用途にも使える。
+            scroll.Add(MakeSliderRow("判定オフセット(ms)", -1000f, 1000f, () => settings.judgeOffsetMs,
                 v => settings.judgeOffsetMs = v, v => $"{v:F0} ms"));
-            scroll.Add(MakeSliderRow("描画オフセット(ms)", -150f, 150f, () => settings.visualOffsetMs,
+            scroll.Add(MakeSliderRow("描画オフセット(ms)", -1000f, 1000f, () => settings.visualOffsetMs,
                 v => settings.visualOffsetMs = v, v => $"{v:F0} ms"));
             scroll.Add(MakeSliderRow("マスター音量", 0f, 1f, () => settings.masterVolume,
                 v => settings.masterVolume = v, v => $"{v * 100f:F0}%"));

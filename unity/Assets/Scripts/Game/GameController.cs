@@ -75,13 +75,22 @@ namespace Muses.Game
         private float VisualTime() => clock.SongTime + stageController.Config.visualOffsetMs / 1000f;
 
         /// <summary>song-play-flow-r1.md §3.2。AppController がロード完了後に呼ぶ。musicClip が null
-        /// なら無音のフリーランクロックになる（音源無し譜面・デモ譜面向け）。</summary>
+        /// なら無音のフリーランクロックになる（音源無し譜面・デモ譜面向け）。ここではエディタ値
+        /// (song.offsetSec)だけを一時的に渡す。プレイヤー設定の楽曲オフセットを合算した最終値は
+        /// 直後に呼ばれる ApplyPlayerSettings() が clock.UpdateOffset() で上書きする前提
+        /// （AppController.LoadAndStart: LoadChart → ApplySettingsToGame → StartGame の順序に依存）。</summary>
         public void LoadChart(Chart.ChartData newChart, Chart.SongMeta newSong, AudioClip musicClip)
         {
             chart = newChart;
             song = newSong;
             clock.SetMusic(musicSource, musicClip, newSong?.offsetSec ?? 0f);
         }
+
+        /// <summary>song-play-flow-r1.md §6.2追補(2026-08-09)。譜面エディタが設定した
+        /// SongMeta.offsetSec に、プレイヤー設定の楽曲オフセット(ms)を加算した合計値。
+        /// エディタ側の値を上書きせず「エディタ値 + 実機での微調整」として積み増す
+        /// （ユーザー要望）。AudioEndTime()と ApplyPlayerSettings 双方で使うため保持する。</summary>
+        private float totalSongOffsetSec;
 
         /// <summary>§6.2/§6.4。設定変更のたび（設定画面を閉じたとき・ロード完了直後）に呼ぶ。
         /// ステージ角度等の「頂点に焼き込まれる値」はここに含めない（§6.2でv1では設定に出さない判断）。</summary>
@@ -96,6 +105,9 @@ namespace Muses.Game
             AudioListener.volume = ps.masterVolume;
             if (musicSource != null) musicSource.volume = ps.bgmVolume;
             if (seSource != null) seSource.volume = ps.seVolume;
+
+            totalSongOffsetSec = (song?.offsetSec ?? 0f) + ps.songOffsetMs / 1000f;
+            clock.UpdateOffset(totalSongOffsetSec);
         }
 
         /// <summary>main.ts の restart() 相当。ノーツを作り直して頭から再生する（implementation-roadmap.md 項目F）。</summary>
@@ -125,7 +137,7 @@ namespace Muses.Game
         public float? AudioEndTime()
         {
             if (musicSource == null || musicSource.clip == null) return null;
-            return musicSource.clip.length - (song?.offsetSec ?? 0f);
+            return musicSource.clip.length - totalSongOffsetSec;
         }
 
         /// <summary>note-spec.md §7。Score.ComputeScoreの分母N。SlideはcomboTimesの数、それ以外は1
