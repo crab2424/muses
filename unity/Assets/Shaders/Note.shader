@@ -54,6 +54,8 @@ Shader "Muses/Note"
                 float2 uv0 : TEXCOORD0; // x = aState, y = aNear
                 float2 uv1 : TEXCOORD1; // x = aLayerF, y = aSide
                 float2 uv2 : TEXCOORD2; // x = aScrollGroup（note-spec.md §5.5、_GroupX[] のインデックス）
+                                        // y = aSlideEatable（ipad-test-findings-r1.md §④。Slide帯のみ使用。
+                                        // 1=判定線で食べる(Hit) / 0=そのまま通り過ぎる(既定、Tap等は常に0のまま無視)）
                 float2 uv3 : TEXCOORD3; // note-visual-r1.md §3-3/§8-3: SDF描画用ローカルUV（NoteGeometry.NoteMeshData.localUvのコメント参照）
             };
 
@@ -66,6 +68,7 @@ Shader "Muses/Note"
                 float near : TEXCOORD3;
                 float side : TEXCOORD4;
                 float2 localUv : TEXCOORD5;
+                float slideEatable : TEXCOORD6;
             };
 
             Varyings vert(Attributes IN)
@@ -82,6 +85,7 @@ Shader "Muses/Note"
                 OUT.near = IN.uv0.y;
                 OUT.side = IN.uv1.y;
                 OUT.localUv = IN.uv3;
+                OUT.slideEatable = IN.uv2.y;
                 return OUT;
             }
 
@@ -154,6 +158,24 @@ Shader "Muses/Note"
                 {
                     // ---- Slide帯: 角丸なし。左右端の白い輪郭線＋帯中央の白線（note-visual-r1.md §5.2）。
                     // xのみ意味を持つ(0=左端/1=右端)。時間方向には分割の継ぎ目が出ないよう何もしない。
+
+                    // ipad-test-findings-r1.md §④: 判定線を通過した区間を「食べる/そのまま通り過ぎる」で
+                    // 分岐する。区間ごとの判定結果は NoteView.SetSlideSegmentEatable が uv2.y に
+                    // 書き込む（Judge.UpdateSlide: Hitならtrue、Missならfalse=既定）。1プリミティブ内の
+                    // 全頂点が同じ区間に属し同じ値を持つ（NoteGeometry.PushSlideBandが区間境界で
+                    // 頂点を分けて生成しているため）ので、単純な閾値判定でよい。
+                    // 食べる(Hit)区間だけ、depth < _ZJudge（判定線より手前=通過済み）で削る。
+                    // これはSkyが判定線で消える位置（skyNear=_ZJudge）と同じなので、Ground/Skyの
+                    // 見え方が揃う。fwidth(depth)で割ることで遠近に依らず画面上1px幅のAAになる。
+                    // Miss区間・未判定区間はこの分岐を通らないので、従来どおり近距離フェード
+                    // (aNear)まで帯として通り過ぎ続ける。
+                    // fwidth(depth)はifで分岐させず必ず計算する: 隣接プリミティブ間で
+                    // slideEatableが違う2x2ピクセルクアッドをまたぐと、分岐内の微分値は
+                    // GPU実装依存の未定義動作になりうるため（早期discardを避けた理由と同じ）。
+                    // 代わりにlerpで「食べない(eatable=0→常に1倍)/食べる(eatable=1→eat倍)」を選ぶ。
+                    float eat = saturate((IN.depth - _ZJudge) / max(fwidth(IN.depth), 1e-5));
+                    a *= lerp(1.0, eat, IN.slideEatable);
+
                     float u = IN.localUv.x;
                     float duw = max(fwidth(u), 1e-5);
                     float edgeW = 1.2 * duw;

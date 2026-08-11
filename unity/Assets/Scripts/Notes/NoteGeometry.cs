@@ -149,6 +149,8 @@ namespace Muses.Notes
             // させる（Judge.Prepare / Judge.Seek）ため、**入力の notes 順のまま**作る必要がある。
             // そこで頂点範囲だけ元のインデックスに退避しておき、runtimes は後段でまとめて作る。
             var vRange = new (int start, int count)[notes.Count];
+            // ipad-test-findings-r1.md §④。Slide専用: comboTimesの添字ごとの頂点範囲（Slide以外はnull）。
+            var comboRanges = new (int start, int count)[notes.Count][];
 
             for (int pass = 0; pass < NoteDrawOrder.Count; pass++)
             for (int ni = 0; ni < notes.Count; ni++)
@@ -184,7 +186,7 @@ namespace Muses.Notes
                     // note-visual-r1.md §5.1/§4.2: 帯の色はGround(不透明寄り)/Sky(透明)を layerF で
                     // 連続的に補間する（NoteColors.SlideColor）。Riser/Diverと違い、Slideは層を
                     // 跨いで連続的に高さが変わり得るため離散切り替えにしない。
-                    PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, timeline.XAt);
+                    comboRanges[ni] = PushSlideBand(n, dCopy, Push, NearOf, UAt, YAt, timeline.XAt, () => st.Count);
 
                     // note-spec.md §3: Visible中継点はTapと同じ形・別色で描く（コンボ点として扱われる、item11）。
                     // editor-ui-rework-r3.md §5: cellFは全種別で左端基準に統一（旧: Slideのみ中心基準）。
@@ -216,6 +218,7 @@ namespace Muses.Notes
                     vStart = vRange[ni].start,
                     vCount = vRange[ni].count,
                     alpha = 1f,
+                    comboSegmentVertexRanges = comboRanges[ni] ?? System.Array.Empty<(int, int)>(),
                 });
             }
 
@@ -274,15 +277,20 @@ namespace Muses.Notes
         /// points.Length==2 の直線区間（旧Holdに相当）も同じコードパスで描ける。
         /// xOf は note-spec.md §5.5 の X(t)（このSlideが属するスクロールグループの表示位置関数）。
         /// 形状(cellF/layerF/width)の補間は実時間 time のまま行い、頂点に焼く「時刻」座標だけを xOf(time) に変える。
+        ///
+        /// ipad-test-findings-r1.md §④。区間の頂点範囲を comboTimes の境界に揃えて生成し、戻り値として
+        /// 返す（Judge が各コンボ点の判定結果をこの範囲へ書き込み、判定線で「食べる/そのまま通り過ぎる」を
+        /// 区間ごとに分岐させるため）。comboTimes は必ず末尾が t1 と一致する
+        /// （ChartFormat.ResolveSlideComboPoints）。vertexCount は現在の総頂点数を返すコールバック
+        /// （呼び出し側の頂点リストと連動させるためクロージャで渡す）。
         /// </summary>
-        private static void PushSlideBand(
+        private static (int start, int count)[] PushSlideBand(
             Note slide, Derived d,
             PushFn push, Func<float, float> nearOf,
-            Func<float, float> uAt, Func<float, float, float> yAt, Func<float, float> xOf)
+            Func<float, float> uAt, Func<float, float, float> yAt, Func<float, float> xOf,
+            Func<int> vertexCount)
         {
             float t0 = ChartMath.NoteStart(slide);
-            float t1 = ChartMath.NoteEnd(slide);
-            int steps = Math.Max(8, (int)MathF.Ceiling((t1 - t0) / 0.03f));
 
             (float cellF, float y, float t, float layerF, float width) At(float time)
             {
@@ -298,18 +306,37 @@ namespace Muses.Notes
                 push(uAt(side < 0f ? p.cellF : p.cellF + p.width), p.y, p.t, p.layerF,
                     NoteColors.SlideColor(p.layerF), nearOf(p.layerF), side < 0f ? 0f : 1f, 0f);
 
+            var comboTimes = slide.comboTimes;
+            var ranges = new (int start, int count)[comboTimes.Count];
+
+            float segStart = t0;
             var prev = At(t0);
-            for (int i = 1; i <= steps; i++)
+            int rangeStart = vertexCount();
+
+            for (int seg = 0; seg < comboTimes.Count; seg++)
             {
-                var cur = At(t0 + (t1 - t0) * i / steps);
-                Emit(prev, -1f);
-                Emit(prev, 1f);
-                Emit(cur, 1f);
-                Emit(prev, -1f);
-                Emit(cur, 1f);
-                Emit(cur, -1f);
-                prev = cur;
+                float segEnd = comboTimes[seg];
+                // 元は帯全体で min 8 だったが、区間ごとに分けたのでここは区間の長さに応じた
+                // 最小値にする（短い区間でも easing の曲がりが見える程度は残す）。
+                int steps = Math.Max(2, (int)MathF.Ceiling((segEnd - segStart) / 0.03f));
+                for (int i = 1; i <= steps; i++)
+                {
+                    var cur = At(segStart + (segEnd - segStart) * i / steps);
+                    Emit(prev, -1f);
+                    Emit(prev, 1f);
+                    Emit(cur, 1f);
+                    Emit(prev, -1f);
+                    Emit(cur, 1f);
+                    Emit(cur, -1f);
+                    prev = cur;
+                }
+                int rangeEnd = vertexCount();
+                ranges[seg] = (rangeStart, rangeEnd - rangeStart);
+                rangeStart = rangeEnd;
+                segStart = segEnd;
             }
+
+            return ranges;
         }
 
         /// <summary>

@@ -42,6 +42,11 @@ namespace Muses.Gameplay
         /// Seek()中の過去ノーツの読み飛ばしでは呼ばれない(CommitJudgementはUpdate()経由の
         /// 実際の判定成立時にしか呼ばれないため)。</summary>
         private readonly Action<JudgeKind> onJudged;
+        /// <summary>ipad-test-findings-r1.md §④。Slideの1コンボ区間の見た目を切り替える
+        /// （通常は NoteView.SetSlideSegmentEatable）。true=判定線で食べる/false=そのまま通り過ぎる(既定)。
+        /// 押さえられている間 UpdateSlide が毎フレーム呼ぶので、実装側は値が変わらないときに
+        /// 何もしないこと。省略可（nullなら常に「通り過ぎる」＝この機能の導入前と同じ見た目）。</summary>
+        private readonly Action<NoteRuntime, int, bool> setSegmentEatable;
         private List<NoteRuntime> runtimes = new();
         private int cursor;
 
@@ -51,11 +56,14 @@ namespace Muses.Gameplay
 
         /// <param name="setAlpha">ノーツの表示アルファを設定するコールバック（通常は NoteView.SetNoteAlpha）</param>
         /// <param name="onJudged">判定成立(MISS以外)のたび呼ぶヒットSEコールバック（省略可）</param>
-        public Judge(StageConfig cfg, Action<NoteRuntime, float> setAlpha, Action<JudgeKind> onJudged = null)
+        /// <param name="setSegmentEatable">Slideの区間ごとの食べる/通り過ぎる分岐コールバック（省略可）</param>
+        public Judge(StageConfig cfg, Action<NoteRuntime, float> setAlpha, Action<JudgeKind> onJudged = null,
+            Action<NoteRuntime, int, bool> setSegmentEatable = null)
         {
             this.cfg = cfg;
             this.setAlpha = setAlpha;
             this.onJudged = onJudged;
+            this.setSegmentEatable = setSegmentEatable;
         }
 
         public void SetConfig(StageConfig cfg) => this.cfg = cfg;
@@ -82,6 +90,12 @@ namespace Muses.Gameplay
                 rt.slideSamples.Clear();
                 rt.nextComboIndex = 0;
                 rt.flickEnterSeen = false;
+
+                // ipad-test-findings-r1.md §④: シークは各区間を「実際にプレイした」結果ではなく
+                // 素直に見た状態へ組み直すため、食べる/通り過ぎるの判定履歴も一律リセットする
+                // （以下の3分岐いずれでも、まだ判定していない区間は「通り過ぎる」が正しい既定）。
+                if (n.kind == NoteKind.Slide && setSegmentEatable != null)
+                    for (int i = 0; i < n.comboTimes.Count; i++) setSegmentEatable(rt, i, false);
 
                 if (ChartMath.NoteEnd(n) < songTime)
                 {
@@ -454,6 +468,23 @@ namespace Muses.Gameplay
             setAlpha(rt, occ ? 1f : 0.45f);
 
             var comboTimes = n.comboTimes;
+
+            // ipad-test-findings-r1.md §④。いま判定線を通過中の区間を、実際に押さえられていれば
+            // その場で「食べる」側へ倒す。**コンボ点の確定(comboTimes[i]+0.1秒)を待ってはいけない**:
+            // その時点で区間iは既に judgment line を完全に通過し終えているため、食べる過程が
+            // 画面に出ず「通過済みの区間が丸ごと消える」だけになる（2026-08-10のユーザー報告）。
+            if (occ)
+            {
+                // 通過中の区間は songTime から直接求める。nextComboIndex は確定が0.1秒遅れる分
+                // 1つ前を指していることがあり、そのまま使うと食べ始めが0.1秒遅れて段差になる。
+                int seg = rt.nextComboIndex;
+                while (seg < comboTimes.Count && songTime >= comboTimes[seg]) seg++;
+                // 一度trueにした区間はfalseへ戻さない（sticky）: 途中で手を離したときに、
+                // 既に食べられて消えた部分が復活してしまうのを防ぐため。離した後の区間は
+                // occ==false でここを通らないので、そのまま流れて行く（＝MISSは通り過ぎる）。
+                if (seg < comboTimes.Count) setSegmentEatable?.Invoke(rt, seg, true);
+            }
+
             while (rt.nextComboIndex < comboTimes.Count && songTime >= comboTimes[rt.nextComboIndex] + 0.1f)
             {
                 ResolveSlideComboPoint(rt, n, comboTimes[rt.nextComboIndex], songTime);
@@ -466,8 +497,10 @@ namespace Muses.Gameplay
 
             if (rt.nextComboIndex >= comboTimes.Count)
             {
+                // ipad-test-findings-r1.md §④: スコア/カーソル進行のためHit状態にはするが、
+                // 強制的にalpha=0で隠すのはやめた。Hitした区間は既に判定線で食べられて見えなく
+                // なっており、Missした区間は帯として自然に通り過ぎ続ける（近距離フェードで消える）。
                 rt.state = NoteState.Hit;
-                setAlpha(rt, 0f);
             }
         }
 

@@ -225,7 +225,7 @@ namespace Muses.ChartTool
             noteView.Build(cfg, stageController.Derived, chart.notes, scrollTimelines, barTimes);
             runtimes = noteView.Runtimes;
 
-            judge = new Judge(cfg, noteView.SetNoteAlpha);
+            judge = new Judge(cfg, noteView.SetNoteAlpha, setSegmentEatable: noteView.SetSlideSegmentEatable);
             judge.Prepare(runtimes);
             judge.Reset();
             noteView.FlushAlpha(); // r13 §7.3: judge.Resetが書き換えた分をここで確定させる

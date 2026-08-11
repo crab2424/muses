@@ -96,6 +96,9 @@ namespace Muses.Notes
         private Mesh notesMesh;
         private Material notesMaterial;
         private Vector2[] notesUv0;
+        /// <summary>ipad-test-findings-r1.md §④。uv2.x=scrollGroup(既存)、uv2.y=Slide区間の
+        /// 「判定線で食べる(1)/そのまま通り過ぎる(0、既定)」フラグ。SetSlideSegmentEatable経由でのみ書く。</summary>
+        private Vector2[] notesUv2;
 
         private GameObject beatGo;
         private MeshFilter beatFilter;
@@ -130,7 +133,8 @@ namespace Muses.Notes
             notesUv0 = Pack(data.state, data.near);
             notesMesh.SetUVs(0, notesUv0);
             notesMesh.SetUVs(1, Pack(data.layerF, data.side));
-            notesMesh.SetUVs(2, Pack(data.group, null));
+            notesUv2 = Pack(data.group, null); // y=0(通り過ぎる)が既定。Slideの区間ごとにJudgeが上書きする
+            notesMesh.SetUVs(2, notesUv2);
             // note-visual-r1.md §3-3/§8-3: SDF描画(角丸+輪郭線)用のローカルUV。
             notesMesh.SetUVs(3, data.localUv);
             var tris = new int[data.positions.Length];
@@ -182,6 +186,7 @@ namespace Muses.Notes
         }
 
         private bool alphaDirty;
+        private bool eatableDirty;
 
         /// <summary>ノーツの表示状態を更新（0で非表示）。値が変わらないときは何もしない。
         /// editor-ui-rework-r13.md §7.3: 呼び出しのたびにメッシュ全体(数万頂点)を再アップロード
@@ -195,13 +200,38 @@ namespace Muses.Notes
             alphaDirty = true;
         }
 
+        /// <summary>ipad-test-findings-r1.md §④。Slideの1コンボ区間(comboIndex)について、
+        /// 判定線で食べる(eatable=true)か、そのまま通り過ぎる(false、既定)かを書く。
+        /// 一度書いた区間は他の区間・他フレームの状態に影響しない（区間ごとに独立した頂点範囲のため）。
+        ///
+        /// Judge は押さえられている間これを毎フレーム呼ぶため、**値が変わらないときは何もしない**
+        /// のが必須（r13 §7.3: 書き換えるたびに eatableDirty が立つと毎フレーム全メッシュ転送になる）。
+        /// 区間内の頂点は必ず同じ値なので、先頭1つを見れば現在値が分かる。</summary>
+        public void SetSlideSegmentEatable(NoteRuntime rt, int comboIndex, bool eatable)
+        {
+            if (notesUv2 == null) return;
+            var (start, count) = rt.comboSegmentVertexRanges[comboIndex];
+            if (count <= 0) return;
+            float v = eatable ? 1f : 0f;
+            if (notesUv2[start].y == v) return;
+            for (int i = start; i < start + count; i++) notesUv2[i].y = v;
+            eatableDirty = true;
+        }
+
         /// <summary>SetNoteAlphaで書き換えた分をまとめてGPUへ転送する。judge.Update / judge.Seek /
         /// noteView.Build を呼んだ直後に1回だけ呼ぶ規則（r13 §7.3）。呼ばなければ描画は更新されない。</summary>
         public void FlushAlpha()
         {
-            if (!alphaDirty || notesUv0 == null) return;
-            notesMesh.SetUVs(0, notesUv0);
-            alphaDirty = false;
+            if (alphaDirty && notesUv0 != null)
+            {
+                notesMesh.SetUVs(0, notesUv0);
+                alphaDirty = false;
+            }
+            if (eatableDirty && notesUv2 != null)
+            {
+                notesMesh.SetUVs(2, notesUv2);
+                eatableDirty = false;
+            }
         }
 
         private void ApplyStaticUniforms(StageConfig cfg, in Derived d)

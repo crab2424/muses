@@ -19,6 +19,11 @@ namespace Muses.Game
     /// - リサイズ（アスペクト比変化）時に StageController は自動で再導出されるが、
     ///   NoteView 側は Rechart() を呼ぶまで追従しない（この点はTS版のresize連動より簡略）。
     /// </summary>
+    // AppController.Awake()がApplySettingsToGame()経由でGameController.ApplyPlayerSettings()を
+    // 呼ぶが、そこで参照するclockはGameController.Awake()で初めて生成される。同じAwakeタイミングの
+    // 兄弟コンポーネント間で実行順は保証されないため、これが後に実行されるとNullReferenceExceptionになる
+    // （2026-08-10、実機/Editor Playで発覚）。明示的にGameControllerを先に走らせて解決する。
+    [DefaultExecutionOrder(-100)]
     public class GameController : MonoBehaviour
     {
         [SerializeField] private StageController stageController;
@@ -52,7 +57,8 @@ namespace Muses.Game
             QualitySettings.vSyncCount = 0;
             Application.targetFrameRate = 120;
 
-            judge = new Judge(stageController.Config, noteView.SetNoteAlpha, hitSe.OnJudged);
+            judge = new Judge(stageController.Config, noteView.SetNoteAlpha, hitSe.OnJudged,
+                noteView.SetSlideSegmentEatable);
             if (overlay != null) overlay.Judge = judge;
 
             input.Init(() => clock.SongTime);

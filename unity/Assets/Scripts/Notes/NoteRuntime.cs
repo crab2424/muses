@@ -46,5 +46,14 @@ namespace Muses.Notes
         /// （実効窓自体は縦連判定で通常どおり削られる。窓の中に入力があった場合のティアだけが変わる）。
         /// </summary>
         public bool exBoosted;
+
+        /// <summary>
+        /// ipad-test-findings-r1.md §④。Slide専用: comboTimes[i] と同じ添字で、その添字が表す
+        /// 区間（1つ前のコンボ点〜comboTimes[i]）の頂点範囲。NoteGeometry.PushSlideBand が
+        /// コンボ点の境界と頂点範囲の境界を一致させて生成する。Judge が各コンボ点を解決するたび、
+        /// この範囲に対して「判定線で食べる(Hit)/そのまま通り過ぎる(Miss)」を書き込む
+        /// （NoteView.SetSlideSegmentEatable）。Slide以外は空配列。
+        /// </summary>
+        public (int start, int count)[] comboSegmentVertexRanges = System.Array.Empty<(int, int)>();
     }
 }
