@@ -54,8 +54,13 @@ namespace Muses.Audio
         /// 音源を読み込む。ファイルが無ければ即座に NotFound、Opusコンテナなら即座に
         /// Unsupported をコールバックへ渡す（コルーチンには入らない）。
         /// host はコルーチンの実行元(MonoBehaviour)。
+        /// stream: trueなら圧縮のまま保持しストリーミング再生する（全長PCM展開を避けメモリを
+        /// 大幅に節約できる、perf-r1.md §3）。ただしストリーミングクリップは同時に1つの
+        /// AudioSourceからしか再生できず、シーク応答も悪化しうる。ゲーム本体はBGM1本のみで
+        /// シークもほぼ発生しないため true、譜面エディタのプレビューはスクラブを多用するため
+        /// false（既定）にすること。
         /// </summary>
-        public static IEnumerator Load(MonoBehaviour host, string path, Action<AudioLoadResult, AudioClip, string> onDone)
+        public static IEnumerator Load(MonoBehaviour host, string path, Action<AudioLoadResult, AudioClip, string> onDone, bool stream = false)
         {
             if (!File.Exists(path))
             {
@@ -78,6 +83,7 @@ namespace Muses.Audio
             AudioType audioType = AudioTypeFromExtension(path);
             string uri = "file://" + path.Replace("\\", "/");
             using var www = UnityWebRequestMultimedia.GetAudioClip(uri, audioType);
+            if (stream) ((DownloadHandlerAudioClip)www.downloadHandler).streamAudio = true;
             yield return www.SendWebRequest();
 
             if (www.result != UnityWebRequest.Result.Success)

@@ -220,12 +220,15 @@ namespace Muses.Game
             {
                 loadingLabel.text = "音源を展開中…";
                 bool done = false;
+                // perf-r1.md §3: ゲーム本体はBGM1本のみでシークもほぼ発生しないため、
+                // 全長PCM展開(既定false)ではなくストリーミング再生にしてメモリを大幅に節約する
+                // （譜面エディタのPreviewSystemはスクラブを多用するため既定のfalseのまま）。
                 yield return AudioFileLoader.Load(this, audioPath, (result, loadedClip, message) =>
                 {
                     done = true;
                     if (result == AudioLoadResult.Ok) clip = loadedClip;
                     else Debug.LogWarning($"AppController: 音源の読み込みに失敗しました({result}): {message}");
-                });
+                }, stream: true);
                 if (!done) yield break; // 念のため（AudioFileLoader.Loadは必ずコールバックを呼ぶ設計）
             }
 
