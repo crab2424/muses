@@ -180,7 +180,11 @@ namespace Muses.ChartTool
             // （旧実装はnotesSheet単体に登録していたが、受け口をuiRootへ統合したので同じ場所へ移した）。
             uiRoot.RegisterCallback<NavigationMoveEvent>(evt =>
             {
-                evt.PreventDefault();
+                // CS0618: PreventDefault()はUnity 6.5で非推奨。NavigationMoveEventは
+                // FocusController.IgnoreEvent()が明示的に対応するイベント種別なのでこちらへ置き換える
+                // (StopPropagationだけでは、UITK内部がフォーカス移動をこのイベントの配送そのものとは
+                // 別経路で処理しうるため、既定のフォーカス移動を確実に止めるにはIgnoreEventが必要)。
+                uiRoot.focusController?.IgnoreEvent(evt);
                 evt.StopPropagation();
             }, TrickleDown.TrickleDown);
             // 起動直後、何もクリックしていない状態でもショートカットが効くようにする試み
@@ -2494,8 +2498,9 @@ namespace Muses.ChartTool
             {
                 uiRoot.UnregisterCallback<KeyDownEvent>(Handler, TrickleDown.TrickleDown);
                 capturingCommandId = null;
+                // StopPropagation()をTrickleDown段で呼べば既定動作も実行され得ないため、
+                // 非推奨のPreventDefault()は不要(CS0618)。
                 evt.StopPropagation();
-                evt.PreventDefault();
 
                 if (evt.keyCode == KeyCode.Escape)
                 {

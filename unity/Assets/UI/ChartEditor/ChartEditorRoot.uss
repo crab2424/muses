@@ -503,6 +503,14 @@
     bottom: 0;
 }
 
+/* ITextSelection.cursorColorはUnity 6.5で非推奨(CS0618)になり、代わりにUSSカスタムプロパティ
+   --unity-cursor-colorを使うよう案内される。C#側から任意の色を直接読み書きするAPIが存在しない
+   ため、ImeBridge.csの点滅は元の色を保存・トグルする方式をやめ、このクラスの付け外しで
+   キャレットを完全透明にする方式へ変更した(元の色はスタイルシート側の既定値のまま触らない)。 */
+.ime-caret-hidden {
+    --unity-cursor-color: rgba(0, 0, 0, 0);
+}
+
 /* editor-ui-rework-r12.md §3.2: IME変換中の文字列はTextField自身にインライン表示するため、
    専用オーバーレイ(旧.ime-composition-overlay)は廃止した。診断表示だけ残す。 */
 .ime-debug-overlay {

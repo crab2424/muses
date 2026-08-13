@@ -176,8 +176,10 @@ namespace Muses.ChartTool
                 if (cmd.Value.enabled != null && !cmd.Value.enabled()) return;
 
                 cmd.Value.run();
+                // StopPropagation()をTrickleDown(capture)段で呼ぶ時点でイベントはtarget/bubble段へ
+                // 到達しなくなるため、既定動作も実行され得ない。PreventDefault()は不要
+                // (CS0618: EventBase.PreventDefault()はUnity 6.5で非推奨)。
                 evt.StopPropagation();
-                evt.PreventDefault();
                 return;
             }
         }

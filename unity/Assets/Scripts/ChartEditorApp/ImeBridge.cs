@@ -14,10 +14,11 @@ namespace Muses.ChartTool
     /// （テキスト入力があるのはエディタだけのため）。
     ///
     /// §2.1 キャレット点滅: UnityEngine.UIElementsModule.dllを走査した結果、blink相当の実装が
-    /// 存在しない(TextElement.DrawCaretが常時実線を描くだけ)ことを確認済み。公開API
-    /// (TextInputBaseField&lt;T&gt;.textSelection / TextElement.selection、いずれもITextSelection)
-    /// のcursorColorをスケジューラで周期的にトグルして自前で再現する。全種類のテキスト系入力欄
-    /// （TextField/IntegerField/FloatField）で共通に効く。
+    /// 存在しない(TextElement.DrawCaretが常時実線を描くだけ)ことを確認済み。ITextSelection.cursorColor
+    /// を直接読み書きする方式だったが、Unity 6.5でこのプロパティが非推奨(--unity-cursor-color USS
+    /// カスタムプロパティを使えとの案内、CS0618)になったため、USSクラス(.ime-caret-hidden、
+    /// ChartEditorRoot.uss参照)の付け外しでキャレットを透明化する方式に変更した。全種類の
+    /// テキスト系入力欄（TextField/IntegerField/FloatField）で共通に効く。
     ///
     /// §2.3/r12 §3.2 IME: New Input SystemのUI向けprovider(InputSystemProvider.cs)がIMECompositionEventを
     /// 未実装(// TODOのまま早期return)であることをパッケージソースで確認済み。旧Input Manager側の
@@ -40,8 +41,8 @@ namespace Muses.ChartTool
         private readonly VisualElement imeLayer;
 
         // ---- §2.1 キャレット点滅 ----
+        private const string CaretHiddenClass = "ime-caret-hidden";
         private TextElement focusedTextElement;
-        private Color focusedOriginalCursorColor;
         private bool blinkVisible = true;
         private IVisualElementScheduledItem blinkSchedule;
 
@@ -128,7 +129,6 @@ namespace Muses.ChartTool
             if (textElement == null) return;
 
             focusedTextElement = textElement;
-            focusedOriginalCursorColor = textElement.selection.cursorColor;
             blinkVisible = true;
 
             var owner = ResolveOwnerField(target);
@@ -158,8 +158,7 @@ namespace Muses.ChartTool
 
         private void RestoreCursorColor()
         {
-            focusedTextElement.selection.cursorColor = focusedOriginalCursorColor;
-            focusedTextElement.MarkDirtyRepaint();
+            focusedTextElement.RemoveFromClassList(CaretHiddenClass);
         }
 
         private void TickBlink()
@@ -193,9 +192,10 @@ namespace Muses.ChartTool
 
         private void ApplyCursorVisibility()
         {
-            var c = focusedOriginalCursorColor;
-            focusedTextElement.selection.cursorColor = blinkVisible ? c : new Color(c.r, c.g, c.b, 0f);
-            focusedTextElement.MarkDirtyRepaint();
+            if (blinkVisible)
+                focusedTextElement.RemoveFromClassList(CaretHiddenClass);
+            else
+                focusedTextElement.AddToClassList(CaretHiddenClass);
         }
 
         // ================= r12 §3.2: IME(未確定文字列のインライン表示) =================
