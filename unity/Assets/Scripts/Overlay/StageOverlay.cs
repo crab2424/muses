@@ -44,6 +44,8 @@ namespace Muses.Overlay
         private VisualElement overlayRoot;
         private float hudSongTime;
         private float hudFps;
+        /// <summary>perf-r1.md §12の切り分け用。SongClock.AudioScheduleErrorSec を ms 単位で均した値。</summary>
+        private float hudAudioErrorMs;
 
         // Update()の毎フレームRemoveAllで使う述語。ラムダをフィールドに固定して
         // 「thisだけをキャプチャする閉包」にすることで、毎フレームのデリゲート確保を避ける。
@@ -52,10 +54,11 @@ namespace Muses.Overlay
         private System.Predicate<(Layer layer, int cell, float born)> rippleExpired;
 
         /// <summary>main.ts の frame() 内 HUD 更新相当。GameController が毎フレーム呼ぶ。</summary>
-        public void SetHudTime(float songTime, float fps)
+        public void SetHudTime(float songTime, float fps, float audioErrorMs = 0f)
         {
             hudSongTime = songTime;
             hudFps = fps;
+            hudAudioErrorMs = audioErrorMs;
         }
 
         private void Awake()
@@ -325,7 +328,7 @@ namespace Muses.Overlay
             if (Judge == null) return;
             var s = Judge.Score;
 
-            GUI.Box(new Rect(8, 8, 190, 78), "");
+            GUI.Box(new Rect(8, 8, 190, 96), "");
 
             hudLineStyle ??= new GUIStyle { fontSize = 12, normal = { textColor = Color.white } };
             hudJudgeLineStyle ??= new GUIStyle(hudLineStyle) { normal = { textColor = new Color(0.91f, 0.94f, 1f) } };
@@ -340,6 +343,10 @@ namespace Muses.Overlay
             GUI.Label(new Rect(16, 30, 180, 18), $"COMBO {s.combo} (max {s.maxCombo})", line);
             GUI.Label(new Rect(16, 48, 180, 18), $"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}", line);
             GUI.Label(new Rect(16, 66, 180, 18), $"{s.lastJudge}{msSuffix}", judgeLine);
+            // perf-r1.md §12: 音源がスケジュールどおり鳴っているかの診断。
+            // 0付近＝スケジュールどおり（ズレの正体は出力レイテンシ）／
+            // 負に大きい＝音源が遅れて鳴り始めている（streamAudio化の回帰）。
+            GUI.Label(new Rect(16, 84, 180, 18), $"audio {(hudAudioErrorMs > 0 ? "+" : "")}{hudAudioErrorMs:F0}ms", line);
         }
 
         private void DrawCellIndex(StageConfig cfg, float vBot, GUIStyle style)

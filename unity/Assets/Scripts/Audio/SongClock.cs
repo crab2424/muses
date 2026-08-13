@@ -223,6 +223,39 @@ namespace Muses.Audio
 
         public float SongTime => Running ? (float)smoothed : (float)pausedAt;
 
+        /// <summary>
+        /// 診断用（perf-r1.md §12「譜面と楽曲が約100msズレる」の切り分け）。
+        /// 音源の実際の再生位置と、songTime から期待される位置との差(秒)。
+        ///
+        /// **AudioSource.time はミキサ上のサンプル位置＝dspTime基準の値**であり、
+        /// 「実際に耳に届いている位置」ではない。この性質のおかげで、ズレの2つの候補を
+        /// この1つの値で切り分けられる:
+        ///
+        /// - **0付近** → 音源はスケジュールどおり鳴っている。ズレの正体は
+        ///   dspTime と実際の発音の間にあるオーディオ出力レイテンシ（DSPバッファ1024
+        ///   ＝23.2ms×バッファ段数＋iOSハードウェア分）で、**streamAudio化とは無関係の
+        ///   従来からある性質**。対処は judgeOffsetMs / visualOffsetMs でのキャリブレーション。
+        /// - **負に大きい（例 -0.1）** → 音源がスケジュールより遅れて鳴り始めている。
+        ///   ストリーミングクリップはシーク＋デコードのプリロールが要るため、
+        ///   ScheduleLeadSec(50ms)では足りず PlayScheduled の予約時刻に間に合っていない、
+        ///   という**streamAudio化による回帰**を示す。
+        ///
+        /// 前奏区間(audioTime&lt;0)と読み込み直後は値が意味を持たないので 0 を返す。
+        /// </summary>
+        public float AudioScheduleErrorSec
+        {
+            get
+            {
+                if (!Running || musicSource == null || musicClip == null) return 0f;
+                if (!musicSource.isPlaying) return 0f;
+                double expected = smoothed + Offset;
+                // 前奏(負)と、鳴り始め直後のバッファ充填中は判定に使えない。
+                // 末尾も AudioSource.time の挙動が不定になるため除外する。
+                if (expected < 0.5 || expected >= musicClip.length - 0.5) return 0f;
+                return (float)(musicSource.time - expected);
+            }
+        }
+
         public void TickMetronome(float bpm, bool enabled)
         {
             if (!Running || metronomeSource == null) return;

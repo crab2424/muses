@@ -43,6 +43,9 @@ namespace Muses.Game
         private Chart.ChartData chart = new();
         private Chart.SongMeta song;
         private float fps = 60f;
+        /// <summary>perf-r1.md §12の切り分け用。SongClock.AudioScheduleErrorSec は
+        /// DSPブロック単位(約23ms)に量子化されて段々に動くため、fpsと同じ要領で均して表示する。</summary>
+        private float audioErrorMs;
 
         private void Awake()
         {
@@ -255,7 +258,9 @@ namespace Muses.Game
                 noteView.FlushAlpha(); // editor-ui-rework-r13.md §7.3: メッシュ全体転送を1フレーム1回に限定
             }
 
-            if (overlay != null) overlay.SetHudTime(t, fps);
+            audioErrorMs += (clock.AudioScheduleErrorSec * 1000f - audioErrorMs) * 0.05f;
+
+            if (overlay != null) overlay.SetHudTime(t, fps, audioErrorMs);
         }
     }
 }
