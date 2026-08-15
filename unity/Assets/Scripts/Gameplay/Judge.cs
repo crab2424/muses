@@ -362,7 +362,12 @@ namespace Muses.Gameplay
         /// </summary>
         private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, int cell, float width, float songTime, bool exBoosted = false)
         {
-            float ms = -dt * 1000f; // 正 = 早押し
+            // dt = ノーツ時刻 - 入力時刻 なので ms = 入力時刻 - ノーツ時刻。
+            // **正 = 遅押し / 負 = 早押し**（HUDの "PERFECT +45ms" もこの符号で出る）。
+            // 2026-08-13訂正: ここは以前「正 = 早押し」と書かれていたが逆だった。
+            // オフセット校正はこの値の符号を見て行う（perf-r1.md §12）ため、実害のある誤りだった。
+            // 他の算出箇所(ResolveSlideComboPoint等の `(songTime - wp.time) * 1000f`)は同じ符号規則。
+            float ms = -dt * 1000f;
             var judged = TierFor(kind, MathF.Abs(ms), exBoosted);
             if (judged == null) return null;
             CommitJudgement(judged.Value, layer, cell, width, songTime, ms);
