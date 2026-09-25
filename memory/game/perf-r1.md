@@ -592,6 +592,11 @@ dspTime基準の時計は構わず進むので、**曲全体を通して一定�
    `StageOverlay.NeedsRepaint()` が (StageController.Version, 占有セルのビットマスク, フラッシュ数,
    リップル数, アニメ中のみ songTime) を前回と比べ、変化が無ければ `MarkDirtyRepaint()` を呼ばない。
    画面サイズ変化は `GeometryChangedEvent` で描き直す。タッチデバッグ表示中は従来どおり毎フレーム。
+   **F も実装済み（2026-09-25、Unity Editor で表示確認・実機計測はまだ）**: `StageOverlay.OnGUI` を削除し、
+   HUD・地平線/分割線/セル番号・タッチデバッグの文字を同じ UIDocument 上の `Label` に置き換えた。
+   HUD の時刻/fps/audio 行は 0.1 秒間隔、スコア行と判定行は値が変わったときだけ text を書き換える。
+   HUD は一時停止ボタン(left16/48px、前面)と重なっていたため left 72 へ移動。
+   なお `SampleScene` の `showTouchDebug` が **1（有効）** のままで、触れている間はオーバーレイが毎フレーム描き直される。
    **Fは §12 の診断表示(`audio ±XXms`)と `lastMs` 表示ごとHUDを消すことになる**ため、
    **オフセット校正を先に済ませてから**着手すること（校正にHUDが要る）。
 5. GPU をさらに削るなら **G-1（`theta`/`vgj`/`vgf` の uniform 化）**。

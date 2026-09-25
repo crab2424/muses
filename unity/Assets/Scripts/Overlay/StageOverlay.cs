@@ -10,8 +10,8 @@ namespace Muses.Overlay
     /// 判定帯のスクリーン空間オーバーレイ。移植元: web-prototype/src/overlay.ts。
     ///
     /// 設計メモの帰結どおり、判定帯はワールド空間のポリゴンではなくスクリーン空間で描く。
-    /// 図形は UI Toolkit の generateVisualContent + Painter2D、セル番号・ラベル・タッチデバッグの
-    /// 文字は OnGUI で描画する（テキストはPainter2Dで描けないため、こちらは従来どおり）。
+    /// 図形は UI Toolkit の generateVisualContent + Painter2D、HUD・セル番号・ラベル・タッチデバッグの
+    /// 文字は同じ UIDocument 上の Label で描く（テキストは Painter2D で描けないため。旧 OnGUI、perf-r1.md §6）。
     ///
     /// 簡略化した点（TS版との差分）:
     /// - 地平線の破線は実線で近似している。
@@ -83,8 +83,17 @@ namespace Muses.Overlay
             overlayRoot.style.bottom = 0;
             overlayRoot.generateVisualContent += GenerateOverlay;
             // 画面サイズ変化で座標が変わる。NeedsRepaint() の要約には含めないので、ここで明示的に描き直す。
-            overlayRoot.RegisterCallback<GeometryChangedEvent>(_ => overlayRoot.MarkDirtyRepaint());
+            overlayRoot.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                overlayRoot.MarkDirtyRepaint();
+                staticLabelsDirty = true;
+            });
             uiDocument.rootVisualElement.Add(overlayRoot);
+
+            // 文字は overlayRoot の子に置く（座標系を GenerateOverlay と共有するため）。
+            staticLabelsRoot = NewLayer();
+            touchLabelsRoot = NewLayer();
+            if (showHud) BuildHud();
 
             // cleanupNow（thisのフィールド）だけをキャプチャする閉包として1回だけ生成する。
             flashExpired = f => cleanupNow - f.born < 0f || cleanupNow - f.born >= 0.45f;
@@ -106,6 +115,10 @@ namespace Muses.Overlay
             if (Judge != null) Judge.Flashes.RemoveAll(flashExpired);
             if (input != null) input.Ripples.RemoveAll(rippleExpired);
             if (NeedsRepaint()) overlayRoot.MarkDirtyRepaint();
+
+            UpdateStaticLabels();
+            UpdateTouchLabels();
+            if (showHud) UpdateHud();
         }
 
         /// <summary>
@@ -337,94 +350,207 @@ namespace Muses.Overlay
             }
         }
 
-        // ================= OnGUI: 文字（Painter2Dでは描けないため従来どおり） =================
+        // ================= 文字: UI Toolkit の Label（perf-r1.md §6【F】） =================
+        //
+        // 以前は OnGUI(IMGUI) で描いていた。OnGUI はメソッドが存在するだけで IMGUI パスが毎フレーム
+        // (Layout/Repaint の最低2回) 走り、HUD の文字列補間が毎フレーム GC ゴミを出していた。
+        // Label は保持型なので、表示内容が変わったときだけ text を書き換える。
 
-        private static float PxX(StageConfig cfg, float u) => (u + 1f) / 2f * Screen.width;
-        private static float PxY(float v) => (v + 1f) / 2f * Screen.height; // y-up（OnGUIのSpaceと合わせて後段でScreen.height-flipする）
-        private static float CellU(StageConfig cfg, float cellIdx) => -cfg.U + 2f * cfg.U * cellIdx / cfg.cells;
+        private VisualElement staticLabelsRoot;
+        private VisualElement touchLabelsRoot;
 
-        // OnGUIは1フレームに複数回(Layout/Repaint)呼ばれるため、GUIStyleは使い回す（毎フレームGC回避）。
-        private GUIStyle cellStyle;
-        private GUIStyle hudLineStyle;
-        private GUIStyle hudJudgeLineStyle;
+        private VisualElement NewLayer()
+        {
+            var layer = new VisualElement { pickingMode = PickingMode.Ignore };
+            layer.style.position = Position.Absolute;
+            layer.style.left = 0;
+            layer.style.top = 0;
+            layer.style.right = 0;
+            layer.style.bottom = 0;
+            overlayRoot.Add(layer);
+            return layer;
+        }
 
-        private void OnGUI()
+        private static Label NewLabel(string text, int fontSize, Color color)
+        {
+            var l = new Label(text) { pickingMode = PickingMode.Ignore };
+            l.style.position = Position.Absolute;
+            l.style.fontSize = fontSize;
+            l.style.color = color;
+            l.style.marginLeft = l.style.marginRight = l.style.marginTop = l.style.marginBottom = 0;
+            l.style.paddingLeft = l.style.paddingRight = l.style.paddingTop = l.style.paddingBottom = 0;
+            return l;
+        }
+
+        // ---- 地平線・分割線・セル番号（ステージ形状か画面サイズが変わったときだけ作り直す） ----
+
+        private bool staticLabelsDirty = true;
+        private int staticLabelsVersion = -1;
+
+        private void UpdateStaticLabels()
         {
             if (stageController == null) return;
+            if (!staticLabelsDirty && staticLabelsVersion == stageController.Version) return;
+
+            float w = overlayRoot.contentRect.width, h = overlayRoot.contentRect.height;
+            if (float.IsNaN(w) || w < 2f || h < 2f) return; // 初回レイアウト前。GeometryChangedEvent で再度来る
+            staticLabelsDirty = false;
+            staticLabelsVersion = stageController.Version;
+            staticLabelsRoot.Clear();
+
             var cfg = stageController.Config;
             var d = stageController.Derived;
-            cellStyle ??= new GUIStyle { fontSize = 10, normal = { textColor = Color.white } };
-            var style = cellStyle;
-
-            if (showHud) DrawHud();
+            float CellX(float cellIdx) => OvX(w, -cfg.U + 2f * cfg.U * cellIdx / cfg.cells);
 
             if (cfg.showHorizon && d.vHorizon <= 1f)
-                Label("horizon", PxX(cfg, cfg.U) - 60, Screen.height - PxY(d.vHorizon) - 14,
-                    new Color(140 / 255f, 170 / 255f, 230 / 255f, 0.6f), style);
+                AddStaticLabel("horizon", OvX(w, cfg.U) - 56f, OvY(h, d.vHorizon) - 14f,
+                    new Color(140 / 255f, 170 / 255f, 230 / 255f, 0.6f));
 
             if (cfg.showSplitLine)
-                Label("y_split", 0, Screen.height - PxY(cfg.vSplit) - 14,
-                    new Color(200 / 255f, 205 / 255f, 235 / 255f, 0.55f), style);
+                AddStaticLabel("y_split", 4f, OvY(h, cfg.vSplit) - 14f,
+                    new Color(200 / 255f, 205 / 255f, 235 / 255f, 0.55f));
 
             if (cfg.showCellIndex)
             {
-                DrawCellIndex(cfg, cfg.vSkyBot, style);
-                DrawCellIndex(cfg, cfg.vGroundBot, style);
-            }
-
-            if (cfg.showTouchDebug && input != null)
-            {
-                foreach (var t in input.Contacts.Values)
+                foreach (float vBot in new[] { cfg.vSkyBot, cfg.vGroundBot })
                 {
-                    float x = PxX(cfg, t.u), y = PxY(t.v);
-                    style.normal.textColor = Color.white;
-                    GUI.Label(new Rect(x + 30, Screen.height - y - 6, 100, 20), $"L{(int)t.layer} C{t.cell}", style);
+                    float y = Mathf.Min(h - 3f, Mathf.Max(10f, OvY(h, vBot) - 4f));
+                    for (int k = 0; k < cfg.cells; k++)
+                    {
+                        var l = AddStaticLabel(k.ToString(), (CellX(k) + CellX(k + 1)) / 2f - 10f, y - 6f, Color.white);
+                        l.style.width = 20;
+                        l.style.height = 12;
+                        l.style.unityTextAlign = TextAnchor.MiddleCenter;
+                    }
                 }
             }
         }
 
-        /// <summary>移植元: web-prototype/src/main.ts の frame() 内 HUD更新（#hud要素の innerHTML 相当）</summary>
-        private void DrawHud()
+        private Label AddStaticLabel(string text, float x, float y, Color color)
         {
-            if (Judge == null) return;
-            var s = Judge.Score;
+            var l = NewLabel(text, 10, color);
+            l.style.left = x;
+            l.style.top = y;
+            staticLabelsRoot.Add(l);
+            return l;
+        }
 
-            GUI.Box(new Rect(8, 8, 190, 96), "");
+        // ---- タッチデバッグ（接触点ごとの "L{layer} C{cell}"。ラベルはプールして使い回す） ----
 
-            hudLineStyle ??= new GUIStyle { fontSize = 12, normal = { textColor = Color.white } };
-            hudJudgeLineStyle ??= new GUIStyle(hudLineStyle) { normal = { textColor = new Color(0.91f, 0.94f, 1f) } };
-            var line = hudLineStyle;
-            var judgeLine = hudJudgeLineStyle;
+        private readonly System.Collections.Generic.List<Label> touchLabels = new();
+        private readonly System.Collections.Generic.List<int> touchLabelKeys = new(); // layer*1000+cell、text更新判定用
 
-            string msSuffix = "";
-            if (s.lastJudge == "PERFECT+" || s.lastJudge == "PERFECT" || s.lastJudge == "GOOD")
-                msSuffix = $" {(s.lastMs > 0 ? "+" : "")}{s.lastMs:F0}ms";
+        private void UpdateTouchLabels()
+        {
+            int used = 0;
+            if (stageController != null && input != null && stageController.Config.showTouchDebug)
+            {
+                float w = overlayRoot.contentRect.width, h = overlayRoot.contentRect.height;
+                foreach (var t in input.Contacts.Values)
+                {
+                    if (used == touchLabels.Count)
+                    {
+                        var nl = NewLabel("", 10, Color.white);
+                        touchLabelsRoot.Add(nl);
+                        touchLabels.Add(nl);
+                        touchLabelKeys.Add(int.MinValue);
+                    }
+                    var l = touchLabels[used];
+                    int key = (int)t.layer * 1000 + t.cell;
+                    if (touchLabelKeys[used] != key)
+                    {
+                        touchLabelKeys[used] = key;
+                        l.text = $"L{(int)t.layer} C{t.cell}";
+                    }
+                    l.style.left = OvX(w, t.u) + 30f;
+                    l.style.top = OvY(h, t.v) - 6f;
+                    l.style.display = DisplayStyle.Flex;
+                    used++;
+                }
+            }
+            for (int i = used; i < touchLabels.Count; i++)
+                if (touchLabels[i].style.display != DisplayStyle.None)
+                    touchLabels[i].style.display = DisplayStyle.None;
+        }
 
-            GUI.Label(new Rect(16, 12, 180, 18), $"t {hudSongTime:F2}s   {hudFps:F0}fps", line);
-            GUI.Label(new Rect(16, 30, 180, 18), $"COMBO {s.combo} (max {s.maxCombo})", line);
-            GUI.Label(new Rect(16, 48, 180, 18), $"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}", line);
-            GUI.Label(new Rect(16, 66, 180, 18), $"{s.lastJudge}{msSuffix}", judgeLine);
+        // ---- HUD（移植元: web-prototype/src/main.ts の frame() 内 HUD 更新） ----
+
+        /// <summary>時刻・fps・音源誤差の行は毎フレーム値が変わるので、この間隔でだけ書き換える。</summary>
+        private const float HudTickerIntervalSec = 0.1f;
+
+        private Label hudTimeLabel, hudComboLabel, hudCountsLabel, hudJudgeLabel, hudAudioLabel;
+        private float hudTickerNextAt;
+        private int hudCombo = -1, hudMaxCombo = -1, hudPp = -1, hudP = -1, hudG = -1, hudM = -1;
+        private string hudLastJudge;
+        private int hudLastMs = int.MinValue;
+
+        private void BuildHud()
+        {
+            var box = new VisualElement { pickingMode = PickingMode.Ignore };
+            box.style.position = Position.Absolute;
+            // 一時停止ボタン(AppController: left16/top16/48x48、前面)と重ならないよう右隣に置く
+            box.style.left = 72;
+            box.style.top = 8;
+            box.style.width = 190;
+            box.style.height = 96;
+            box.style.backgroundColor = new Color(0f, 0f, 0f, 0.45f);
+            box.style.borderTopLeftRadius = box.style.borderTopRightRadius =
+                box.style.borderBottomLeftRadius = box.style.borderBottomRightRadius = 4;
+            uiDocument.rootVisualElement.Add(box);
+
+            Label Line(int row, Color c)
+            {
+                var l = NewLabel("", 12, c);
+                l.style.left = 8;
+                l.style.top = 4 + 18 * row;
+                box.Add(l);
+                return l;
+            }
+            hudTimeLabel = Line(0, Color.white);
+            hudComboLabel = Line(1, Color.white);
+            hudCountsLabel = Line(2, Color.white);
+            hudJudgeLabel = Line(3, new Color(0.91f, 0.94f, 1f));
             // perf-r1.md §12: 音源がスケジュールどおり鳴っているかの診断。
             // 0付近＝スケジュールどおり（ズレの正体は出力レイテンシ）／
             // 負に大きい＝音源が遅れて鳴り始めている（streamAudio化の回帰）。
-            GUI.Label(new Rect(16, 84, 180, 18), $"audio {(hudAudioErrorMs > 0 ? "+" : "")}{hudAudioErrorMs:F0}ms", line);
+            hudAudioLabel = Line(4, Color.white);
         }
 
-        private void DrawCellIndex(StageConfig cfg, float vBot, GUIStyle style)
+        private void UpdateHud()
         {
-            float y = Mathf.Min(Screen.height - 3f, Mathf.Max(10f, Screen.height - PxY(vBot) - 4f));
-            var centered = new GUIStyle(style) { alignment = TextAnchor.MiddleCenter };
-            for (int k = 0; k < cfg.cells; k++)
+            if (Time.unscaledTime >= hudTickerNextAt)
             {
-                float x = (PxX(cfg, CellU(cfg, k)) + PxX(cfg, CellU(cfg, k + 1))) / 2f;
-                GUI.Label(new Rect(x - 10, y - 6, 20, 12), k.ToString(), centered);
+                hudTickerNextAt = Time.unscaledTime + HudTickerIntervalSec;
+                hudTimeLabel.text = $"t {hudSongTime:F2}s   {hudFps:F0}fps";
+                hudAudioLabel.text = $"audio {(hudAudioErrorMs > 0 ? "+" : "")}{hudAudioErrorMs:F0}ms";
             }
-        }
 
-        private static void Label(string text, float x, float y, Color color, GUIStyle style)
-        {
-            style.normal.textColor = color;
-            GUI.Label(new Rect(x + 4, y, 100, 16), text, style);
+            if (Judge == null) return;
+            var s = Judge.Score;
+
+            if (s.combo != hudCombo || s.maxCombo != hudMaxCombo)
+            {
+                hudCombo = s.combo;
+                hudMaxCombo = s.maxCombo;
+                hudComboLabel.text = $"COMBO {s.combo} (max {s.maxCombo})";
+            }
+            if (s.perfectPlus != hudPp || s.perfect != hudP || s.good != hudG || s.miss != hudM)
+            {
+                hudPp = s.perfectPlus;
+                hudP = s.perfect;
+                hudG = s.good;
+                hudM = s.miss;
+                hudCountsLabel.text = $"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}";
+            }
+            // 同じ判定・同じmsが連続しても表示は同じなので、(lastJudge, 丸めたms) の変化だけ見ればよい
+            int ms = Mathf.RoundToInt(s.lastMs);
+            if (s.lastJudge != hudLastJudge || ms != hudLastMs)
+            {
+                hudLastJudge = s.lastJudge;
+                hudLastMs = ms;
+                bool showMs = s.lastJudge == "PERFECT+" || s.lastJudge == "PERFECT" || s.lastJudge == "GOOD";
+                hudJudgeLabel.text = showMs ? $"{s.lastJudge} {(ms > 0 ? "+" : "")}{ms}ms" : s.lastJudge;
+            }
         }
     }
 }
