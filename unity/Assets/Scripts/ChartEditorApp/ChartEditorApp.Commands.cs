@@ -53,9 +53,9 @@ namespace Muses.ChartTool
             commands = new List<EditorCommand>
             {
                 new(CommandIds.FileNew, "ファイル", "新規", NewChart),
-                new(CommandIds.FileOpen, "ファイル", "開く", () => ShowFileModal(saveMode: false)),
+                new(CommandIds.FileOpen, "ファイル", "開く", OpenChartDialog),
                 new(CommandIds.FileSave, "ファイル", "保存", SaveChartToPath),
-                new(CommandIds.FileSaveAs, "ファイル", "別名で保存", () => ShowFileModal(saveMode: true)),
+                new(CommandIds.FileSaveAs, "ファイル", "別名で保存", SaveAsDialog),
                 new(CommandIds.FileRestoreAutosave, "ファイル", "自動保存から復元", ShowRestoreModal,
                     () => !string.IsNullOrEmpty(restoreAutosavePath) && File.Exists(restoreAutosavePath)),
 

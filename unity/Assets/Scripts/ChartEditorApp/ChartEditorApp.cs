@@ -1239,7 +1239,7 @@ namespace Muses.ChartTool
             catch (Exception ex) { Debug.LogWarning($"untitled自動保存の削除に失敗しました: {ex.Message}"); }
         }
 
-        /// <summary>ShowFileModal(saveMode:true)経由の保存が完了した直後に呼ぶ。終了待ちでなければ
+        /// <summary>別名保存(SaveAsDialog/ShowFileModal(saveMode:true))経由の保存が完了した直後に呼ぶ。終了待ちでなければ
         /// 何もしない。dirtyが残っていれば保存失敗とみなし終了しない(ユーザーがやり直せるように)。</summary>
         private void TryQuitIfPendingAfterSave()
         {

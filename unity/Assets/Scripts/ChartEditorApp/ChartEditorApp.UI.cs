@@ -207,10 +207,10 @@ namespace Muses.ChartTool
             {
                 menu.AddItem("新規", false, NewChart);
                 menu.AddItem("新規曲...", false, ShowNewSongWizard);
-                menu.AddItem("開く...", false, () => ShowFileModal(saveMode: false));
+                menu.AddItem("開く...", false, OpenChartDialog);
                 menu.AddSeparator("");
                 menu.AddItem("保存", false, SaveChartToPath);
-                menu.AddItem("曲フォルダを選んで保存...", false, () => ShowFileModal(saveMode: true));
+                menu.AddItem("曲フォルダを選んで保存...", false, SaveAsDialog);
                 menu.AddSeparator("");
                 // editor-ui-rework-r12.md §2.3: restorePromptMode=確認しない でも手動で復元できる口。
                 if (!string.IsNullOrEmpty(restoreAutosavePath) && File.Exists(restoreAutosavePath))
@@ -461,7 +461,7 @@ namespace Muses.ChartTool
             fileGroup.Clear();
             fileGroup.Add(MakeToolbarButton("新規", NewChart));
             fileGroup.Add(MakeToolbarButton("新規曲", ShowNewSongWizard));
-            fileGroup.Add(MakeToolbarButton("開く", () => ShowFileModal(saveMode: false)));
+            fileGroup.Add(MakeToolbarButton("開く", OpenChartDialog));
             fileGroup.Add(MakeToolbarButton("保存", SaveChartToPath));
 
             var editGroup = uiRoot.Q<VisualElement>("toolbar-edit");
@@ -1987,7 +1987,7 @@ namespace Muses.ChartTool
                 return;
             }
 
-            ShowFilePickerModal("音源ファイルを選択", new[] { "*.ogg", "*.wav", "*.mp3" }, picked =>
+            void OnPicked(string picked)
             {
                 string pickedDir = Path.GetDirectoryName(picked);
                 if (string.Equals(pickedDir, songDir, StringComparison.OrdinalIgnoreCase))
@@ -1996,7 +1996,12 @@ namespace Muses.ChartTool
                     return;
                 }
                 ImportAudioFile(picked, songDir);
-            });
+            }
+
+            RunNativeDialog(
+                cb => NativeFileDialog.OpenFile("音源ファイルを選択", songDir, new[] { "ogg", "wav", "mp3" }, cb),
+                OnPicked,
+                () => ShowFilePickerModal("音源ファイルを選択", new[] { "*.ogg", "*.wav", "*.mp3" }, OnPicked));
         }
 
         /// <summary>editor-ui-rework-r7.md §3.3。曲フォルダ外の音源を選んだときのコピー処理。
@@ -2062,6 +2067,120 @@ namespace Muses.ChartTool
             row.Add(confirmBtn);
             row.Add(cancelBtn);
             modal.Add(row);
+        }
+
+        // ================= OSネイティブのファイル選択(NativeFileDialog) =================
+        // 自前ブラウザ(ShowFileModal/ShowFilePickerModal/ShowFolderPickerModal)は、ネイティブの
+        // ダイアログが開けなかった場合の代替としてだけ残す。
+
+        /// <summary>ネイティブダイアログを開き、閉じるまで待機モーダルを出しておく（macOSのosascriptは
+        /// エディタのウィンドウを無効化しないため、その間にショートカット等が効かないようにする）。
+        /// 失敗したら<paramref name="fallback"/>（自前ブラウザ）を開く。</summary>
+        private void RunNativeDialog(Action<Action<NativeFileDialog.Result>> start, Action<string> onPicked, Action fallback,
+            Action onCancelled = null)
+        {
+            if (!NativeFileDialog.IsSupported) { fallback(); return; }
+            if (NativeFileDialog.IsOpen) return;
+
+            var modal = ShowModal("ファイル選択ダイアログを表示中");
+            var note = new Label("開いているダイアログで選択してください。");
+            note.AddToClassList("prop-note");
+            modal.Add(note);
+            if (NativeFileDialog.CanCancel)
+            {
+                var row = new VisualElement();
+                row.AddToClassList("modal-row");
+                var abort = new Button(NativeFileDialog.CancelPending) { text = "中断" };
+                abort.AddToClassList("tb-btn");
+                row.Add(abort);
+                modal.Add(row);
+            }
+
+            start(r =>
+            {
+                CloseModal(modal);
+                switch (r.status)
+                {
+                    case NativeFileDialog.Status.Picked:
+                        onPicked(r.path);
+                        break;
+                    case NativeFileDialog.Status.Cancelled:
+                        onCancelled?.Invoke();
+                        break;
+                    default:
+                        Debug.LogWarning($"NativeFileDialog: 開けなかったため内蔵ブラウザを使います: {r.error}");
+                        fallback();
+                        break;
+                }
+            });
+        }
+
+        private void OpenChartDialog() => RunNativeDialog(
+            cb => NativeFileDialog.OpenFile("譜面ファイルを開く", browseDir,
+                new[] { ChartSerializer.ChartExt.TrimStart('.') }, cb),
+            picked =>
+            {
+                if (!picked.EndsWith(ChartSerializer.ChartExt, StringComparison.OrdinalIgnoreCase))
+                {
+                    statusMessage = $"{ChartSerializer.ChartExt} ファイルを選んでください: {Path.GetFileName(picked)}";
+                    return;
+                }
+                browseDir = Path.GetDirectoryName(picked);
+                RememberBrowseDir();
+                chartFilePathBuffer = picked;
+                OpenChartFromPath();
+                SyncAfterFileOperation();
+            },
+            () => ShowFileModal(saveMode: false));
+
+        /// <summary>別名保存。ファイル名は@DIFFICULTYから自動決定する規則(editor-ui-rework-r9.md §5.2)を
+        /// 保つため、ネイティブ側では「曲フォルダ」を選ばせる（ダイアログ内で新規フォルダも作れる）。</summary>
+        private void SaveAsDialog() => RunNativeDialog(
+            cb => NativeFileDialog.PickFolder("保存先の曲フォルダを選択（新規フォルダも作れます）", browseDir, cb),
+            SaveIntoPickedFolder,
+            () => ShowFileModal(saveMode: true),
+            // 終了確認の「保存して終了」から来てキャンセルした場合、次の保存で突然終了しないよう解除する。
+            onCancelled: () => pendingQuitAfterSave = false);
+
+        /// <summary>
+        /// 選ばれたフォルダの扱い:
+        /// - 曲フォルダ（曲メタファイルがある）→ その直下に保存。
+        /// - 空のフォルダ（ダイアログで新規作成した直後など）→ そのフォルダを新しい曲フォルダにする。
+        /// - それ以外（songsRoot自体・中身のある普通のフォルダ）→ 曲フォルダ名の入力が要るので、
+        ///   そのフォルダを起点に内蔵の保存モーダルを開く（従来どおりサブフォルダを作る）。
+        /// </summary>
+        private void SaveIntoPickedFolder(string dir)
+        {
+            bool isRoot = EditorSettings.PathEquals(dir, songsRoot);
+            bool isProject = !isRoot && File.Exists(Path.Combine(dir, ChartSerializer.SongFileName));
+            bool isEmpty = !isRoot && !Directory.EnumerateFileSystemEntries(dir)
+                .Any(e => !Path.GetFileName(e).StartsWith("."));
+
+            if (!isProject && !isEmpty)
+            {
+                browseDir = dir;
+                statusMessage = "曲フォルダではないため、作成する曲フォルダ名を入力してください";
+                ShowFileModal(saveMode: true);
+                return;
+            }
+
+            string target = Path.Combine(dir, header.difficulty.ToLowerInvariant() + ChartSerializer.ChartExt);
+            void DoSave()
+            {
+                chartFilePathBuffer = target;
+                browseDir = dir;
+                RememberBrowseDir();
+                SaveChartToPath();
+                SyncAfterFileOperation();
+                TryQuitIfPendingAfterSave();
+            }
+
+            if (File.Exists(target) && !PathsEqual(target, chartFilePathBuffer ?? ""))
+                ShowConfirmModal("譜面の上書き",
+                    $"\"{Path.GetFileName(target)}\" は既にこの曲フォルダにあります。上書きしますか？",
+                    "上書きする", DoSave);
+            else
+                DoSave();
         }
 
         /// <summary>editor-ui-rework-r7.md §3.2。「曲フォルダ」設定用のフォルダ専用ブラウザ。
@@ -2306,12 +2425,16 @@ namespace Muses.ChartTool
             songsRootLabel.AddToClassList("prop-note");
             songsRootLabel.style.flexGrow = 1;
             songsRootField.Add(songsRootLabel);
-            var changeBtn = new Button(() => ShowFolderPickerModal("曲フォルダを選択", songsRoot, picked =>
+            void OnSongsRootPicked(string picked)
             {
                 songsRoot = picked;
                 songsRootLabel.text = songsRoot;
                 Directory.CreateDirectory(songsRoot);
-            }))
+            }
+            var changeBtn = new Button(() => RunNativeDialog(
+                cb => NativeFileDialog.PickFolder("曲フォルダを選択", songsRoot, cb),
+                OnSongsRootPicked,
+                () => ShowFolderPickerModal("曲フォルダを選択", songsRoot, OnSongsRootPicked)))
             { text = "変更..." };
             changeBtn.AddToClassList("tb-btn");
             songsRootField.Add(changeBtn);
@@ -2591,9 +2714,8 @@ namespace Muses.ChartTool
         /// <summary>
         /// editor-ui-rework-r4.md §9: 音源ファイル等、ChartEditorApp内部の状態
         /// （chartFilePathBuffer・OpenChartFromPath等）に依存しない汎用のファイル選択モーダル。
-        /// スタンドアロンビルドにはOSネイティブのファイル選択APIが無いため、ShowFileModal
-        /// （.musesの開く/別名保存専用）と同じ自前ブラウザの骨格を、拡張子フィルタと
-        /// コールバックだけを受け取る形に切り出した。
+        /// ShowFileModal（.musesの開く/別名保存専用）と同じ自前ブラウザの骨格を、拡張子フィルタと
+        /// コールバックだけを受け取る形に切り出した。現在はNativeFileDialogが開けなかった場合の代替。
         /// </summary>
         private void ShowFilePickerModal(string title, string pattern, Action<string> onPick) =>
             ShowFilePickerModal(title, new[] { pattern }, onPick);
@@ -2673,8 +2795,10 @@ namespace Muses.ChartTool
         }
 
         /// <summary>
-        /// ネイティブのファイル選択ダイアログが無いスタンドアロン向けの代替（editor-spec.md の
-        /// 簡易ファイルブラウザをUI Toolkitへ移植したもの）。saveMode時は曲フォルダ名入力欄が付く。
+        /// 内蔵の簡易ファイルブラウザ（editor-spec.md の簡易ファイルブラウザをUI Toolkitへ移植したもの）。
+        /// 通常はOpenChartDialog/SaveAsDialog(NativeFileDialog)を使い、これはネイティブのダイアログが
+        /// 開けなかった場合と、別名保存で新しい曲フォルダ名の入力が要る場合に使う。
+        /// saveMode時は曲フォルダ名入力欄が付く。
         /// editor-ui-rework-r9.md §5.2: 譜面ファイル名は自由入力ではなく@DIFFICULTYから自動決定
         /// するため、旧「ファイル名」入力は「曲フォルダ名」入力に置き換える。
         /// </summary>
@@ -3104,7 +3228,7 @@ namespace Muses.ChartTool
 
         /// <summary>editor-ui-rework-r12.md §2.5。HandleWantsToQuit(ChartEditorApp.cs)と
         /// QuitApp(メニュー「終了」)の両方から呼ばれる。「保存先が未確定の新規譜面」で
-        /// 「保存して終了」を選んだ場合はShowFileModal(saveMode:true)へ委譲し、保存完了は
+        /// 「保存して終了」を選んだ場合はSaveAsDialogへ委譲し、保存完了は
         /// TryQuitIfPendingAfterSaveが拾う（このモーダル自身は先に閉じる）。
         /// Application.wantsToQuitの×ボタン経由での発火はmacOS実機でしか確認できない
         /// （設計時点で明記済み、[[muses-unity-port-progress]]参照）。</summary>
@@ -3124,7 +3248,7 @@ namespace Muses.ChartTool
                 if (string.IsNullOrEmpty(chartFilePathBuffer))
                 {
                     pendingQuitAfterSave = true;
-                    ShowFileModal(saveMode: true);
+                    SaveAsDialog();
                 }
                 else
                 {
