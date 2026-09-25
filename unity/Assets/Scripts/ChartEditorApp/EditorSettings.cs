@@ -198,6 +198,10 @@ namespace Muses.ChartTool
         /// <summary>editor-ui-rework-r8.md §5.2。プレビュー画面でのCmd/Ctrl+ホイールで変わる
         /// ノーツ速度倍率。譜面の属性ではなくエディタ側の設定(音量と同じ扱い)なのでsong.musesには入れない。</summary>
         public float hiSpeed = 1f;
+        /// <summary>3Dプレビューの描画オフセット(ms)。PreviewSystem.VisualOffsetMs参照。
+        /// song.offsetSec（音源先頭→譜面tick0、譜面の属性）とは別物で、再生環境のズレを見た目で
+        /// 補正するためのエディタ設定なので譜面ファイルには入れない（hiSpeedと同じ扱い）。</summary>
+        public float previewVisualOffsetMs = 0f;
 
         /// <summary>editor-ui-rework-r13.md §7.9。プレビューのノーツ奥行き厚み（NotePlacement.hlsl）。
         /// 既定値はユーザーが実機と見比べて確定した値（frac=0.06 / minFrac=0.01）。

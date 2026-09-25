@@ -2373,6 +2373,11 @@ namespace Muses.ChartTool
             var hiSpeedSlider = AddSliderRow(parent, "ハイスピード(プレビュー)", 0.5f, 4f, v => preview.HiSpeed = v);
             hiSpeedSlider.SetValueWithoutNotify(preview.HiSpeed);
 
+            // 3Dプレビューのノーツ描画位置だけをずらす(ゲームの「描画オフセット」と同じ意味)。
+            // 音源タブの「オフセット(秒)」(song.offsetSec、譜面の属性)とは別物。
+            var visualOffsetField = AddFloatRow(parent, "描画オフセット(ms、プレビュー)", v => preview.VisualOffsetMs = v);
+            visualOffsetField.SetValueWithoutNotify(preview.VisualOffsetMs);
+
             // editor-ui-rework-r13.md §7.9: ノーツの奥行き厚み。実機と見比べて調整する値なので
             // 恒久的な設定として残し、EditorSettingsへ永続化する(ハイスピード等と同じ扱い)。
             // Fracの下限を0にしないのは、シェーダの max(zJudge*Frac, depth*MinFrac) で第1項が

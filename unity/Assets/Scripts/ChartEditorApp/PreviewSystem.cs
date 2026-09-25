@@ -232,7 +232,7 @@ namespace Muses.ChartTool
             lastBuiltAspect = cam.aspect; // r13 §7.2: このBuildが焼き込んだアスペクト比を記録する
 
             float t = clock.SongTime;
-            noteView.UpdateScroll(t, cfg.hiSpeed);
+            noteView.UpdateScroll(t + VisualOffsetSec, cfg.hiSpeed);
             lastSongTime = t;
 
             TryLoadAudio(audioDir);
@@ -260,9 +260,9 @@ namespace Muses.ChartTool
             noteView.Build(cfg, stageController.Derived, chart.notes, scrollTimelines, barTimes);
             runtimes = noteView.Runtimes;
             judge.Prepare(runtimes);
-            judge.Seek(clock.SongTime);
+            judge.Seek(VisualTime);
             noteView.FlushAlpha();
-            noteView.UpdateScroll(clock.SongTime, cfg.hiSpeed);
+            noteView.UpdateScroll(VisualTime, cfg.hiSpeed);
             lastBuiltAspect = cam.aspect;
             MarkDirty();
         }
@@ -381,6 +381,34 @@ namespace Muses.ChartTool
         /// <summary>editor-spec.md §4 V10。読み込み済み音源の長さ(秒)。未読み込みなら-1。</summary>
         public float AudioLengthSec => musicSource.clip != null ? musicSource.clip.length : -1f;
         public float SongTime => clock?.SongTime ?? 0f;
+
+        /// <summary>
+        /// 描画オフセット(ms)。ゲーム本体の <c>visualOffsetMs</c>（GameController.VisualTime）と同じ考え方で、
+        /// 3Dプレビューのノーツ描画位置にだけ足す。<see cref="PreviewClock.Offset"/>
+        /// （＝SongMeta.offsetSec、音源先頭→譜面tick0、譜面の属性）とは別物で、こちらは
+        /// 出力レイテンシ等の環境依存のズレを見た目で補正するためのエディタ設定（譜面ファイルには入れない）。
+        /// 正の値でノーツが早く判定線に来る（＝音が遅れて聞こえる環境なら負の値にする）。
+        /// オートプレイの判定（ノーツが消えるタイミング）も見た目と揃えるため描画時刻で回す。
+        /// ノーツSE・メトロノームは音源時刻のまま（音同士は元から揃っているため）。
+        /// </summary>
+        public float VisualOffsetMs
+        {
+            get => visualOffsetMs;
+            set
+            {
+                float v = Mathf.Clamp(value, -1000f, 1000f);
+                if (Mathf.Approximately(visualOffsetMs, v)) return;
+                visualOffsetMs = v;
+                if (judge == null) return;
+                judge.Seek(VisualTime);
+                noteView.FlushAlpha();
+                noteView.UpdateScroll(VisualTime, cfg.hiSpeed);
+                MarkDirty();
+            }
+        }
+        private float visualOffsetMs;
+        private float VisualOffsetSec => visualOffsetMs / 1000f;
+        private float VisualTime => SongTime + VisualOffsetSec;
         public bool IsPlaying => clock?.Running ?? false;
 
         // ---------- UI(ChartEditorApp.UI.cs)から触る状態 ----------
@@ -424,7 +452,7 @@ namespace Muses.ChartTool
                 float v = Mathf.Clamp(value, 0.5f, 4f);
                 if (Mathf.Approximately(cfg.hiSpeed, v)) return;
                 cfg.hiSpeed = v;
-                noteView.UpdateScroll(SongTime, cfg.hiSpeed);
+                noteView.UpdateScroll(VisualTime, cfg.hiSpeed);
                 MarkDirty();
             }
         }
@@ -481,12 +509,14 @@ namespace Muses.ChartTool
 
             if (clock.Running)
             {
-                noteView.UpdateScroll(cur, cfg.hiSpeed);
+                float vPrev = prev + VisualOffsetSec;
+                float vCur = cur + VisualOffsetSec;
+                noteView.UpdateScroll(vCur, cfg.hiSpeed);
 
                 if (autoplay && judge != null)
                 {
-                    var contacts = AutoplayDriver.Step(judge, cfg, runtimes, prev, cur);
-                    judge.Update(cur, contacts);
+                    var contacts = AutoplayDriver.Step(judge, cfg, runtimes, vPrev, vCur);
+                    judge.Update(vCur, contacts);
                     noteView.FlushAlpha(); // r13 §7.3: 判定を進めたら1フレーム1回だけ転送する
                 }
 
@@ -607,9 +637,9 @@ namespace Muses.ChartTool
         {
             clock.Seek(t);
             lastSongTime = clock.SongTime;
-            judge?.Seek(lastSongTime);
+            judge?.Seek(VisualTime);
             noteView.FlushAlpha(); // r13 §7.3: 停止中のスクロール追従で毎フレーム呼ばれるため必須
-            noteView.UpdateScroll(lastSongTime, cfg.hiSpeed);
+            noteView.UpdateScroll(VisualTime, cfg.hiSpeed);
             MarkDirty();
         }
 
@@ -617,7 +647,7 @@ namespace Muses.ChartTool
         {
             if (autoplay == on) return;
             autoplay = on;
-            judge?.Seek(clock.SongTime);
+            judge?.Seek(VisualTime);
             noteView.FlushAlpha(); // r13 §7.3
             MarkDirty();
         }

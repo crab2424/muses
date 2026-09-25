@@ -518,6 +518,7 @@ namespace Muses.ChartTool
             preview.BgmVolume = settings.bgmVolume;
             preview.SeVolume = settings.seVolume;
             preview.HiSpeed = settings.hiSpeed;
+            preview.VisualOffsetMs = settings.previewVisualOffsetMs;
             // editor-ui-rework-r13.md §7.9: ノーツ奥行き厚み。0はシェーダのmax()で第1項が常に負ける
             // ＝fracが効かなくなる値なので、古い/壊れた設定ファイルでも下限を切っておく。
             preview.ThicknessFrac = Mathf.Clamp(settings.thicknessFrac, 0.001f, 0.3f);
@@ -613,6 +614,7 @@ namespace Muses.ChartTool
             settings.bgmVolume = preview.BgmVolume;
             settings.seVolume = preview.SeVolume;
             settings.hiSpeed = preview.HiSpeed;
+            settings.previewVisualOffsetMs = preview.VisualOffsetMs;
             settings.thicknessFrac = preview.ThicknessFrac;       // r13 §7.9
             settings.thicknessMinFrac = preview.ThicknessMinFrac;
             settings.skyThicknessMul = preview.SkyThicknessMul;   // note-visual-r1.md §3.2
