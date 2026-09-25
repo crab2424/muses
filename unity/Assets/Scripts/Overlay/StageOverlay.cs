@@ -53,6 +53,14 @@ namespace Muses.Overlay
         private System.Predicate<HitFlash> flashExpired;
         private System.Predicate<(Layer layer, int cell, float born)> rippleExpired;
 
+        // 前回 MarkDirtyRepaint した時点の描画内容の要約（perf-r1.md §5【E】）。
+        // 変わっていなければ再生成しない（何も押していない静止フレームでは描画コスト0）。
+        private int lastStageVersion = -1;
+        private ulong lastOccupiedMask;
+        private int lastFlashCount = -1;
+        private int lastRippleCount = -1;
+        private float lastAnimTime = float.NaN;
+
         /// <summary>main.ts の frame() 内 HUD 更新相当。GameController が毎フレーム呼ぶ。</summary>
         public void SetHudTime(float songTime, float fps, float audioErrorMs = 0f)
         {
@@ -74,6 +82,8 @@ namespace Muses.Overlay
             overlayRoot.style.right = 0;
             overlayRoot.style.bottom = 0;
             overlayRoot.generateVisualContent += GenerateOverlay;
+            // 画面サイズ変化で座標が変わる。NeedsRepaint() の要約には含めないので、ここで明示的に描き直す。
+            overlayRoot.RegisterCallback<GeometryChangedEvent>(_ => overlayRoot.MarkDirtyRepaint());
             uiDocument.rootVisualElement.Add(overlayRoot);
 
             // cleanupNow（thisのフィールド）だけをキャプチャする閉包として1回だけ生成する。
@@ -95,7 +105,58 @@ namespace Muses.Overlay
             cleanupNow = hudSongTime;
             if (Judge != null) Judge.Flashes.RemoveAll(flashExpired);
             if (input != null) input.Ripples.RemoveAll(rippleExpired);
-            overlayRoot.MarkDirtyRepaint();
+            if (NeedsRepaint()) overlayRoot.MarkDirtyRepaint();
+        }
+
+        /// <summary>
+        /// 描画内容が前回から変わりうるかを判定し、変わるなら要約を更新して true を返す。
+        /// GenerateOverlay の出力を決めるのは (ステージ形状, 占有セル, フラッシュ, リップル, 経過時刻) だけで、
+        /// フラッシュ/リップルが1つも無ければ経過時刻には依存しない。
+        /// </summary>
+        private bool NeedsRepaint()
+        {
+            if (stageController == null || input == null) return false;
+            var cfg = stageController.Config;
+
+            // タッチデバッグ表示は接触点の座標(u,v)に追従するので要約できない。デバッグ用途なので毎フレーム描く。
+            if (cfg.showTouchDebug && input.Contacts.Count > 0) return true;
+
+            int stageVersion = stageController.Version;
+            ulong mask = OccupiedMask(cfg.cells, out bool maskValid);
+            int flashCount = Judge != null ? Judge.Flashes.Count : 0;
+            int rippleCount = input.Ripples.Count;
+            // アニメーション中のものが無ければ時刻は描画に効かないので、要約上は固定値にする
+            float animTime = flashCount > 0 || rippleCount > 0 ? hudSongTime : 0f;
+
+            bool changed = !maskValid
+                || stageVersion != lastStageVersion
+                || mask != lastOccupiedMask
+                || flashCount != lastFlashCount
+                || rippleCount != lastRippleCount
+                || !animTime.Equals(lastAnimTime);
+            if (!changed) return false;
+
+            lastStageVersion = stageVersion;
+            lastOccupiedMask = mask;
+            lastFlashCount = flashCount;
+            lastRippleCount = rippleCount;
+            lastAnimTime = animTime;
+            return true;
+        }
+
+        /// <summary>占有セルを Ground=下位32bit / Sky=上位32bit のビットマスクにする。
+        /// 1層32セルを超える設定では要約できないので valid=false（＝毎フレーム描き直す従来動作）。</summary>
+        private ulong OccupiedMask(int cells, out bool valid)
+        {
+            valid = cells <= 32;
+            if (!valid) return 0;
+            ulong mask = 0;
+            for (int k = 0; k < cells; k++)
+            {
+                if (input.IsOccupied(Layer.Ground, k)) mask |= 1UL << k;
+                if (input.IsOccupied(Layer.Sky, k)) mask |= 1UL << (32 + k);
+            }
+            return mask;
         }
 
         // ================= UI Toolkit / Painter2D 描画（旧 GL immediate mode 相当） =================

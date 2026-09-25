@@ -21,6 +21,10 @@ namespace Muses.Stage
         public Derived Derived => derived;
         public StageConfig Config => cfg;
 
+        /// <summary>Rebuild のたびに増える。cfg/Derived を読んで描く側（StageOverlay 等）が
+        /// 「描き直しが必要か」を安く判定するためのもの（perf-r1.md §5）。</summary>
+        public int Version { get; private set; }
+
         private void Reset()
         {
             cam = Camera.main;
@@ -88,6 +92,7 @@ namespace Muses.Stage
             }
 
             view.Rebuild(cfg, derived);
+            Version++;
         }
     }
 }
