@@ -155,6 +155,15 @@ namespace Muses.ChartTool
         public const int Never = 2;
     }
 
+    /// <summary>editor-ui-rework-r14.md §2。UIの文字に使うフォント。変更は再起動後に反映。</summary>
+    public static class UiFontMode
+    {
+        /// <summary>OSのフォント(Mac=ヒラギノ角ゴシック、Win=Yu Gothic UI)。見つからなければ同梱フォントのまま。</summary>
+        public const int Os = 0;
+        /// <summary>同梱のNoto Sans JP(r12 §3.3以来の従来動作)。</summary>
+        public const int Bundled = 1;
+    }
+
     /// <summary>
     /// editor-ui-rework-r5.md §1。譜面エディタ(ChartEditorApp)の設定。ゲーム本体のプレイヤー設定
     /// （Muses.Game.PlayerSettings、judgeOffsetMs/visualOffsetMs等）とは別物で混ぜない。
@@ -175,6 +184,8 @@ namespace Muses.ChartTool
         /// <summary>editor-ui-rework-r13.md §7.5。fps計測表示。デバッグ用の一時的なトグルとして
         /// 導入した際は永続化せず既定ONだったが、常時表示は不要なため2026-08-06に永続化・既定OFFへ変更。</summary>
         public bool showPerfStats = false;
+        /// <summary>editor-ui-rework-r14.md §2。UiFontMode.*。既定はOSのフォント。</summary>
+        public int uiFontMode = UiFontMode.Os;
         /// <summary>editor-ui-rework-r12.md §1.3。ノーツ/イベント選択時に右パネルを
         /// インスペクタタブへ自動的に切り替えるか。「選ぶと消えたように見える」退行を防ぐための既定ON。</summary>
         public bool autoFocusInspector = true;

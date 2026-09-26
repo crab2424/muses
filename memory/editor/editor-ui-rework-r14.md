@@ -178,3 +178,36 @@ OSフォント化すれば同梱フォントが不要になり、課題Hにも�
 - §6.2: `PreviewSystem.RenderScale` / `Antialiasing`。設定のタイムラインタブに「プレビュー解像度」
   「プレビューのアンチエイリアス」を追加。
 - 確認済み: `dotnet build`（ランタイム・Editor両アセンブリ）でエラー0。**Unityでの表示確認はまだ**。
+
+---
+
+## 9. 追加の決定と実装（2026-09-26、2回目）
+
+ユーザーの回答:
+- §1.4 の解釈（初回表示時の一瞬の停止）で**合っていた**。
+- §4 の対象は**設定モーダルの一般・タイムラインタブの項目全般**。問題は3つ: 横幅が必要以上に長い／幅が統一されていない／項目名が入力欄に被る。
+- §2 は**OSフォントにする**。§3（アニメーション）は今回は見送り。
+
+### 9.1 設定モーダルの行（§4）
+
+`.settings-body` の下だけに規則を足した。インスペクタ等の88px規則は変えていない。
+- ラベル列は 200px、折り返し可（`white-space: normal`）。項目名が入力欄に被らない。
+- 値の側は種類を問わず 220px 固定（`flex-grow: 0`）。例外は次の2つ。
+  - チェックボックス（`width: auto`）
+  - 曲フォルダの行（`.prop-value--wide`、パスは長さが決まらないため残り全幅）
+- スライダー横の数値欄は 52px に固定（`.unity-base-slider__text-field`）。
+
+### 9.2 OSフォント（§2）
+
+`UiFonts.cs`（新規）。`ChartEditorApp.Awake` で、PanelSettingsをUIDocumentへ割り当てる前に適用する。
+- `FontAsset.CreateFontAsset(family, style, 48, 5, SDFAA)` でOSのフォントを実行時に読む。
+  - Mac: Hiragino Sans W3（太字W6）。候補2番目は Hiragino Kaku Gothic ProN。
+  - Win: Yu Gothic UI Regular/Bold。候補2番目は Meiryo UI。
+- 太字ウェイトを `fontWeightTable[7]` に登録し、擬似太字をやめる。
+- `ChartEditorTextSettings.asset` は書き換えず、`Instantiate` した複製の既定フォントを差し替える。
+  同梱Notoはフォールバックとして残す。
+- 設定の一般タブに「文字のフォント(再起動後)」を追加した（OS／同梱Noto）。`EditorSettings.uiFontMode`、既定はOS。
+- 先読み（§1.4）は既定フォントだけに絞った。フォールバックまで焼くと起動が遅くなるだけのため。
+- UIで使う485字は、すべてHiragino Sans W3に含まれることを確認済み。Yu Gothic UIは手元に無く未確認。
+- ATG（`-unity-text-generator: advanced`）は今回入れていない。OSフォントで記号の欠けが無いため、必要になってから試す。
+- 同梱Notoは参照が残るのでビルドには入ったまま。削るならゲーム側の課題Hと合わせて行う。

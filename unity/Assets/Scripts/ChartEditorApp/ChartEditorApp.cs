@@ -549,6 +549,8 @@ namespace Muses.ChartTool
             {
                 basePanelReferenceResolution = uiDocument.panelSettings.referenceResolution;
                 panelSettingsInstance = Instantiate(uiDocument.panelSettings);
+                // editor-ui-rework-r14.md §2: パネルへ割り当てる前にUIフォントを差し替える。
+                if (settings.uiFontMode == UiFontMode.Os) UiFonts.ApplyOsFont(panelSettingsInstance);
                 uiDocument.panelSettings = panelSettingsInstance;
             }
 
@@ -594,21 +596,16 @@ namespace Muses.ChartTool
             var textSettings = uiDocument != null && uiDocument.panelSettings != null ? uiDocument.panelSettings.textSettings : null;
             if (list == null || textSettings == null) return;
 
-            var fonts = new List<UnityEngine.TextCore.Text.FontAsset>();
+            // 焼くのは既定フォントだけ。フォールバック側(OSフォント使用時の同梱Noto等)は、既定フォントに
+            // 無い文字が出たときにだけ使われるので、全部焼くと起動が遅くなるだけになる。
 #pragma warning disable CS0618 // BuildJapaneseFontAsset.csと同じく、既定フォントの代替APIがまだ無い
-            if (textSettings.defaultFontAsset != null) fonts.Add(textSettings.defaultFontAsset);
+            var font = textSettings.defaultFontAsset;
 #pragma warning restore CS0618
-            if (textSettings.fallbackFontAssets != null)
-                foreach (var f in textSettings.fallbackFontAssets)
-                    if (f != null && !fonts.Contains(f)) fonts.Add(f);
+            if (font == null || font.atlasPopulationMode != UnityEngine.TextCore.Text.AtlasPopulationMode.Dynamic) return;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            foreach (var font in fonts)
-            {
-                if (font.atlasPopulationMode != UnityEngine.TextCore.Text.AtlasPopulationMode.Dynamic) continue;
-                font.TryAddCharacters(list.text, out _);
-            }
-            Debug.Log($"ChartEditor: UI文字 {list.text.Length} 字を先読みしました ({sw.ElapsedMilliseconds} ms)");
+            font.TryAddCharacters(list.text, out string missing);
+            Debug.Log($"ChartEditor: UI文字 {list.text.Length} 字を {font.name} へ先読みしました ({sw.ElapsedMilliseconds} ms、フォントに無い文字 {missing?.Length ?? 0} 字)");
             Resources.UnloadAsset(list);
         }
 

@@ -2512,6 +2512,19 @@ namespace Muses.ChartTool
             var uiScaleSlider = AddSliderRow(parent, "エディタ画面倍率", 0.75f, 2f, v => { uiScale = v; ApplyUiScale(); });
             uiScaleSlider.SetValueWithoutNotify(uiScale);
 
+            // editor-ui-rework-r14.md §2: フォントはパネル生成前に差し替える必要があるため再起動後に反映。
+            var fontDropdown = new DropdownField
+            {
+                choices = new List<string> { "OSのフォント", "同梱フォント (Noto Sans JP)" },
+                index = Mathf.Clamp(settings.uiFontMode, 0, 1),
+            };
+            fontDropdown.RegisterValueChangedCallback(_ =>
+            {
+                settings.uiFontMode = fontDropdown.index;
+                statusMessage = "フォントの変更は再起動後に反映されます";
+            });
+            MakePropRow(parent, "文字のフォント(再起動後)", fontDropdown);
+
             // editor-ui-rework-r7.md §3.2: 曲プロジェクト群の置き場所。既定はFinderから見える
             // ~/Documents/muses/songs/（従来はFinder既定で非表示の~/Library/...下だった）。
             var songsRootField = new VisualElement();
@@ -2537,6 +2550,7 @@ namespace Muses.ChartTool
             openBtn.AddToClassList("tb-btn");
             songsRootField.Add(openBtn);
             MakePropRow(parent, "曲フォルダ", songsRootField);
+            songsRootField.AddToClassList("prop-value--wide"); // r14 §4: パスは長さが決まらないので全幅
 
             // editor-ui-rework-r11.md §2.3: macOSでIMEが実際にどこまで機能するかは実機でしか
             // 確認できないため、composition/textInputの発火状況とIMEカーソル座標を可視化する
