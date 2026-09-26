@@ -519,6 +519,8 @@ namespace Muses.ChartTool
             preview.SeVolume = settings.seVolume;
             preview.HiSpeed = settings.hiSpeed;
             preview.VisualOffsetMs = settings.previewVisualOffsetMs;
+            preview.RenderScale = Mathf.Clamp(settings.previewRenderScale, 0.5f, 1f); // r14 §6.2
+            preview.Antialiasing = settings.previewAntialiasing;
             // editor-ui-rework-r13.md §7.9: ノーツ奥行き厚み。0はシェーダのmax()で第1項が常に負ける
             // ＝fracが効かなくなる値なので、古い/壊れた設定ファイルでも下限を切っておく。
             preview.ThicknessFrac = Mathf.Clamp(settings.thicknessFrac, 0.001f, 0.3f);
@@ -552,6 +554,7 @@ namespace Muses.ChartTool
 
             ApplyFrameRateSetting();
             ApplyUiScale();
+            PrewarmUiGlyphs();
 
             // editor-ui-rework-r12.md §2.4: 前回値を読んでから即falseへ落として保存する
             // （このセッションがOnDestroyを経由せず終われば、次回起動時にfalseのまま読める＝
@@ -577,6 +580,36 @@ namespace Muses.ChartTool
                 case 3: QualitySettings.vSyncCount = 0; Application.targetFrameRate = -1; break;
                 default: QualitySettings.vSyncCount = 1; Application.targetFrameRate = -1; break;
             }
+        }
+
+        /// <summary>
+        /// editor-ui-rework-r14.md §1.4。UIに出てくる文字(ビルド時にBuildChartEditorGlyphListが
+        /// ソースから集めた一覧)を、起動時にDynamicフォントへ先に焼いておく。フォントアセットは
+        /// ビルドのたびに空から始まるため、焼かないと設定モーダルを初めて開いた瞬間などに
+        /// 新しい漢字がまとめて焼かれてUIが止まる。一覧に無い文字(曲名など)は従来どおりその場で焼く。
+        /// </summary>
+        private void PrewarmUiGlyphs()
+        {
+            var list = Resources.Load<TextAsset>("ChartEditorGlyphs");
+            var textSettings = uiDocument != null && uiDocument.panelSettings != null ? uiDocument.panelSettings.textSettings : null;
+            if (list == null || textSettings == null) return;
+
+            var fonts = new List<UnityEngine.TextCore.Text.FontAsset>();
+#pragma warning disable CS0618 // BuildJapaneseFontAsset.csと同じく、既定フォントの代替APIがまだ無い
+            if (textSettings.defaultFontAsset != null) fonts.Add(textSettings.defaultFontAsset);
+#pragma warning restore CS0618
+            if (textSettings.fallbackFontAssets != null)
+                foreach (var f in textSettings.fallbackFontAssets)
+                    if (f != null && !fonts.Contains(f)) fonts.Add(f);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var font in fonts)
+            {
+                if (font.atlasPopulationMode != UnityEngine.TextCore.Text.AtlasPopulationMode.Dynamic) continue;
+                font.TryAddCharacters(list.text, out _);
+            }
+            Debug.Log($"ChartEditor: UI文字 {list.text.Length} 字を先読みしました ({sw.ElapsedMilliseconds} ms)");
+            Resources.UnloadAsset(list);
         }
 
         /// <summary>editor-ui-rework-r5.md §3.4: referenceResolutionを割ることで全体を等倍スケールする
@@ -615,6 +648,8 @@ namespace Muses.ChartTool
             settings.seVolume = preview.SeVolume;
             settings.hiSpeed = preview.HiSpeed;
             settings.previewVisualOffsetMs = preview.VisualOffsetMs;
+            settings.previewRenderScale = preview.RenderScale;
+            settings.previewAntialiasing = preview.Antialiasing;
             settings.thicknessFrac = preview.ThicknessFrac;       // r13 §7.9
             settings.thicknessMinFrac = preview.ThicknessMinFrac;
             settings.skyThicknessMul = preview.SkyThicknessMul;   // note-visual-r1.md §3.2
@@ -2659,36 +2694,38 @@ namespace Muses.ChartTool
                 }
             }
 
-            var menu = new GenericDropdownMenu();
+            // editor-ui-rework-r14.md §5: GenericDropdownMenuは右揃えの列を持たず"\t"区切りのショートカットが
+            // 崩れるうえ、表記がCtrl固定だった。メニューバーと同じ自前ポップアップに統一する。
+            var menu = new EditorMenu();
             int count = selection.Count;
             bool hasSelection = count > 0;
             bool hasClipboard = clipboard.Count > 0;
 
             // ---- 常設ブロック ----
-            string deleteLabel = "削除\tDelete";
+            string deleteLabel = "削除";
             if (hp.HasValue)
             {
                 bool wholeNote = hp.Value.note.points.Count == 1 || hp.Value.index == 0 || hp.Value.index == hp.Value.note.points.Count - 1;
-                deleteLabel = count > 1 ? $"選択した{count}件を削除\tDelete"
-                    : wholeNote ? "このノーツを削除\tDelete" : "この中継点を削除\tDelete";
+                deleteLabel = count > 1 ? $"選択した{count}件を削除"
+                    : wholeNote ? "このノーツを削除" : "この中継点を削除";
             }
-            if (hasSelection) menu.AddItem(deleteLabel, false, DeleteSelection);
-            else menu.AddDisabledItem(deleteLabel, false);
+            if (hasSelection) menu.AddItem(deleteLabel, false, DeleteSelection, CommandIds.EditDelete);
+            else menu.AddDisabledItem(deleteLabel, false, CommandIds.EditDelete);
 
-            if (hasSelection) menu.AddItem("切り取り\tCtrl+X", false, () => { CopySelectionToClipboard(); DeleteSelection(); });
-            else menu.AddDisabledItem("切り取り\tCtrl+X", false);
+            if (hasSelection) menu.AddItem("切り取り", false, () => { CopySelectionToClipboard(); DeleteSelection(); }, CommandIds.EditCut);
+            else menu.AddDisabledItem("切り取り", false, CommandIds.EditCut);
 
-            if (hasSelection) menu.AddItem("コピー\tCtrl+C", false, CopySelectionToClipboard);
-            else menu.AddDisabledItem("コピー\tCtrl+C", false);
+            if (hasSelection) menu.AddItem("コピー", false, CopySelectionToClipboard, CommandIds.EditCopy);
+            else menu.AddDisabledItem("コピー", false, CommandIds.EditCopy);
 
-            if (hasClipboard) menu.AddItem("貼り付け\tCtrl+V", false, () => EnterPasteMode());
-            else menu.AddDisabledItem("貼り付け\tCtrl+V", false);
+            if (hasClipboard) menu.AddItem("貼り付け", false, () => EnterPasteMode(), CommandIds.EditPaste);
+            else menu.AddDisabledItem("貼り付け", false, CommandIds.EditPaste);
 
-            if (hasClipboard) menu.AddItem("反転して貼り付け", false, () => EnterPasteMode(flip: true));
-            else menu.AddDisabledItem("反転して貼り付け", false);
+            if (hasClipboard) menu.AddItem("反転して貼り付け", false, () => EnterPasteMode(flip: true), CommandIds.EditPasteFlip);
+            else menu.AddDisabledItem("反転して貼り付け", false, CommandIds.EditPasteFlip);
 
-            if (hasSelection) menu.AddItem("選択を反転", false, FlipSelected);
-            else menu.AddDisabledItem("選択を反転", false);
+            if (hasSelection) menu.AddItem("選択を反転", false, FlipSelected, CommandIds.EditFlipSelected);
+            else menu.AddDisabledItem("選択を反転", false, CommandIds.EditFlipSelected);
 
             // ---- 文脈ブロック ----
             if (hp.HasValue && count == 1 && hp.Value.note.points.Count == 1)
@@ -2719,8 +2756,7 @@ namespace Muses.ChartTool
                 menu.AddItem("ここに中継点を追加", false, () => InsertWaypointInto(band, L, pos, tick));
             }
 
-            var worldPos = notesSheet.LocalToWorld(pos);
-            menu.DropDown(new Rect(worldPos, Vector2.zero), notesSheet, DropdownMenuSizeMode.Auto);
+            ShowContextMenu(menu, notesSheet.LocalToWorld(pos));
             evt.StopPropagation();
         }
 
@@ -2868,7 +2904,7 @@ namespace Muses.ChartTool
         /// 既存の点への選択の横取りが優先されるならその点を返す（配置しない）。
         /// OnSheetPointerDownの配置分岐とDrawPlacementGhostが必ず同じ答えを使うための唯一の判定
         /// （r5の「ゴーストと実際の配置位置を一致させる」原則）。
-        /// LayerMove(層移動⇕)は他ノーツへの重ね置きが主用途(Riser/Diverをインスペクタ経由ではなく
+        /// LayerMove(層移動)は他ノーツへの重ね置きが主用途(Riser/Diverをインスペクタ経由ではなく
         /// 直接Tap等の上に置く)なので、既存のRiser/Diverに当たったときだけ横取りする例外にする
         /// （riser-r2.md §4が他ツールと同じ横取り規則をそのまま踏襲していたのが不具合7の原因）。</summary>
         private NoteRef? PlacementBlockedBy(SheetLayout L, Vector2 pos, EditorTool tool)

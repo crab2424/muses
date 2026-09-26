@@ -145,6 +145,39 @@
     opacity: 0.4;
 }
 
+/* editor-ui-rework-r14.md §5.3: 1行を「チェック列｜項目名｜ショートカット(右揃え)」の3列にする。
+   Labelには既定テーマが色・余白を直接当てるため、ここで明示的に上書きする。 */
+.menu-popup-item {
+    flex-direction: row;
+    align-items: center;
+    padding-left: 4px;
+}
+
+.menu-popup-check,
+.menu-popup-label,
+.menu-popup-shortcut {
+    margin: 0;
+    padding: 0;
+    font-size: var(--font-sm);
+    color: var(--text);
+}
+
+.menu-popup-check {
+    width: 16px;
+    -unity-text-align: middle-center;
+}
+
+.menu-popup-label {
+    flex-grow: 1;
+    -unity-text-align: middle-left;
+}
+
+.menu-popup-shortcut {
+    margin-left: 24px;
+    color: var(--text-dim);
+    -unity-text-align: middle-right;
+}
+
 .menu-popup-sep {
     height: 1px;
     margin: 3px 4px;
@@ -453,6 +486,10 @@
 .transport-btn {
     min-width: 28px;
     -unity-text-align: middle-center;
+    /* editor-ui-rework-r14.md §1.3: 中身はTransportIcon(図形)。中央に置く。 */
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
 }
 
 .link-btn {

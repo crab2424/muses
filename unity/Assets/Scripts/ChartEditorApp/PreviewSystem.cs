@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.Rendering.Universal;
 using Muses.Chart;
 using Muses.Gameplay;
 using Muses.Notes;
@@ -140,6 +141,7 @@ namespace Muses.ChartTool
             camGo.transform.SetParent(rigRoot.transform, false);
             cam = camGo.AddComponent<Camera>();
             cam.enabled = false; // 明示的に Render() を呼ぶ（自動レンダリングでの垂れ流しを防ぐ、§2.2）
+            ApplyAntialiasing();
 
             // PreviewCameraはenabled=falseでオフスクリーンRenderTextureにしか描かないため、
             // シーンに描画用カメラが1台も無くなり「Display 1 / No cameras rendering」の警告
@@ -661,8 +663,10 @@ namespace Muses.ChartTool
         /// </summary>
         public RenderTexture EnsureRenderTexture(int width, int height)
         {
-            int w = Mathf.Clamp(width, 16, 1920);
-            int h = Mathf.Clamp(height, 16, 1080);
+            // editor-ui-rework-r14.md §6.2: 呼び出し側が実ピクセル数(×scaledPixelsPerPoint×RenderScale)で渡し、
+            // 縦横比を保ったまま MaxRenderWidth/Height に収めてくる。ここは安全弁だけ残す。
+            int w = Mathf.Clamp(width, 16, MaxRenderWidth);
+            int h = Mathf.Clamp(height, 16, MaxRenderHeight);
             if (rt != null && w == rtW && h == rtH) return rt;
 
             if (rt != null) rt.Release();
@@ -676,6 +680,44 @@ namespace Muses.ChartTool
             cam.aspect = (float)w / h;
             MarkDirty();
             return rt;
+        }
+
+        public const int MaxRenderWidth = 3840;
+        public const int MaxRenderHeight = 2160;
+
+        /// <summary>editor-ui-rework-r14.md §6.2。実ピクセルに対する描画解像度の倍率(0.5/0.75/1.0)。
+        /// 以前はパネル座標(論理ピクセル)のまま作っており、Retina・パネル拡大分だけ解像度が足りなかった。</summary>
+        public float RenderScale { get; set; } = 1f;
+
+        /// <summary>editor-ui-rework-r14.md §6.2。0=なし, 1=FXAA, 2=SMAA。URPアセットのMSAAはゲーム(PC)と
+        /// 共有しているため触らず、このカメラだけに後処理のアンチエイリアスを付ける。</summary>
+        public int Antialiasing
+        {
+            get => antialiasing;
+            set
+            {
+                antialiasing = Mathf.Clamp(value, 0, 2);
+                ApplyAntialiasing();
+                MarkDirty();
+            }
+        }
+        private int antialiasing = 2;
+
+        private void ApplyAntialiasing()
+        {
+            if (cam == null) return;
+            var data = cam.GetUniversalAdditionalCameraData();
+            data.antialiasing = antialiasing switch
+            {
+                1 => AntialiasingMode.FastApproximateAntialiasing,
+                2 => AntialiasingMode.SubpixelMorphologicalAntiAliasing,
+                _ => AntialiasingMode.None,
+            };
+            data.antialiasingQuality = AntialiasingQuality.High;
+            // 後処理のAAは後処理パスの中で走るので有効化が要る。ブルーム等のボリュームは拾わないよう
+            // volumeLayerMaskを空にする（プレビューに見た目の後処理は掛けない）。
+            data.renderPostProcessing = antialiasing != 0;
+            data.volumeLayerMask = 0;
         }
 
         /// <summary>プレビュータブから離れたときに呼ぶ。カメラに描画対象を持たせない（§2.2）。</summary>

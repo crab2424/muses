@@ -30,6 +30,9 @@ public static class BuildChartEditor
 
     private static void Build(BuildTarget target, string locationPathName)
     {
+        // editor-ui-rework-r14.md §1.4: 起動時に先に焼く文字の一覧を最新のソースから作り直す。
+        BuildChartEditorGlyphList.Generate();
+
         var options = new BuildPlayerOptions
         {
             scenes = new[] { SceneName },

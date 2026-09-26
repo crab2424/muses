@@ -202,6 +202,10 @@ namespace Muses.ChartTool
         /// song.offsetSec（音源先頭→譜面tick0、譜面の属性）とは別物で、再生環境のズレを見た目で
         /// 補正するためのエディタ設定なので譜面ファイルには入れない（hiSpeedと同じ扱い）。</summary>
         public float previewVisualOffsetMs = 0f;
+        /// <summary>editor-ui-rework-r14.md §6.2。プレビューの描画解像度(実ピクセル比、0.5/0.75/1.0)と
+        /// アンチエイリアス(0=なし,1=FXAA,2=SMAA)。</summary>
+        public float previewRenderScale = 1f;
+        public int previewAntialiasing = 2;
 
         /// <summary>editor-ui-rework-r13.md §7.9。プレビューのノーツ奥行き厚み（NotePlacement.hlsl）。
         /// 既定値はユーザーが実機と見比べて確定した値（frac=0.06 / minFrac=0.01）。

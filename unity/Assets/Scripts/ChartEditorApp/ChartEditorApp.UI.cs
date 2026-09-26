@@ -32,7 +32,7 @@ namespace Muses.ChartTool
             (EditorTool.ExTap, "Ex Tap", "extap"),
             (EditorTool.Slide, "Slide", "slide"),
             (EditorTool.Flick, "Flick", "flick"),
-            (EditorTool.LayerMove, "層移動⇕", "riser"),
+            (EditorTool.LayerMove, "層移動", "riser"), // r14 §1.3: ⇕はフォントに無い
             (EditorTool.AddWaypoint, "中継点", "neutral"),
             (EditorTool.Delete, "削除", "neutral"),
             (EditorTool.Event, "イベント", "event"),
@@ -81,6 +81,7 @@ namespace Muses.ChartTool
         private Button undoButton, redoButton;
 
         private Button playButton;
+        private TransportIcon playIcon;
         private Slider scrubSlider;
         private Slider zoomSlider;
         private Label zoomLabel;
@@ -205,59 +206,59 @@ namespace Muses.ChartTool
 
             AddMenu(bar, "ファイル", menu =>
             {
-                menu.AddItem("新規", false, NewChart);
+                menu.AddItem("新規", false, NewChart, CommandIds.FileNew);
                 menu.AddItem("新規曲...", false, ShowNewSongWizard);
-                menu.AddItem("開く...", false, OpenChartDialog);
+                menu.AddItem("開く...", false, OpenChartDialog, CommandIds.FileOpen);
                 menu.AddSeparator("");
-                menu.AddItem("保存", false, SaveChartToPath);
-                menu.AddItem("曲フォルダを選んで保存...", false, SaveAsDialog);
+                menu.AddItem("保存", false, SaveChartToPath, CommandIds.FileSave);
+                menu.AddItem("曲フォルダを選んで保存...", false, SaveAsDialog, CommandIds.FileSaveAs);
                 menu.AddSeparator("");
                 // editor-ui-rework-r12.md §2.3: restorePromptMode=確認しない でも手動で復元できる口。
                 if (!string.IsNullOrEmpty(restoreAutosavePath) && File.Exists(restoreAutosavePath))
-                    menu.AddItem("自動保存から復元...", false, () => ShowRestoreModal());
+                    menu.AddItem("自動保存から復元...", false, () => ShowRestoreModal(), CommandIds.FileRestoreAutosave);
                 else
-                    menu.AddDisabledItem("自動保存から復元...", false);
+                    menu.AddDisabledItem("自動保存から復元...", false, CommandIds.FileRestoreAutosave);
                 menu.AddSeparator("");
                 menu.AddItem("終了", false, QuitApp);
             });
 
             AddMenu(bar, "編集", menu =>
             {
-                if (undoStack.Count > 0) menu.AddItem($"元に戻す: {PeekUndoLabel()}", false, Undo);
-                else menu.AddDisabledItem("元に戻す", false);
-                if (redoStack.Count > 0) menu.AddItem($"やり直す: {PeekRedoLabel()}", false, Redo);
-                else menu.AddDisabledItem("やり直す", false);
+                if (undoStack.Count > 0) menu.AddItem($"元に戻す: {PeekUndoLabel()}", false, Undo, CommandIds.EditUndo);
+                else menu.AddDisabledItem("元に戻す", false, CommandIds.EditUndo);
+                if (redoStack.Count > 0) menu.AddItem($"やり直す: {PeekRedoLabel()}", false, Redo, CommandIds.EditRedo);
+                else menu.AddDisabledItem("やり直す", false, CommandIds.EditRedo);
                 menu.AddSeparator("");
                 if (selection.Count > 0)
-                    menu.AddItem(selection.Count > 1 ? $"選択した{selection.Count}件を削除" : "選択中のノーツを削除", false, DeleteSelection);
+                    menu.AddItem(selection.Count > 1 ? $"選択した{selection.Count}件を削除" : "選択中のノーツを削除", false, DeleteSelection, CommandIds.EditDelete);
                 else
-                    menu.AddDisabledItem("選択中のノーツを削除", false);
+                    menu.AddDisabledItem("選択中のノーツを削除", false, CommandIds.EditDelete);
                 if (selection.Count > 0)
                 {
-                    menu.AddItem("コピー", false, CopySelectionToClipboard);
-                    menu.AddItem("切り取り", false, () => { CopySelectionToClipboard(); DeleteSelection(); });
+                    menu.AddItem("コピー", false, CopySelectionToClipboard, CommandIds.EditCopy);
+                    menu.AddItem("切り取り", false, () => { CopySelectionToClipboard(); DeleteSelection(); }, CommandIds.EditCut);
                 }
                 else
                 {
-                    menu.AddDisabledItem("コピー", false);
-                    menu.AddDisabledItem("切り取り", false);
+                    menu.AddDisabledItem("コピー", false, CommandIds.EditCopy);
+                    menu.AddDisabledItem("切り取り", false, CommandIds.EditCut);
                 }
                 if (clipboard.Count > 0)
                 {
-                    menu.AddItem("貼り付け", false, () => EnterPasteMode());
-                    menu.AddItem("反転して貼り付け", false, () => EnterPasteMode(flip: true));
+                    menu.AddItem("貼り付け", false, () => EnterPasteMode(), CommandIds.EditPaste);
+                    menu.AddItem("反転して貼り付け", false, () => EnterPasteMode(flip: true), CommandIds.EditPasteFlip);
                 }
                 else
                 {
-                    menu.AddDisabledItem("貼り付け", false);
-                    menu.AddDisabledItem("反転して貼り付け", false);
+                    menu.AddDisabledItem("貼り付け", false, CommandIds.EditPaste);
+                    menu.AddDisabledItem("反転して貼り付け", false, CommandIds.EditPasteFlip);
                 }
                 menu.AddSeparator("");
                 // MikuMikuWorld移植候補: 選択の左右反転（Editing.cpp:503-526）。
                 if (selection.Count > 0)
-                    menu.AddItem("選択を反転", false, FlipSelected);
+                    menu.AddItem("選択を反転", false, FlipSelected, CommandIds.EditFlipSelected);
                 else
-                    menu.AddDisabledItem("選択を反転", false);
+                    menu.AddDisabledItem("選択を反転", false, CommandIds.EditFlipSelected);
             });
 
             AddMenu(bar, "表示", menu =>
@@ -286,7 +287,7 @@ namespace Muses.ChartTool
 
             AddMenu(bar, "再生", menu =>
             {
-                menu.AddItem(preview.IsPlaying ? "一時停止" : "再生", false, () => preview.TogglePlay());
+                menu.AddItem(preview.IsPlaying ? "一時停止" : "再生", false, () => preview.TogglePlay(), CommandIds.PlayToggle);
                 // editor-ui-rework-r3.md §8: 停止中にpreview.Seekを呼ぶのでscrollTick/cursorTickも合わせる。
                 menu.AddItem("先頭へ戻る", false, () => { cursorTick = 0; scrollTick = 0; preview.Seek(0f); });
                 menu.AddSeparator("");
@@ -339,16 +340,118 @@ namespace Muses.ChartTool
             public bool disabled;
             public bool isSeparator;
             public Action action;
+            /// <summary>editor-ui-rework-r14.md §5.3。右列に出すショートカットの引き先(CommandIds.*)。</summary>
+            public string commandId;
         }
 
         private class EditorMenu
         {
             public readonly List<EditorMenuItem> items = new();
-            public void AddItem(string label, bool isChecked, Action action) =>
-                items.Add(new EditorMenuItem { label = label, isChecked = isChecked, action = action });
-            public void AddDisabledItem(string label, bool isChecked) =>
-                items.Add(new EditorMenuItem { label = label, isChecked = isChecked, disabled = true });
+            public void AddItem(string label, bool isChecked, Action action, string commandId = null) =>
+                items.Add(new EditorMenuItem { label = label, isChecked = isChecked, action = action, commandId = commandId });
+            public void AddDisabledItem(string label, bool isChecked, string commandId = null) =>
+                items.Add(new EditorMenuItem { label = label, isChecked = isChecked, disabled = true, commandId = commandId });
             public void AddSeparator(string _) => items.Add(new EditorMenuItem { isSeparator = true });
+        }
+
+        /// <summary>editor-ui-rework-r14.md §5.3。キー割り当ての先頭の組み合わせを表記にする。
+        /// 開くたびに引くので、割り当てを変更しても表記が古くならない。</summary>
+        private string ShortcutText(string commandId)
+        {
+            if (string.IsNullOrEmpty(commandId) || keyBindings == null) return "";
+            var b = keyBindings.Find(k => k.commandId == commandId);
+            return b != null && b.chords.Count > 0 ? b.chords[0].ToString() : "";
+        }
+
+        /// <summary>editor-ui-rework-r14.md §5.3。メニューバーと右クリックメニューで共通のポップアップ本体。
+        /// 1行は「チェック列(固定幅)｜項目名｜ショートカット(右揃え)」の3列。</summary>
+        private VisualElement BuildMenuPopup(EditorMenu menu, Action close)
+        {
+            var popup = new VisualElement();
+            popup.AddToClassList("menu-popup");
+            popup.style.position = Position.Absolute;
+            // ポップアップ自身へのクリックがスクリムまで抜けて即クローズしないようにする。
+            popup.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
+
+            foreach (var item in menu.items)
+            {
+                if (item.isSeparator)
+                {
+                    var sep = new VisualElement();
+                    sep.AddToClassList("menu-popup-sep");
+                    popup.Add(sep);
+                    continue;
+                }
+
+                var row = new Button(() =>
+                {
+                    close();
+                    if (!item.disabled) item.action?.Invoke();
+                });
+                row.AddToClassList("menu-popup-item");
+
+                var check = new Label(item.isChecked ? "✓" : "") { pickingMode = PickingMode.Ignore };
+                check.AddToClassList("menu-popup-check");
+                var name = new Label(item.label) { pickingMode = PickingMode.Ignore };
+                name.AddToClassList("menu-popup-label");
+                var shortcut = new Label(ShortcutText(item.commandId)) { pickingMode = PickingMode.Ignore };
+                shortcut.AddToClassList("menu-popup-shortcut");
+                row.Add(check);
+                row.Add(name);
+                row.Add(shortcut);
+
+                row.SetEnabled(!item.disabled);
+                popup.Add(row);
+            }
+            return popup;
+        }
+
+        private VisualElement contextMenuScrim;
+        private VisualElement contextMenuPopup;
+
+        /// <summary>editor-ui-rework-r14.md §5.3。右クリックメニュー。メニューバーと違いホバーで
+        /// 切り替える相手が無いので、スクリムは画面全体を覆う。画面外にはみ出す分は左/上へずらす。</summary>
+        private void ShowContextMenu(EditorMenu menu, Vector2 worldPos)
+        {
+            CloseMenu();
+            CloseContextMenu();
+
+            contextMenuScrim = new VisualElement();
+            contextMenuScrim.style.position = Position.Absolute;
+            contextMenuScrim.style.left = 0;
+            contextMenuScrim.style.top = 0;
+            contextMenuScrim.style.right = 0;
+            contextMenuScrim.style.bottom = 0;
+            contextMenuScrim.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                CloseContextMenu();
+                evt.StopPropagation();
+            });
+            overlayLayer.Add(contextMenuScrim);
+
+            var popup = BuildMenuPopup(menu, CloseContextMenu);
+            var local = overlayLayer.WorldToLocal(worldPos);
+            popup.style.left = local.x;
+            popup.style.top = local.y;
+            popup.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                var area = overlayLayer.contentRect;
+                var r = popup.layout;
+                float x = Mathf.Max(0f, Mathf.Min(r.x, area.width - r.width));
+                float y = Mathf.Max(0f, Mathf.Min(r.y, area.height - r.height));
+                if (!Mathf.Approximately(x, r.x)) popup.style.left = x;
+                if (!Mathf.Approximately(y, r.y)) popup.style.top = y;
+            });
+            overlayLayer.Add(popup);
+            contextMenuPopup = popup;
+        }
+
+        private void CloseContextMenu()
+        {
+            contextMenuScrim?.RemoveFromHierarchy();
+            contextMenuScrim = null;
+            contextMenuPopup?.RemoveFromHierarchy();
+            contextMenuPopup = null;
         }
 
         private readonly List<Button> menuBarButtons = new();
@@ -406,34 +509,9 @@ namespace Muses.ChartTool
             openMenuScrim.RegisterCallback<PointerDownEvent>(_ => CloseMenu());
             overlayLayer.Add(openMenuScrim);
 
-            var popup = new VisualElement();
-            popup.AddToClassList("menu-popup");
-            popup.style.position = Position.Absolute;
+            var popup = BuildMenuPopup(menu, CloseMenu);
             popup.style.left = bound.x;
             popup.style.top = bound.yMax;
-            // ポップアップ自身へのクリックがスクリムまで抜けて即クローズしないようにする。
-            popup.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
-
-            foreach (var item in menu.items)
-            {
-                if (item.isSeparator)
-                {
-                    var sep = new VisualElement();
-                    sep.AddToClassList("menu-popup-sep");
-                    popup.Add(sep);
-                    continue;
-                }
-
-                var row = new Button(() =>
-                {
-                    if (!item.disabled) item.action?.Invoke();
-                    CloseMenu();
-                })
-                { text = (item.isChecked ? "✓ " : "") + item.label };
-                row.AddToClassList("menu-popup-item");
-                row.SetEnabled(!item.disabled);
-                popup.Add(row);
-            }
 
             overlayLayer.Add(popup);
             openMenuPopup = popup;
@@ -783,7 +861,12 @@ namespace Muses.ChartTool
         {
             var r = previewSurface.contentRect;
             if (r.width < 2f || r.height < 2f) return;
-            var tex = preview.EnsureRenderTexture(Mathf.RoundToInt(r.width), Mathf.RoundToInt(r.height));
+            // editor-ui-rework-r14.md §6.2: contentRectはパネル座標(論理ピクセル)なので、画面上の実ピクセル数へ
+            // 換算してから作る。上限を超える場合は縦横比を保ったまま縮める(片方だけ切ると歪むため)。
+            float scale = Mathf.Max(0.01f, previewSurface.scaledPixelsPerPoint) * preview.RenderScale;
+            float w = r.width * scale, h = r.height * scale;
+            float fit = Mathf.Min(1f, Mathf.Min(PreviewSystem.MaxRenderWidth / w, PreviewSystem.MaxRenderHeight / h));
+            var tex = preview.EnsureRenderTexture(Mathf.RoundToInt(w * fit), Mathf.RoundToInt(h * fit));
             previewSurface.style.backgroundImage = Background.FromRenderTexture(tex);
         }
 
@@ -1624,11 +1707,12 @@ namespace Muses.ChartTool
             // 「停止中は必ずcursorTickから再生を始める」を担う。
             // editor-ui-rework-r3.md §8: 停止中にpreview.Seekを呼ぶ箇所はscrollTick(判定線)も
             // 合わせる。合わせないとUpdate()の停止中同期(scrollTick→preview.Seek)と引っ張り合う。
-            transport.Add(MakeTransportButton("|◀", GoToStart));
-            transport.Add(MakeTransportButton("■", StopAtCursor));
-            playButton = MakeTransportButton("▶", TogglePlayFromCursor);
+            // editor-ui-rework-r14.md §1.3: 記号は文字ではなくTransportIconで描く。
+            transport.Add(MakeTransportButton(TransportIcon.Kind.ToStart, "先頭へ", GoToStart, out _));
+            transport.Add(MakeTransportButton(TransportIcon.Kind.Stop, "停止", StopAtCursor, out _));
+            playButton = MakeTransportButton(TransportIcon.Kind.Play, "再生・一時停止", TogglePlayFromCursor, out playIcon);
             transport.Add(playButton);
-            transport.Add(MakeTransportButton("▶|", GoToEnd));
+            transport.Add(MakeTransportButton(TransportIcon.Kind.ToEnd, "末尾へ", GoToEnd, out _));
 
             // §2.6 / ユーザー指摘9: スナップは8個のボタン横並びをやめてドロップダウンに畳む
             var snapGroup = uiRoot.Q<VisualElement>("status-snap");
@@ -1685,11 +1769,22 @@ namespace Muses.ChartTool
             statusValidation.clicked += () => SelectRightTab(RightTabResults);
         }
 
+        /// <summary>ズームの−/＋など、文字で表して崩れないもの用。</summary>
         private static Button MakeTransportButton(string label, Action onClick)
         {
             var btn = new Button(onClick) { text = label };
             btn.AddToClassList("tb-btn");
             btn.AddToClassList("transport-btn");
+            return btn;
+        }
+
+        private static Button MakeTransportButton(TransportIcon.Kind kind, string tooltip, Action onClick, out TransportIcon icon)
+        {
+            var btn = new Button(onClick) { tooltip = tooltip };
+            btn.AddToClassList("tb-btn");
+            btn.AddToClassList("transport-btn");
+            icon = new TransportIcon(kind);
+            btn.Add(icon);
             return btn;
         }
 
@@ -1754,7 +1849,7 @@ namespace Muses.ChartTool
                 if (snapDropdown.index != snapIndex) snapDropdown.index = snapIndex;
                 zoomSlider.SetValueWithoutNotify(pxPerBeat);
                 zoomLabel.text = $"{pxPerBeat / ZoomBasePxPerBeat:0.00}x";
-                playButton.text = preview.IsPlaying ? "❙❙" : "▶";
+                playIcon.IconKind = preview.IsPlaying ? TransportIcon.Kind.Pause : TransportIcon.Kind.Play;
                 // editor-ui-rework-r8.md §5.2: プレビュー左上のハイスピード表示。
                 hiSpeedLabel.text = $"HS {preview.HiSpeed:0.00}x";
 
@@ -2500,6 +2595,28 @@ namespace Muses.ChartTool
             // 音源タブの「オフセット(秒)」(song.offsetSec、譜面の属性)とは別物。
             var visualOffsetField = AddFloatRow(parent, "描画オフセット(ms、プレビュー)", v => preview.VisualOffsetMs = v);
             visualOffsetField.SetValueWithoutNotify(preview.VisualOffsetMs);
+
+            // editor-ui-rework-r14.md §6.2: プレビューの描画解像度とアンチエイリアス。
+            var scaleChoices = new List<float> { 0.5f, 0.75f, 1f };
+            var scaleDropdown = new DropdownField
+            {
+                choices = new List<string> { "50%", "75%", "100%" },
+                index = Mathf.Max(0, scaleChoices.FindIndex(v => Mathf.Approximately(v, preview.RenderScale))),
+            };
+            scaleDropdown.RegisterValueChangedCallback(_ =>
+            {
+                preview.RenderScale = scaleChoices[Mathf.Clamp(scaleDropdown.index, 0, scaleChoices.Count - 1)];
+                UpdatePreviewTexture();
+            });
+            MakePropRow(parent, "プレビュー解像度", scaleDropdown);
+
+            var aaDropdown = new DropdownField
+            {
+                choices = new List<string> { "なし", "FXAA", "SMAA" },
+                index = preview.Antialiasing,
+            };
+            aaDropdown.RegisterValueChangedCallback(_ => preview.Antialiasing = aaDropdown.index);
+            MakePropRow(parent, "プレビューのアンチエイリアス", aaDropdown);
 
             // editor-ui-rework-r13.md §7.9: ノーツの奥行き厚み。実機と見比べて調整する値なので
             // 恒久的な設定として残し、EditorSettingsへ永続化する(ハイスピード等と同じ扱い)。
