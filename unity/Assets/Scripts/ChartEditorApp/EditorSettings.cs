@@ -261,30 +261,11 @@ namespace Muses.ChartTool
         /// editor-ui-rework-r9.md §2.1: Unix系(.NET/Mono)では SpecialFolder.MyDocuments が
         /// $HOME に縮退する（Documentsを指さない）ため、その場合だけ手で "Documents" を補う。
         /// Windowsではこの縮退は起きないため分岐なしでそのまま使う。</summary>
-        public static string DefaultSongsRoot()
-        {
-            string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            if (string.IsNullOrEmpty(docs) || PathEquals(docs, home))
-                docs = Path.Combine(home, "Documents");
-            return Path.Combine(docs, "muses", "songs");
-        }
+        public static string DefaultSongsRoot() => Muses.Game.SongLoader.DefaultSongsRoot();
 
         /// <summary>2つの絶対パスを、末尾区切り文字・大小の揺れを無視して比較する
-        /// （editor-ui-rework-r9.md §2.1/§3.1で共通に使う）。</summary>
-        public static bool PathEquals(string a, string b)
-        {
-            try
-            {
-                string na = Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                string nb = Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                return string.Equals(na, nb, StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                return false;
-            }
-        }
+        /// （editor-ui-rework-r9.md §2.1/§3.1で共通に使う）。本体はゲームと共有するため SongLoader 側。</summary>
+        public static bool PathEquals(string a, string b) => Muses.Game.SongLoader.PathEquals(a, b);
 
         /// <summary>editor-ui-rework-r5.md §5.3。参照元(MikuMikuWorld)の既定キー割り当てを土台に、
         /// muses の現状の割り当てを維持したもの。</summary>

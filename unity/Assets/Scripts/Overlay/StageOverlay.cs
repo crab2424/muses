@@ -3,6 +3,7 @@ using UnityEngine.UIElements;
 using Muses.Stage;
 using Muses.TouchInput;
 using Muses.Gameplay;
+using Muses.UI;
 
 namespace Muses.Overlay
 {
@@ -71,6 +72,7 @@ namespace Muses.Overlay
 
         private void Awake()
         {
+            UiFonts.ApplyOsFontOnce(panelSettingsAsset); // AppController.Awake と同じ。先に来た側だけが差し替える
             uiDocument = gameObject.AddComponent<UIDocument>();
             uiDocument.panelSettings = panelSettingsAsset;
             uiDocument.rootVisualElement.pickingMode = PickingMode.Ignore;

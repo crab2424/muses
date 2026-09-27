@@ -1,0 +1,6 @@
+<!-- perf-r1.md §8【I】: Managed Stripping Level を Medium に上げるにあたり、ゲーム本体のコードは
+     丸ごと保持する（JsonUtility で読み書きする PlayerSettings 等、リフレクション経由で触る型を
+     取りこぼさないため）。自前コードは小さいので容量への影響はほぼ無い。削る対象はエンジン・パッケージ側。 -->
+<linker>
+    <assembly fullname="Muses" preserve="all"/>
+</linker>

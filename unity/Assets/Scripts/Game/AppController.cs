@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Audio;
 using Muses.Chart;
+using Muses.UI;
 
 namespace Muses.Game
 {
@@ -59,6 +60,9 @@ namespace Muses.Game
         {
             settings = PlayerSettingsStore.Load();
 
+            // perf-r1.md §8【H】: 日本語はNotoを同梱せずOSのフォント(iPad=ヒラギノ)で描く。
+            // StageOverlayと同じPanelSettingsアセットを共有するため、先にAwakeした側が1回だけ差し替える。
+            UiFonts.ApplyOsFontOnce(panelSettingsAsset);
             uiDocument = gameObject.AddComponent<UIDocument>();
             uiDocument.panelSettings = panelSettingsAsset;
             uiDocument.sortingOrder = 10; // StageOverlay(既定0)より前面
@@ -514,6 +518,12 @@ namespace Muses.Game
         // ---------------------------------------------------------------
         // 終了条件監視(§8.1)
         // ---------------------------------------------------------------
+
+        private void OnDestroy()
+        {
+            // 差し替えたのはアセットそのものなので、Editor の Play 終了時に元へ戻す（UiFonts.ApplyOsFontOnce 参照）
+            UiFonts.RestoreAll();
+        }
 
         private void Update()
         {

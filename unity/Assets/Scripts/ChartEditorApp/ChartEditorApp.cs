@@ -7,6 +7,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Chart;
 using Muses.Stage;
+using Muses.UI;
 
 namespace Muses.ChartTool
 {

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -50,10 +51,39 @@ namespace Muses.Game
 
             string desktopRoot = !string.IsNullOrEmpty(userOverrideRoot)
                 ? userOverrideRoot
-                : Muses.ChartTool.EditorSettings.DefaultSongsRoot();
+                : DefaultSongsRoot();
             yield return desktopRoot;
 
             yield return Path.Combine(Application.streamingAssetsPath, "songs");
+        }
+
+        /// <summary>デスクトップでの曲フォルダの既定値（譜面エディタの既定値も兼ねる）。
+        /// ゲーム本体のビルドに譜面エディタのコード(Muses.ChartTool)を含めないため、本体はこちらに置き、
+        /// EditorSettings.DefaultSongsRoot() はここへ転送する。
+        /// editor-ui-rework-r9.md §2.1: Unix系(.NET/Mono)では SpecialFolder.MyDocuments が
+        /// $HOME に縮退する（Documentsを指さない）ため、その場合だけ手で "Documents" を補う。</summary>
+        public static string DefaultSongsRoot()
+        {
+            string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(docs) || PathEquals(docs, home))
+                docs = Path.Combine(home, "Documents");
+            return Path.Combine(docs, "muses", "songs");
+        }
+
+        /// <summary>2つの絶対パスを、末尾区切り文字・大小の揺れを無視して比較する。</summary>
+        public static bool PathEquals(string a, string b)
+        {
+            try
+            {
+                string na = Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string nb = Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(na, nb, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>全探索パスを走査して曲リストを合成する。同じ song-id は最初に見つかったものが勝つ

@@ -631,3 +631,23 @@ dspTime基準の時計は構わず進むので、**曲全体を通して一定�
 
 **逆に G-4（チャンク分割）は ④ で作り込んだコンボ区間の頂点範囲管理と干渉するので、
 本当に必要と確認できるまで着手しないこと。**
+
+## 15. H・I の実装（2026-09-27、iOS実機での確認はまだ）
+
+基準: iPad の設定アプリで見たアプリサイズ **149MB**（Development Build）。
+
+- **H（日本語フォント）**: ゲームの `GameOverlayPanelSettings` がエディタ用の `ChartEditorTextSettings` を流用していたのをやめ、
+  Notoを参照しない `Assets/UI/Game/GameTextSettings.asset` を新設して付け替えた。日本語は、エディタ(r14)で実績のある
+  `UiFonts`（OSのフォントを実行時に読み込む）でiPadのヒラギノを使う。`UiFonts` はゲームとエディタで共有するため
+  `Assets/Scripts/UI/`（namespace `Muses.UI`）へ移し、iOSの候補（Hiragino Sans W3/W6、次点 Hiragino Kaku Gothic ProN）を追加。
+  ゲームは2つのUIDocumentが同じPanelSettingsアセットを共有するため `ApplyOsFontOnce`（先にAwakeした側が1回だけ差し替える）と、
+  アセットを元に戻す `RestoreAll`（`AppController.OnDestroy`）を追加した。Editor の Play ではヒラギノでの表示を確認済み。
+  **iOSでOSフォントが読めなかった場合、日本語は表示されない（ASCIIのみ）**。ログ `UiFonts:` で判別できる。
+- 無参照だった `NotoSansJP-Variable.ttf`（9.1MB、ビルドには入っていなかった）をリポジトリから削除。
+- **I（エディタのコードの分離）**: `Assets/Scripts/Muses.asmdef`（ゲーム本体）と
+  `Assets/Scripts/ChartEditorApp/Muses.ChartTool.asmdef`（includePlatforms: Editor / macOS / Windows64）を新設し、
+  iOSビルドから譜面エディタのコードを外した。ゲームからエディタへの唯一の参照だった
+  `EditorSettings.DefaultSongsRoot()`/`PathEquals()` は本体を `SongLoader` へ移して転送にした。
+  `Assets/link.xml` で `Muses` アセンブリを丸ごと保持（JsonUtility等のリフレクション対策）。
+  Managed Stripping Level の Medium 化は Player Settings（GUI）で行う。
+- コンパイル確認は今後 `dotnet build unity/Muses.csproj`（`Assembly-CSharp.csproj` はスクリプトが無くなり生成されない）。
