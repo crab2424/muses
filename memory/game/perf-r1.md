@@ -602,6 +602,25 @@ dspTime基準の時計は構わず進むので、**曲全体を通して一定�
    （r1 の「8万頂点が主犯」と同じ外し方）。変更そのものは GC とオーバーレイの無駄を減らすので残す。
    **次はコードからの推定をやめ、Unity Profiler を実機につないで CPU の内訳
    （メインスレッド / レンダースレッド / オーディオ / 待機）を実測してから対象を決める。**
+
+## 14. Unity Profiler による実機計測（2026-09-27、Development Build、再生中）
+
+**結論: CPU 側に削るべきボトルネックは無い。CPU の軽量化はここで打ち切り、H・I へ進む。**
+
+- Xcode の CPU ゲージは 8コア=800% の目盛り（M2 iPad）。停止中 40%、再生中 60% ＝コア0.4〜0.6個分。
+- Capture Highlights（平均）: VSync 6.44ms / Scripts 0.92ms / Others 0.49ms。フレーム時間の中央値 8.33ms（120fps に張り付き）、
+  目標超過フレーム CPU・GPU とも 0%。
+- 代表フレーム（6941）の内訳:
+  - メインスレッド: PlayerLoop 8.35ms のうち `WaitForTargetFPS` 6.48ms。実処理は約 1.9ms
+    （うち `PostLateUpdate.FinishFrameRendering` 1.33ms、URP の `Inl_UniversalRenderTotal` 1.23ms）。
+    Profiler の「Scripts」カテゴリには URP 自身の C# 描画コードが含まれ、ゲームのスクリプト（Judge 等）はごく小さい。
+  - レンダースレッド: RenderLoop 6.78ms のうち `Wait for swapchain drawable` 5.85ms（ディスプレイ待ち）。実処理は約 0.9ms。
+  - キャプチャ全体で自己時間の上位は `Profiler.WriteBuffer`（計測自体のオーバーヘッド）と `Wait for swapchain`。
+- つまり 1 フレーム 8.3ms のうち実際に CPU を使うのは約 2.8ms で、残りは垂直同期待ち。
+  60% の大半は「Unity + URP を 120fps で回す固定費」と Development Build/Profiler の分で、スクリプトの工夫では動かない。
+- 下げたい場合の選択肢は **J（60fps 切り替えを設定に出す）がほぼ唯一**（描画の固定費が半分になる）。
+- 補足: レンダースレッドに `BlitFinalToBackBuffer` があり、URP が中間テクスチャに描いてから画面へコピーしている。
+  削れるのは主に GPU 側の帯域なので、必要になったら Renderer の Intermediate Texture 設定を確認する（優先度低）。
    **Fは §12 の診断表示(`audio ±XXms`)と `lastMs` 表示ごとHUDを消すことになる**ため、
    **オフセット校正を先に済ませてから**着手すること（校正にHUDが要る）。
 5. GPU をさらに削るなら **G-1（`theta`/`vgj`/`vgf` の uniform 化）**。
