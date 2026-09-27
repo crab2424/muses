@@ -651,3 +651,7 @@ dspTime基準の時計は構わず進むので、**曲全体を通して一定�
   `Assets/link.xml` で `Muses` アセンブリを丸ごと保持（JsonUtility等のリフレクション対策）。
   Managed Stripping Level の Medium 化は Player Settings（GUI）で行う。
 - コンパイル確認は今後 `dotnet build unity/Muses.csproj`（`Assembly-CSharp.csproj` はスクリプトが無くなり生成されない）。
+
+**実機確認（2026-09-27）: アプリサイズ 149MB → 105.2MB（-43.8MB、-29%）、日本語はiPadでもヒラギノで表示された。**
+比較元の149MBはDevelopment Buildなので、この差にはDevelopment Buildを外した分も含まれる（H・I単独の寄与は分離していない）。
+Managed Stripping Level は Medium に変更済み（ユーザーがGUIで設定）。
