@@ -576,7 +576,7 @@ MonoBehaviour:
     showLaneFloor: 1
     showHorizon: 0
     showCellIndex: 0
-    showTouchDebug: 1
+    showTouchDebug: 0
     metronome: 0
 --- !u!4 &548285725
 Transform:
