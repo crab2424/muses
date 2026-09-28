@@ -144,6 +144,14 @@ namespace Muses.Chart
         public static float NoteStart(Note n) => n.points[0].time;
         public static float NoteEnd(Note n) => n.points[^1].time;
 
+        /// <summary>
+        /// note-spec.md §7 のスコア分母 N へのこのノーツの寄与。Slide は始点＋comboTimes
+        /// （comboTimes は始点を含まない、<see cref="ChartFormat.ResolveSlideComboPoints"/>）、それ以外は1。
+        /// gameplay-feel-r1.md §2.4: 以前は各所で comboTimes.Count だけを数えていて始点が漏れ、
+        /// 全PERFECT+で理論値(1,010,000)を超えていた。数え方はここに一本化する。
+        /// </summary>
+        public static int ComboPointCount(Note n) => n.kind == NoteKind.Slide ? n.comboTimes.Count + 1 : 1;
+
         /// <summary>note-spec.md §1.2 の easing 種別を [0,1] の補間係数 k に適用する。</summary>
         public static float Ease(Easing e, float k)
         {

@@ -59,11 +59,11 @@ namespace Muses.Notes
 
         private void ApplyThicknessUniforms()
         {
-            if (notesMaterial != null)
+            foreach (var m in NoteMaterials())
             {
-                notesMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
-                notesMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
-                notesMaterial.SetFloat("_SkyThicknessMul", skyThicknessMul);
+                m.SetFloat("_ThicknessFrac", thicknessFrac);
+                m.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                m.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
             if (beatMaterial != null)
             {
@@ -79,6 +79,16 @@ namespace Muses.Notes
         // （groundFillAlpha=1 のときに顕著）。必ずステージより後ろに描画されるよう固定する。
         private const int NotesRenderQueue = 3010;
         private const int BeatLinesRenderQueue = 3011;
+        /// <summary>gameplay-feel-r1.md §5.3。Slide帯をTap等と別サブメッシュに分け、先に描く。
+        /// 地上帯（ステンシルで重なり4枚まで・重なるほど明るく）→空中帯（通常合成）→その他 の順。</summary>
+        private const int GroundBandRenderQueue = 3008;
+        private const int SkyBandRenderQueue = 3009;
+
+        /// <summary>gameplay-feel-r1.md §5.3/§8。地上帯の合成の強さ（実機で調整する値）。
+        /// 1枚あたり「通常合成 α=BandAlpha」＋「加算 BandAdd×色」。</summary>
+        [Header("地上Slide帯: 重なるほど明るく（上限4枚）")]
+        [SerializeField] private float groundBandAlpha = 0.30f;
+        [SerializeField] private float groundBandAdd = 0.22f;
 
         /// <summary>note-spec.md §5.5。シェーダの _GroupX[] と同じ長さで固定（グループ数に理論上限はないが、
         /// GPUへ渡す配列は実装上の上限を設ける。Note.shader の MUSES_MAX_SCROLL_GROUPS と一致させること）。</summary>
@@ -94,7 +104,11 @@ namespace Muses.Notes
         private MeshFilter notesFilter;
         private MeshRenderer notesRenderer;
         private Mesh notesMesh;
+        /// <summary>サブメッシュ2（Tap/Flick/マーカー/Riser）。従来の唯一のマテリアル。</summary>
         private Material notesMaterial;
+        /// <summary>サブメッシュ0/1（地上帯/空中帯）。gameplay-feel-r1.md §5.3。</summary>
+        private Material groundBandMaterial;
+        private Material skyBandMaterial;
         private Vector2[] notesUv0;
         /// <summary>ipad-test-findings-r1.md §④。uv2.x=scrollGroup(既存)、uv2.y=Slide区間の
         /// 「判定線で食べる(1)/そのまま通り過ぎる(0、既定)」フラグ。SetSlideSegmentEatable経由でのみ書く。</summary>
@@ -137,9 +151,30 @@ namespace Muses.Notes
             notesMesh.SetUVs(2, notesUv2);
             // note-visual-r1.md §3-3/§8-3: SDF描画(角丸+輪郭線)用のローカルUV。
             notesMesh.SetUVs(3, data.localUv);
-            var tris = new int[data.positions.Length];
-            for (int i = 0; i < tris.Length; i++) tris[i] = i;
-            notesMesh.SetTriangles(tris, 0);
+
+            // gameplay-feel-r1.md §5.3: 三角形を「地上帯/空中帯/その他」の3サブメッシュへ振り分ける。
+            // 頂点配列は共有なので、Judge が書く頂点範囲（alpha・食べる/通り過ぎる）はそのまま使える。
+            // 帯は localUv.y==0 のタグ（NoteMeshData.localUv）。層を跨ぐ帯は三角形の layerF 平均で振り分ける
+            // （色は元々 layerF で連続補間しているので、合成方式が途中で切り替わるだけ）。
+            var groundBand = new List<int>();
+            var skyBand = new List<int>();
+            var rest = new List<int>(data.positions.Length);
+            for (int i = 0; i + 2 < data.positions.Length; i += 3)
+            {
+                List<int> dst = rest;
+                if (Mathf.Abs(data.localUv[i].y) < 0.5f)
+                {
+                    float lf = (data.layerF[i] + data.layerF[i + 1] + data.layerF[i + 2]) / 3f;
+                    dst = lf < 0.5f ? groundBand : skyBand;
+                }
+                dst.Add(i);
+                dst.Add(i + 1);
+                dst.Add(i + 2);
+            }
+            notesMesh.subMeshCount = 3;
+            notesMesh.SetTriangles(groundBand, 0);
+            notesMesh.SetTriangles(skyBand, 1);
+            notesMesh.SetTriangles(rest, 2);
             notesMesh.RecalculateBounds();
             notesRenderer.enabled = data.positions.Length > 0;
 
@@ -173,10 +208,10 @@ namespace Muses.Notes
             }
 
             float speed = baseSpeed * hiSpeed;
-            if (notesMaterial != null)
+            foreach (var m in NoteMaterials())
             {
-                notesMaterial.SetFloatArray("_GroupX", groupXBuffer);
-                notesMaterial.SetFloat("_Speed", speed);
+                m.SetFloatArray("_GroupX", groupXBuffer);
+                m.SetFloat("_Speed", speed);
             }
             if (beatMaterial != null)
             {
@@ -215,6 +250,12 @@ namespace Muses.Notes
             float v = eatable ? 1f : 0f;
             if (notesUv2[start].y == v) return;
             for (int i = start; i < start + count; i++) notesUv2[i].y = v;
+            // gameplay-feel-r1.md §5.4: この区間に属する Visible 中継点マーカーも一緒に食べる
+            if (comboIndex < rt.comboMarkerVertexRanges.Length)
+            {
+                var (ms, mc) = rt.comboMarkerVertexRanges[comboIndex];
+                for (int i = ms; i < ms + mc; i++) notesUv2[i].y = v;
+            }
             eatableDirty = true;
         }
 
@@ -262,8 +303,20 @@ namespace Muses.Notes
                 m.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
 
-            Apply(notesMaterial);
+            foreach (var m in NoteMaterials()) Apply(m);
             Apply(beatMaterial);
+            if (groundBandMaterial != null)
+            {
+                groundBandMaterial.SetFloat("_BandAlpha", groundBandAlpha);
+                groundBandMaterial.SetFloat("_BandAdd", groundBandAdd);
+            }
+        }
+
+        private IEnumerable<Material> NoteMaterials()
+        {
+            if (groundBandMaterial != null) yield return groundBandMaterial;
+            if (skyBandMaterial != null) yield return skyBandMaterial;
+            if (notesMaterial != null) yield return notesMaterial;
         }
 
         private static Vector2[] Pack(float[] a, float[] b)
@@ -290,10 +343,33 @@ namespace Muses.Notes
             notesMesh = notesFilter.sharedMesh != null ? notesFilter.sharedMesh : new Mesh { name = "Notes" };
             notesMesh.MarkDynamic();
             notesFilter.sharedMesh = notesMesh;
-            bool needsMat = notesRenderer.sharedMaterial == null || notesRenderer.sharedMaterial.shader != noteShader;
-            notesMaterial = needsMat ? new Material(noteShader) { name = "Notes" } : notesRenderer.sharedMaterial;
+
+            // gameplay-feel-r1.md §5.3: 地上帯 / 空中帯 / その他 の3マテリアル（シェーダは共通、合成とステンシルだけ違う）。
+            var existingMats = notesRenderer.sharedMaterials;
+            Material Reuse(int i, string name) =>
+                existingMats != null && existingMats.Length == 3 && existingMats[i] != null && existingMats[i].shader == noteShader
+                    ? existingMats[i]
+                    : new Material(noteShader) { name = name };
+
+            groundBandMaterial = Reuse(0, "NotesGroundBand");
+            groundBandMaterial.renderQueue = GroundBandRenderQueue;
+            groundBandMaterial.SetFloat("_SrcBlend", (float)BlendMode.One); // premultiplied（シェーダの _BandPremul 分岐）
+            groundBandMaterial.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
+            groundBandMaterial.SetFloat("_BandPremul", 1f);
+            groundBandMaterial.SetFloat("_BandAlpha", groundBandAlpha);
+            groundBandMaterial.SetFloat("_BandAdd", groundBandAdd);
+            // そのピクセルに既に描いた地上帯が4枚未満なら描いて+1（Ref 4 > 枚数）。5枚目以降は描かない。
+            groundBandMaterial.SetFloat("_StencilRef", 4f);
+            groundBandMaterial.SetFloat("_StencilComp", (float)CompareFunction.Greater);
+            groundBandMaterial.SetFloat("_StencilPass", (float)StencilOp.IncrementSaturate);
+
+            skyBandMaterial = Reuse(1, "NotesSkyBand");
+            skyBandMaterial.renderQueue = SkyBandRenderQueue;
+
+            notesMaterial = Reuse(2, "Notes");
             notesMaterial.renderQueue = NotesRenderQueue;
-            notesRenderer.sharedMaterial = notesMaterial;
+
+            notesRenderer.sharedMaterials = new[] { groundBandMaterial, skyBandMaterial, notesMaterial };
         }
 
         private void EnsureBeatObject()
@@ -323,6 +399,8 @@ namespace Muses.Notes
             DestroyObj(notesGo);
             DestroyObj(notesMesh);
             DestroyObj(notesMaterial);
+            DestroyObj(groundBandMaterial);
+            DestroyObj(skyBandMaterial);
             DestroyObj(beatGo);
             DestroyObj(beatMesh);
             DestroyObj(beatMaterial);

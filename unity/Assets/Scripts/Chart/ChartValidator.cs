@@ -245,7 +245,7 @@ namespace Muses.Chart
         {
             int n = 0;
             foreach (var note in chart.notes)
-                n += note.kind == NoteKind.Slide ? note.comboTimes.Count : 1;
+                n += ChartMath.ComboPointCount(note);
             Add(issues, "V11", ValidationSeverity.Info, $"総コンボ点数 N = {n}", 0);
         }
     }

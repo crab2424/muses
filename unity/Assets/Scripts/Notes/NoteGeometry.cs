@@ -22,7 +22,9 @@ namespace Muses.Notes
         /// x = 横方向のローカル座標(0=左端/1=右端)、**y = 種別タグ**。
         ///
         /// y はプリミティブ内の全頂点で同じ値にすること（＝補間しても値が変わらないこと）が必須:
-        /// - y=1  タップ系の薄い板。厚み方向の座標は side（-1..+1）から導く。角丸+輪郭線のSDF。
+        /// - y=1  タップ系の薄い板（Tap/ExTap）。厚み方向の座標は side（-1..+1）から導く。カプセル形`( )`+輪郭線のSDF。
+        /// - y=2  Flick。端を尖らせた `< >`（gameplay-feel-r1.md §5.1）。
+        /// - y=3  Slide の Visible 中継点マーカー。角丸矩形。帯と一緒に判定線で食べる（§5.4）。
         /// - y=0  Slide帯。x のみ意味を持つ。輪郭線・中央線は x 方向のみに引く
         ///        （帯を時間方向に分割しても継ぎ目が出ないように）。
         /// - y=-1 Riserの縁線・矢印など。SDF処理をせず頂点色をそのまま使う。
@@ -106,7 +108,7 @@ namespace Muses.Notes
             // near/far側の判定を side (-1/+1) に持たせる）。
             // note-visual-r1.md §3-3/§8-3: ローカルUV(0..1, 0..1)も同時に積み、フラグメント側の
             // 角丸+輪郭線SDF（Note.shader）で使う。
-            void QuadThin(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD)
+            void QuadThin(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD, float shapeTag)
             {
                 float[] uu = { u0, u1, u1, u0 };
                 float[] su = { -1f, -1f, 1f, 1f };
@@ -121,10 +123,9 @@ namespace Muses.Notes
                     nearArr.Add(nearD);
                     layerArr.Add(layerF);
                     sideArr.Add(su[i]);
-                    // localUv.y は「種別タグ」なので4頂点とも同じ値(1)にする。厚み方向の座標は
-                    // side から導く（side*0.5+0.5 は旧 localUv.y={0,0,1,1} と完全に同値）。
-                    // NoteMeshData.localUv のコメントに理由あり。
-                    uv3Arr.Add(new Vector2(lu[i], 1f));
+                    // localUv.y は「種別タグ」なので4頂点とも同じ値にする（1/2/3、NoteMeshData.localUv 参照）。
+                    // 厚み方向の座標は side から導く（side*0.5+0.5 は旧 localUv.y={0,0,1,1} と完全に同値）。
+                    uv3Arr.Add(new Vector2(lu[i], shapeTag));
                 }
             }
 
@@ -151,6 +152,8 @@ namespace Muses.Notes
             var vRange = new (int start, int count)[notes.Count];
             // ipad-test-findings-r1.md §④。Slide専用: comboTimesの添字ごとの頂点範囲（Slide以外はnull）。
             var comboRanges = new (int start, int count)[notes.Count][];
+            // gameplay-feel-r1.md §5.4。Slide専用: comboTimesの添字ごとのVisible中継点マーカーの頂点範囲。
+            var markerRanges = new (int start, int count)[notes.Count][];
 
             for (int pass = 0; pass < NoteDrawOrder.Count; pass++)
             for (int ni = 0; ni < notes.Count; ni++)
@@ -171,7 +174,8 @@ namespace Muses.Notes
                     var c = n.kind == NoteKind.ExTap ? cEx
                         : n.kind == NoteKind.Flick ? cFlick
                         : cTap;
-                    QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF));
+                    QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF),
+                        n.kind == NoteKind.Flick ? 2f : 1f); // gameplay-feel-r1.md §5.1: Flickは `< >`、他は `( )`
                 }
                 else if (n.kind == NoteKind.Riser)
                 {
@@ -191,14 +195,26 @@ namespace Muses.Notes
                     // note-spec.md §3: Visible中継点はTapと同じ形・別色で描く（コンボ点として扱われる、item11）。
                     // editor-ui-rework-r3.md §5: cellFは全種別で左端基準に統一（旧: Slideのみ中心基準）。
                     // note-visual-r1.md §7: マーカーは始点(帯)と同じ色相、alphaは層に依らず常に高く保つ。
+                    // gameplay-feel-r1.md §5.4: マーカーは、その時刻をコンボ点とする区間（comboTimes[i]==wp.time の i、
+                    // 始点は区間0）に属させ、区間と一緒に判定線で食べる。
+                    var mr = new (int start, int count)[n.comboTimes.Count];
                     foreach (var wp in n.points)
                     {
                         if (wp.marker != WaypointMarker.Visible) continue;
+                        int mStart = st.Count;
                         float y = YAt(wp.layerF, dCopy.skyHeight) + dCopy.zJudge * 0.012f; // 帯(0.01)より上にして隠れないようにする
                         float u0 = UAt(wp.cellF + 0.04f);
                         float u1 = UAt(wp.cellF + wp.width - 0.04f);
-                        QuadThin(u0, u1, y, timeline.XAt(wp.time), wp.layerF, NoteColors.SlideMarkerColor(wp.layerF), NearOf(wp.layerF));
+                        QuadThin(u0, u1, y, timeline.XAt(wp.time), wp.layerF, NoteColors.SlideMarkerColor(wp.layerF), NearOf(wp.layerF), 3f);
+
+                        int seg = 0;
+                        while (seg < n.comboTimes.Count - 1 && n.comboTimes[seg] < wp.time - 1e-4f) seg++;
+                        if (seg >= mr.Length) continue;
+                        // 始点マーカーと comboTimes[0] のマーカーは同じ区間0に入る。マーカーは連続して積むので
+                        // 同じ区間の2個目は範囲を後ろへ伸ばすだけでよい。
+                        mr[seg] = mr[seg].count == 0 ? (mStart, st.Count - mStart) : (mr[seg].start, st.Count - mr[seg].start);
                     }
+                    markerRanges[ni] = mr;
                 }
 
                 // note-spec.md §5.5。グループはノーツ単位。生成した全頂点に同じインデックスを焼く。
@@ -219,6 +235,7 @@ namespace Muses.Notes
                     vCount = vRange[ni].count,
                     alpha = 1f,
                     comboSegmentVertexRanges = comboRanges[ni] ?? System.Array.Empty<(int, int)>(),
+                    comboMarkerVertexRanges = markerRanges[ni] ?? System.Array.Empty<(int, int)>(),
                 });
             }
 

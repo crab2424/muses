@@ -230,8 +230,8 @@ namespace Muses.Chart
         /// note-spec.md §2.2/§2.3。Slide のコンボ点集合を生成し Note.comboTimes に秒で格納する。
         /// ResolveTimes() の後に呼ぶこと。
         ///
-        /// 規則: 始点は無条件コンボ点だが Contact 駆動で Judge.OnEnter が別途解決するため
-        /// comboTimes には含めない。終点は marker 不問で無条件に含む。Visible 中継点を含む。
+        /// 規則: 始点は無条件コンボ点だが Judge が別に扱う（NoteRuntime.startResolved、
+        /// gameplay-feel-r1.md §2 で占有駆動へ変更）ため comboTimes には含めない。終点は marker 不問で無条件に含む。Visible 中継点を含む。
         /// 始点を基準に comboStep 刻みで自動生成した点を、区間ごとに刻み直さず連続して積む
         /// （中継点は位相をリセットしない）。端数（最後の自動生成点〜終点）は捨てる。
         /// Waypoint.comboStep による上書きは、その tick 以降の自動生成刻みに適用する。
@@ -285,7 +285,7 @@ namespace Muses.Chart
                     cur = next;
                 }
 
-                ticks.Remove(startTick); // 始点はContact駆動で別解決するため含めない
+                ticks.Remove(startTick); // 始点は Judge が NoteRuntime.startResolved で別に扱うため含めない（gameplay-feel-r1.md §2）
 
                 var times = new List<float>(ticks.Count);
                 foreach (var t in ticks) times.Add(tickToSeconds(t));

@@ -34,6 +34,10 @@ namespace Muses.Gameplay
             TestSeekSkipsPastNotesWithoutScoring();
             TestExBoostAppliesToOverlappingTap();
             TestRiserHandsOffToSlideStart();
+            TestSlideStartByHoldingFromPreviousSlide();
+            TestSlideLateralLagIsTolerated();
+            TestSkyTopRegionCountsForSlide();
+            TestSlideComboPointConfirmsEarly();
 
             Debug.Log(fail == 0
                 ? $"JudgeSmokeTest: ALL PASS ({pass})"
@@ -110,17 +114,119 @@ namespace Muses.Gameplay
             var judge = new Judge(Cfg(), (r, a) => { });
             judge.Prepare(new List<NoteRuntime> { rt });
 
-            // 始点はTapと同じ枠内更新で駆動(§0.2)
-            judge.OnEnter(new EnterEvent { layer = Layer.Ground, cell = 3, fresh = true, at = 1.0f, cellF = 3f, layerF = 0f }, 1.0f);
-            Check("Slide始点 -> Active", rt.state == NoteState.Active);
-
-            // 押しっぱなし: 帯の内側(cellF=3, layerF=0)を維持したままUpdateを回す
+            // gameplay-feel-r1.md §2: 始点も占有駆動。枠内更新(OnEnter)は不要で、帯の内側に居続ければよい。
             var contacts = new List<Contact> { new() { cellF = 3f, layerF = 0f } };
-            for (float t = 1.0f; t <= 2.2f; t += 0.05f)
+            for (float t = 0.9f; t <= 2.2f; t += 0.05f)
                 judge.Update(t, contacts);
 
             Check("Slide 押しっぱなし -> 始点+コンボ点2つが全てPERFECT+ (計3)",
                 judge.Score.perfectPlus == 3 && rt.state == NoteState.Hit);
+            Check("ComboPointCount(Slide) = comboTimes+始点 = 3", ChartMath.ComboPointCount(slide) == 3);
+        }
+
+        /// <summary>gameplay-feel-r1.md §2.1。前のSlideの終点と次のSlideの始点が同じ位置のとき、
+        /// 指を動かさずに押し続けても次の始点が成立する（旧仕様では枠内更新が無いためMISSだった）。</summary>
+        private void TestSlideStartByHoldingFromPreviousSlide()
+        {
+            Note Hold(float t0, float t1) => new()
+            {
+                kind = NoteKind.Slide,
+                points = new List<Waypoint>
+                {
+                    new() { time = t0, layerF = 0f, cellF = 3f, width = 2f },
+                    new() { time = t1, layerF = 0f, cellF = 3f, width = 2f },
+                },
+                comboTimes = new List<float> { t1 },
+            };
+            var rt1 = new NoteRuntime { note = Hold(1.0f, 1.5f) };
+            var rt2 = new NoteRuntime { note = Hold(1.5f, 2.0f) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt1, rt2 });
+
+            var contacts = new List<Contact> { new() { cellF = 4f, layerF = 0f } };
+            for (float t = 0.9f; t <= 2.2f; t += 0.01f)
+                judge.Update(t, contacts);
+
+            Check("連続Slide: 押しっぱなしで次の始点も成立 (4点全てPERFECT+)",
+                judge.Score.perfectPlus == 4 && judge.Score.miss == 0);
+        }
+
+        /// <summary>gameplay-feel-r1.md §1.2。横に速く動くSlideを、指が80ms遅れて追いかけても落ちない。</summary>
+        private void TestSlideLateralLagIsTolerated()
+        {
+            // 0.5秒で cellF 0→8 (16セル/秒)。幅1。指は帯の80ms前の位置にいる（=1.28セル遅れ、帯の外）。
+            var slide = new Note
+            {
+                kind = NoteKind.Slide,
+                points = new List<Waypoint>
+                {
+                    new() { time = 1.0f, layerF = 0f, cellF = 0f, width = 1f },
+                    new() { time = 1.5f, layerF = 0f, cellF = 8f, width = 1f },
+                },
+                comboTimes = new List<float> { 1.25f, 1.5f },
+            };
+            var rt = new NoteRuntime { note = slide };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var c = new Contact { layerF = 0f };
+            var contacts = new List<Contact> { c };
+            for (float t = 0.9f; t <= 1.7f; t += 0.008f)
+            {
+                c.cellF = ChartMath.At(slide, t - 0.08f).cellF + 0.5f; // 80ms前の帯の中央
+                judge.Update(t, contacts);
+            }
+
+            Check("横移動Slideを80ms遅れで追従 -> MISSなし",
+                judge.Score.miss == 0 && judge.Score.perfectPlus == 3);
+        }
+
+        /// <summary>gameplay-feel-r1.md §1.3。空中パネル上部（layerF&gt;1.5相当、v&gt;0.6）でも空中Slideが取れる。</summary>
+        private void TestSkyTopRegionCountsForSlide()
+        {
+            var slide = new Note
+            {
+                kind = NoteKind.Slide,
+                points = new List<Waypoint>
+                {
+                    new() { time = 1.0f, layerF = 1f, cellF = 3f, width = 2f },
+                    new() { time = 1.5f, layerF = 1f, cellF = 3f, width = 2f },
+                },
+                comboTimes = new List<float> { 1.5f },
+            };
+            var rt = new NoteRuntime { note = slide };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var contacts = new List<Contact> { new() { cellF = 4f, layerF = 1.8f } }; // 画面上端付近
+            for (float t = 0.9f; t <= 1.7f; t += 0.01f)
+                judge.Update(t, contacts);
+
+            Check("空中パネル上部でも空中Slideが成立", judge.Score.perfectPlus == 2 && judge.Score.miss == 0);
+        }
+
+        /// <summary>gameplay-feel-r1.md §2.5。押しっぱなしならコンボ点は t_p 直後に確定する（+100ms待たない）。</summary>
+        private void TestSlideComboPointConfirmsEarly()
+        {
+            var slide = new Note
+            {
+                kind = NoteKind.Slide,
+                points = new List<Waypoint>
+                {
+                    new() { time = 1.0f, layerF = 0f, cellF = 3f, width = 2f },
+                    new() { time = 2.0f, layerF = 0f, cellF = 3f, width = 2f },
+                },
+                comboTimes = new List<float> { 1.5f, 2.0f },
+            };
+            var rt = new NoteRuntime { note = slide };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var contacts = new List<Contact> { new() { cellF = 3f, layerF = 0f } };
+            float t = 0.9f;
+            for (; t <= 1.51f; t += 0.01f) judge.Update(t, contacts);
+            // この時点で t≈1.51。始点(1.0)とコンボ点(1.5)の2つが確定済みのはず（旧実装では1.6まで待った）
+            Check("コンボ点の早期確定: t_p直後に確定", judge.Score.perfectPlus == 2);
         }
 
         private void TestFlickHit()
@@ -193,13 +299,18 @@ namespace Muses.Gameplay
             var contact = new Contact { cellF = 3f, layerF = 0f, u = 0f, v = cfg.vGroundJudge };
             contact.history.Add((0f, cfg.vGroundJudge - (threshold + 0.01f), 0.9f));
 
-            judge.Update(1.0f, new List<Contact> { contact });
+            var contacts = new List<Contact> { contact };
+            judge.Update(1.0f, contacts);
 
             Check("Riser 閾値超過移動 -> PERFECT+ (即着地)、handoff記録",
                 judge.Score.perfectPlus >= 1 && rtRiser.state == NoteState.Hit &&
                 contact.layerHandoffUntil > 1.0f && contact.layerHandoffTo == 1f);
-            Check("Riser handoff -> 後続Slide始点がEnterEvent合成でActiveへ引き継がれる",
-                rtSlide.state == NoteState.Active);
+
+            // gameplay-feel-r1.md §2.3: 後続Slide始点は占有駆動。指の実layerFは0のままでも、
+            // handoff中(〜1.2s)は実効layerFが1とみなされるので始点(1.05)が成立する。
+            for (float t = 1.01f; t <= 1.15f; t += 0.01f) judge.Update(t, contacts);
+            Check("Riser handoff -> 後続Slide始点が実効layerFの読み替えで成立",
+                rtSlide.state == NoteState.Active && rtSlide.startResolved && judge.Score.perfectPlus == 2);
         }
 
         private void TestSeekSkipsPastNotesWithoutScoring()

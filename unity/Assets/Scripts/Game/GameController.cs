@@ -149,12 +149,11 @@ namespace Muses.Game
             return musicSource.clip.length - totalSongOffsetSec;
         }
 
-        /// <summary>note-spec.md §7。Score.ComputeScoreの分母N。SlideはcomboTimesの数、それ以外は1
-        /// （PreviewSystemの表示ラベル計算(PreviewSystem.cs:491-492)と同じ数え方）。</summary>
+        /// <summary>note-spec.md §7。Score.ComputeScoreの分母N。数え方は ChartMath.ComboPointCount に一本化（gameplay-feel-r1.md §2.4）。</summary>
         public int TotalComboPoints()
         {
             int total = 0;
-            foreach (var n in chart.notes) total += n.kind == NoteKind.Slide ? n.comboTimes.Count : 1;
+            foreach (var n in chart.notes) total += ChartMath.ComboPointCount(n);
             return total;
         }
 

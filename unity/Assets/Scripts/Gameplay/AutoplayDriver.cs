@@ -15,21 +15,22 @@ namespace Muses.Gameplay
     /// Contact/EnterEvent の生成器を差し替えるだけで成立する（実装は容易、と editor-spec.md にある通り）。
     ///
     /// 生成規則（editor-spec.md §5.2 のとおり）:
-    /// - Tap/ExTap/Slide始点は枠内更新(EnterEvent)が要るので、開始tickを跨いだフレームで
+    /// - Tap/ExTap は枠内更新(EnterEvent)が要るので、開始tickを跨いだフレームで
     ///   ちょうど Judge.OnEnter を1回呼ぶ。songTime にはノーツ自身の time をそのまま渡す
     ///   （フレームレートに関わらず dt=0 を保証し、理論値ちょうどを再現するため）。
     /// - Flick は Presence 駆動なので、開始time以降で毎フレーム「枠内に接触があり、
     ///   直近flickWindowMs以上の移動がある」ことを示す合成 Contact を供給する
     ///   （履歴を1件だけ manufactured すれば Judge.UpdateFlickPending が即座に移動成立と判定する）。
-    /// - Slide 継続は各フレーム、ChartMath.At(note, songTime) の位置に合成 Contact を置き続ける
+    /// - Slide は始点も含め占有駆動（gameplay-feel-r1.md §2）なので、始点の判定窓が開いてから終わるまで
+    ///   各フレーム、ChartMath.At(note, songTime) の位置に合成 Contact を置き続ける
     ///   （Judge.UpdateSlide の帯占有サンプルがフレームごとに記録される。60fpsなら誤差は最大±8ms程度で
     ///   ティア窓(33.33ms〜)に対して実用上問題ない、というのは note-spec移植時に確立済みの許容範囲）。
     /// </summary>
     public static class AutoplayDriver
     {
         /// <summary>
-        /// 1フレーム分の自動入力を生成する。Tap/ExTap/Slide始点は即座に judge.OnEnter を呼び、
-        /// Slide継続・Flickの合成Contactは戻り値として返すので、呼び出し側はこれをそのまま
+        /// 1フレーム分の自動入力を生成する。Tap/ExTap は即座に judge.OnEnter を呼び、
+        /// Slide・Flickの合成Contactは戻り値として返すので、呼び出し側はこれをそのまま
         /// judge.Update(curTime, contacts) に渡す。
         /// </summary>
         public static List<Contact> Step(Judge judge, StageConfig cfg, List<NoteRuntime> runtimes, float prevTime, float curTime)
@@ -47,6 +48,23 @@ namespace Muses.Gameplay
                     var wp = note.points[0];
                     if (curTime < wp.time) continue;
                     contacts.Add(MakeFlickContact(cfg, wp, curTime, syntheticId--));
+                    continue;
+                }
+
+                if (note.kind == NoteKind.Slide)
+                {
+                    if (rt.state == NoteState.Hit || rt.state == NoteState.Missed) continue;
+                    if (curTime < ChartMath.NoteStart(note) - 0.1f) continue; // 始点の判定窓(±100ms)より前
+                    var (layerF, cellF, _) = ChartMath.At(note, curTime);
+                    contacts.Add(new Contact
+                    {
+                        id = syntheticId--,
+                        layer = layerF > 0.5f ? Layer.Sky : Layer.Ground,
+                        cell = (int)MathF.Round(cellF),
+                        cellF = cellF,
+                        layerF = layerF,
+                        since = curTime,
+                    });
                     continue;
                 }
 
@@ -69,20 +87,6 @@ namespace Muses.Gameplay
                         judge.OnEnter(e, wp.time);
                     }
                     continue;
-                }
-
-                if (note.kind == NoteKind.Slide && rt.state == NoteState.Active)
-                {
-                    var (layerF, cellF, _) = ChartMath.At(note, curTime);
-                    contacts.Add(new Contact
-                    {
-                        id = syntheticId--,
-                        layer = layerF > 0.5f ? Layer.Sky : Layer.Ground,
-                        cell = (int)MathF.Round(cellF),
-                        cellF = cellF,
-                        layerF = layerF,
-                        since = curTime,
-                    });
                 }
             }
 

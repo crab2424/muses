@@ -42,9 +42,13 @@ namespace Muses.Gameplay
     {
         public Layer layer;
         public int cell;
+        /// <summary>gameplay-feel-r1.md §3/§4。ノーツ左端の連続値（判定名・ヒット演出をノーツ中央に置くため）。</summary>
+        public float cellF;
         public float width;
         public float born;
         public JudgeKind kind;
+        /// <summary>gameplay-feel-r1.md §4。Slide の始点以外のコンボ点（演出を軽量版にする）。</summary>
+        public bool slideTick;
     }
 
     /// <summary>note-spec.md §6.1。判定ティアを配列データとして持つ（列挙+switchの分岐にしない）。</summary>

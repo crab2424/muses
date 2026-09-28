@@ -27,6 +27,10 @@ namespace Muses.Notes
         /// </summary>
         public int nextComboIndex;
 
+        /// <summary>gameplay-feel-r1.md §2。Slide専用: 始点(points[0])のコンボ点を判定し終えたか。
+        /// 始点は他のコンボ点と同じ占有駆動で、comboTimes には含まれないため別に持つ。</summary>
+        public bool startResolved;
+
         /// <summary>
         /// note-spec.md §2.4。Slide専用: 直近フレームの帯占有サンプル (songTime, occupied)。
         /// 未確定コンボ点の判定窓([t_p-100ms, t_p+100ms])より古いものは間引く。
@@ -55,5 +59,10 @@ namespace Muses.Notes
         /// （NoteView.SetSlideSegmentEatable）。Slide以外は空配列。
         /// </summary>
         public (int start, int count)[] comboSegmentVertexRanges = System.Array.Empty<(int, int)>();
+
+        /// <summary>gameplay-feel-r1.md §5.4。Slide専用: comboSegmentVertexRanges と同じ添字で、その区間に
+        /// 属する Visible 中継点マーカーの頂点範囲（無ければ count=0）。区間と一緒に「食べる」を書き込み、
+        /// マーカーだけ判定線で食べられずに浮くのを防ぐ。始点のマーカーは区間0に属させる。</summary>
+        public (int start, int count)[] comboMarkerVertexRanges = System.Array.Empty<(int, int)>();
     }
 }

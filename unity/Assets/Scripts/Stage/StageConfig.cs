@@ -82,6 +82,21 @@ namespace Muses.Stage
         /// 後続Slide始点への引き継ぎに使う。実値未確定（仮200ms）。
         /// </summary>
         public float handoffWindowMs;
+
+        // gameplay-feel-r1.md §1.5。シーンに直列化されるクラスなので、後から足したフィールドには
+        // 初期化子が要る（無いと既存シーンでは 0 で読み込まれる）。値は Default() と揃えること。
+        /// <summary>gameplay-feel-r1.md §1.2。Slide帯の左右それぞれの静的余白（セル）。</summary>
+        public float slideMarginCells = 0.25f;
+        /// <summary>gameplay-feel-r1.md §1.2。指の遅れの許容 (ms)。時刻tの接触を、帯が [t-trail, t+lead] に
+        /// 通過した範囲と比べる。静止した帯では広がらず、動く帯ほど進行方向にだけ判定が伸びる。</summary>
+        public float slideTrailMs = 120f;
+        /// <summary>gameplay-feel-r1.md §1.2。先回りの許容 (ms)。<see cref="slideTrailMs"/> 参照。</summary>
+        public float slideLeadMs = 60f;
+        /// <summary>gameplay-feel-r1.md §1.4。Flickの左右の余白（セル）。既定0＝従来どおり。</summary>
+        public float flickMarginCells = 0f;
+        /// <summary>gameplay-feel-r1.md §1.4。Riserの左右の余白（セル）。</summary>
+        public float riserMarginCells = 0.5f;
+
         /// <summary>
         /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
         /// （実機の出力レイテンシ分、判定を「音が実際に鳴った後」にずらす想定）。
@@ -153,6 +168,11 @@ namespace Muses.Stage
             flickWindowMs = 120f,
             riserReachFrac = 1f,
             handoffWindowMs = 200f,
+            slideMarginCells = 0.25f,
+            slideTrailMs = 120f,
+            slideLeadMs = 60f,
+            flickMarginCells = 0f,
+            riserMarginCells = 0.5f,
             judgeOffsetMs = 0f,
             visualOffsetMs = 0f,
 

@@ -486,7 +486,7 @@ namespace Muses.ChartTool
                 if (!autoplay || judge == null) return null;
                 var s = judge.Score;
                 int totalCombo = 0;
-                foreach (var n in chart.notes) totalCombo += n.kind == NoteKind.Slide ? n.comboTimes.Count : 1;
+                foreach (var n in chart.notes) totalCombo += ChartMath.ComboPointCount(n);
                 return $"P+{s.perfectPlus} P{s.perfect} G{s.good} M{s.miss}  combo{s.maxCombo}  score{s.ComputeScore(totalCombo)}";
             }
         }
@@ -670,7 +670,9 @@ namespace Muses.ChartTool
             if (rt != null && w == rtW && h == rtH) return rt;
 
             if (rt != null) rt.Release();
-            rt = new RenderTexture(w, h, 16) { name = "ChartEditorPreview" };
+            // gameplay-feel-r1.md §5.3: 地上Slide帯の「重なり4枚まで」はステンシルで行うため、
+            // ステンシル付きの深度(24bit=D24S8相当)にする（16bitにはステンシルが無く、上限が効かない）。
+            rt = new RenderTexture(w, h, 24) { name = "ChartEditorPreview" };
             rtW = w; rtH = h;
             // editor-ui-rework-r4.md §8: cam.aspectをRenderTextureのアスペクトに固定する。
             // 代入するとUnityは以後この値を使い続け(自動導出には戻らない)、DetachTexture()で

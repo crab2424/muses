@@ -51,8 +51,21 @@ namespace Muses.Overlay
         // Update()の毎フレームRemoveAllで使う述語。ラムダをフィールドに固定して
         // 「thisだけをキャプチャする閉包」にすることで、毎フレームのデリゲート確保を避ける。
         private float cleanupNow;
-        private System.Predicate<HitFlash> flashExpired;
         private System.Predicate<(Layer layer, int cell, float born)> rippleExpired;
+
+        /// <summary>gameplay-feel-r1.md §3/§4。判定名・コンボ・PERFECT以上のヒット演出。</summary>
+        private JudgeFxLayer fx;
+        /// <summary>
+        /// GOOD/MISS の判定線上の矩形フラッシュ（従来の演出を残したもの）。Judge.Flashes を毎フレーム
+        /// 取り込んで空にし、ここへ Time.unscaledTime 基準の時刻付きで移す。
+        /// gameplay-feel-r1.md: 以前は Judge.Flashes.born（判定時刻＝songTime＋judgeOffsetMs）を
+        /// songTime 基準で期限切れ判定していたため、judgeOffsetMs が正だと生成直後に「未来生まれ」として
+        /// 消されて一切表示されなかった。演出の時刻は判定オフセットと無関係なので実時間で持つ。
+        /// </summary>
+        private readonly System.Collections.Generic.List<(HitFlash f, float t0)> rectFlashes = new();
+        private float fxNow;
+        private const float RectFlashDuration = 0.45f;
+        private System.Predicate<(HitFlash f, float t0)> rectFlashExpired;
 
         // 前回 MarkDirtyRepaint した時点の描画内容の要約（perf-r1.md §5【E】）。
         // 変わっていなければ再生成しない（何も押していない静止フレームでは描画コスト0）。
@@ -97,30 +110,65 @@ namespace Muses.Overlay
             touchLabelsRoot = NewLayer();
             if (showHud) BuildHud();
 
+            fx = new JudgeFxLayer(overlayRoot);
+
             // cleanupNow（thisのフィールド）だけをキャプチャする閉包として1回だけ生成する。
-            flashExpired = f => cleanupNow - f.born < 0f || cleanupNow - f.born >= 0.45f;
             rippleExpired = r => cleanupNow - r.born < 0f || cleanupNow - r.born >= 0.3f;
+            rectFlashExpired = e => fxNow - e.t0 >= RectFlashDuration;
         }
 
         private void Update()
         {
             // GL版で毎フレーム行っていたクリーンアップ（描画本体からは分離し、副作用を1箇所にまとめる）。
             //
-            // 時刻の基準は songTime（SetHudTimeで毎フレーム受け取る値）でなければならない:
-            // Judge.Flashes.born も TouchInputManager.Ripples.born も songTime で記録される
-            // （Judge.CommitJudgement / TouchInputManager.Emit、いずれも clock.SongTime 由来）。
+            // リップルの時刻の基準は songTime（SetHudTimeで毎フレーム受け取る値）でなければならない:
+            // TouchInputManager.Ripples.born は clock.SongTime で記録される（TouchInputManager.Emit）。
+            // 判定演出は Judge.Flashes を ConsumeFlashes で取り込んだ時点の実時間で持つ（rectFlashes の注記参照）。
             // cbf9c70 で clock.Start() が「シーン開始時」から「タイトル画面のSTART押下時」へ
             // 移ったため、Time.time と songTime が「タイトル画面に居た時間」だけ乖離するようになり、
             // now - born が常に 0.45 を超えて**判定演出・リップルが一切描画されなくなっていた**
             // （それ以前はどちらもほぼ0始まりだったので偶然一致していた）。
             cleanupNow = hudSongTime;
-            if (Judge != null) Judge.Flashes.RemoveAll(flashExpired);
+            fxNow = Time.unscaledTime;
+            ConsumeFlashes();
+            rectFlashes.RemoveAll(rectFlashExpired);
             if (input != null) input.Ripples.RemoveAll(rippleExpired);
+            if (Judge != null) fx.SetCombo(Judge.Score.combo, fxNow);
+            fx.Tick(fxNow);
             if (NeedsRepaint()) overlayRoot.MarkDirtyRepaint();
 
             UpdateStaticLabels();
             UpdateTouchLabels();
             if (showHud) UpdateHud();
+        }
+
+        /// <summary>
+        /// gameplay-feel-r1.md §3/§4。Judge が積んだ判定結果を取り込み、判定名のポップアップ・
+        /// ヒット演出を出す。取り込んだら Judge.Flashes は空にする（消費者はこのオーバーレイだけ）。
+        /// </summary>
+        private void ConsumeFlashes()
+        {
+            if (Judge == null || stageController == null) return;
+            var flashes = Judge.Flashes;
+            if (flashes.Count == 0) return;
+
+            float w = overlayRoot.contentRect.width, h = overlayRoot.contentRect.height;
+            if (float.IsNaN(w) || w < 2f || h < 2f) { flashes.Clear(); return; }
+            var cfg = stageController.Config;
+            float CellU(float cellIdx) => -cfg.U + 2f * cfg.U * cellIdx / cfg.cells;
+
+            foreach (var f in flashes)
+            {
+                float center = f.cellF + f.width * 0.5f;
+                float x = OvX(w, CellU(center));
+                float noteW = OvX(w, CellU(f.cellF + f.width)) - OvX(w, CellU(f.cellF));
+                float y = OvY(h, f.layer == Layer.Sky ? cfg.vSkyJudge : cfg.vGroundJudge);
+
+                fx.SpawnHit(f.kind, f.slideTick, x, y, noteW, fxNow);
+                fx.SpawnPopup(f.kind, (int)f.layer, center, x, y, fxNow);
+                if (f.kind == JudgeKind.Good || f.kind == JudgeKind.Miss) rectFlashes.Add((f, fxNow));
+            }
+            flashes.Clear();
         }
 
         /// <summary>
@@ -138,10 +186,10 @@ namespace Muses.Overlay
 
             int stageVersion = stageController.Version;
             ulong mask = OccupiedMask(cfg.cells, out bool maskValid);
-            int flashCount = Judge != null ? Judge.Flashes.Count : 0;
+            int flashCount = rectFlashes.Count;
             int rippleCount = input.Ripples.Count;
             // アニメーション中のものが無ければ時刻は描画に効かないので、要約上は固定値にする
-            float animTime = flashCount > 0 || rippleCount > 0 ? hudSongTime : 0f;
+            float animTime = flashCount > 0 || rippleCount > 0 ? hudSongTime + fxNow : 0f;
 
             bool changed = !maskValid
                 || stageVersion != lastStageVersion
@@ -271,14 +319,14 @@ namespace Muses.Overlay
                 }
             }
 
-            if (Judge != null)
+            // GOOD/MISS の矩形フラッシュ（PERFECT以上は JudgeFxLayer の光の輪＋火花に置き換えた）
             {
-                foreach (var f in Judge.Flashes)
+                foreach (var (f, t0) in rectFlashes)
                 {
-                    float k = Mathf.Clamp01((now - f.born) / 0.45f);
+                    float k = Mathf.Clamp01((fxNow - t0) / RectFlashDuration);
                     float vJ = f.layer == Layer.Sky ? cfg.vSkyJudge : cfg.vGroundJudge;
-                    float x0 = PxX(CellU(f.cell));
-                    float x1 = PxX(CellU(f.cell + f.width));
+                    float x0 = PxX(CellU(f.cellF));
+                    float x1 = PxX(CellU(f.cellF + f.width));
                     float y = PxY(vJ);
                     float r = 6f + 26f * k;
                     Color col = f.kind switch
@@ -403,6 +451,9 @@ namespace Muses.Overlay
             var cfg = stageController.Config;
             var d = stageController.Derived;
             float CellX(float cellIdx) => OvX(w, -cfg.U + 2f * cfg.U * cellIdx / cfg.cells);
+
+            // gameplay-feel-r1.md §3: コンボは層の境目（vSplit）の画面中央
+            fx.Layout(w, h, OvY(h, cfg.vSplit));
 
             if (cfg.showHorizon && d.vHorizon <= 1f)
                 AddStaticLabel("horizon", OvX(w, cfg.U) - 56f, OvY(h, d.vHorizon) - 14f,
