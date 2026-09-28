@@ -232,8 +232,11 @@ namespace Muses.Game
                 lastBuiltChart = chart;
             }
             judge.SetConfig(stageController.Config);
-            judge.Reset();
+            // gameplay-feel-r2.md §7: Prepare(新ノーツ) → Reset の順でなければならない。逆順だと Reset(=Seek(0))が
+            // 前の曲のノーツの頂点範囲で新しいメッシュの配列へ書き込み、新譜面の頂点数が少ないと範囲外例外で
+            // ロードが「準備中…」のまま止まっていた。
             judge.Prepare(noteView.Runtimes); // 縦連判定(中点分割)の実効窓をここで1回だけprecompute
+            judge.Reset();
             noteView.FlushAlpha(); // editor-ui-rework-r13.md §7.3
         }
 

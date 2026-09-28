@@ -43,6 +43,13 @@ namespace Muses.Notes
         /// </summary>
         public bool flickEnterSeen;
 
+        /// <summary>gameplay-feel-r2.md §4.2。Riser専用: 判定窓内の反応（条件の立ち上がり）の (songTime, 接触id)。
+        /// 窓内で最も良いものでティアを決める。</summary>
+        public List<(float time, int contactId)> riserReactions = new();
+
+        /// <summary>gameplay-feel-r2.md §4.2。Riser専用: いま反応条件を満たしている接触id（立ち上がり検出用）。</summary>
+        public HashSet<int> riserReacting = new();
+
         /// <summary>
         /// note-spec.md §6.4「Ex Tap 巻き込みルール」（rev.7）。Tap/Slide始点専用:
         /// 譜面上で同時刻・同一層・セル範囲が交差する Ex Tap が存在するか（ロード時にprecompute）。

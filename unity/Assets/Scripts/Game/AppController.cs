@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using Muses.Audio;
 using Muses.Chart;
+using Muses.Gameplay;
 using Muses.UI;
 
 namespace Muses.Game
@@ -55,6 +56,7 @@ namespace Muses.Game
 
         private VisualElement resultScreen;
         private Label resultSummaryLabel;
+        private VisualElement resultTable;
 
         private void Awake()
         {
@@ -239,9 +241,22 @@ namespace Muses.Game
             loadingLabel.text = "準備中…";
             yield return null; // ラベルを1フレーム表示してからメッシュ生成(重い同期処理)に入る
 
-            gameController.LoadChart(chart, song, clip);
-            ApplySettingsToGame();
-            gameController.StartGame();
+            // gameplay-feel-r2.md §7: ここで例外が出るとコルーチンが止まり「準備中…」のまま固まる。
+            // 原因は直したが、別の原因でも固まらないようタイトルへ戻してエラーを出す。
+            try
+            {
+                gameController.LoadChart(chart, song, clip);
+                ApplySettingsToGame();
+                gameController.StartGame();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+                gameController.StopToIdle();
+                ShowTitle();
+                titleErrorLabel.text = $"曲の準備に失敗しました: {ex.Message}";
+                yield break;
+            }
 
             endTime = Mathf.Max(gameController.LastNoteEndTime(), gameController.AudioEndTime() ?? 0f) + 2f;
 
@@ -478,6 +493,11 @@ namespace Muses.Game
             resultSummaryLabel.style.whiteSpace = WhiteSpace.Normal;
             panel.Add(resultSummaryLabel);
 
+            // gameplay-feel-r2.md §6: 種別×層ごとの判定一覧。行は ShowResult のたび作り直す（0件の行は出さない）。
+            resultTable = new VisualElement();
+            resultTable.style.marginBottom = 32;
+            panel.Add(resultTable);
+
             panel.Add(MakeMenuButton("もう一度", OnRetryFromResultPressed));
             panel.Add(MakeMenuButton("タイトルへ戻る", OnQuitToTitleFromResultPressed));
 
@@ -495,11 +515,55 @@ namespace Muses.Game
                 $"SCORE {computed}\n" +
                 $"MAX COMBO {score?.maxCombo ?? 0}\n" +
                 $"PERFECT+ {score?.perfectPlus ?? 0}  PERFECT {score?.perfect ?? 0}  " +
-                $"GOOD {score?.good ?? 0}  MISS {score?.miss ?? 0}";
+                $"GOOD {score?.good ?? 0}  MISS {score?.miss ?? 0}\n" +
+                $"EARLY {score?.early ?? 0}  LATE {score?.late ?? 0}";
+            BuildResultTable(score);
 
             SetVisible(pauseButton, false);
             SetVisible(pauseScreen, false);
             SetVisible(resultScreen, true);
+        }
+
+        private static readonly string[] ResultColumns = { "PERFECT+", "PERFECT", "GOOD", "MISS", "EARLY", "LATE" };
+
+        /// <summary>gameplay-feel-r2.md §6。種別×層（Riser/Diverは方向別）の内訳表。0件の行は出さない。</summary>
+        private void BuildResultTable(Score score)
+        {
+            resultTable.Clear();
+            if (score == null) return;
+
+            VisualElement Row(string head, IEnumerable<string> cells, Color color, bool bold)
+            {
+                var row = new VisualElement();
+                row.style.flexDirection = FlexDirection.Row;
+                row.style.marginBottom = 4;
+                Label Cell(string text, float width, TextAnchor align)
+                {
+                    var l = new Label(text);
+                    l.style.width = width;
+                    l.style.fontSize = 15;
+                    l.style.color = color;
+                    l.style.unityTextAlign = align;
+                    if (bold) l.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    row.Add(l);
+                    return l;
+                }
+                Cell(head, 120, TextAnchor.MiddleLeft);
+                foreach (var c in cells) Cell(c, 76, TextAnchor.MiddleRight);
+                return row;
+            }
+
+            resultTable.Add(Row("", ResultColumns, new Color(0.75f, 0.75f, 0.8f), true));
+            for (int i = 0; i < ResultCategories.Count; i++)
+            {
+                var s = score.byCategory[i];
+                if (s.Total == 0) continue;
+                resultTable.Add(Row(ResultCategories.Label((ResultCategory)i), new[]
+                {
+                    s.perfectPlus.ToString(), s.perfect.ToString(), s.good.ToString(),
+                    s.miss.ToString(), s.early.ToString(), s.late.ToString(),
+                }, Color.white, false));
+            }
         }
 
         private void OnRetryFromResultPressed()

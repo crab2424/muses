@@ -30,6 +30,9 @@ namespace Muses.Overlay
         private static readonly Color PerfectColor = Hex(0xff9f43);
         private static readonly Color GoodColor = Hex(0x4ade80);
         private static readonly Color MissColor = Hex(0x9ca3af);
+        /// <summary>gameplay-feel-r2.md §2。判定名の下の EARLY / LATE。</summary>
+        private static readonly Color EarlyColor = Hex(0x60a5fa);
+        private static readonly Color LateColor = Hex(0xf87171);
         /// <summary>光・輪・火花の色（判定名の色とは別。PERFECT+は金、PERFECTは白寄りの水色）。</summary>
         private static readonly Color FxGold = new(1f, 0.86f, 0.42f);
         private static readonly Color FxBlue = new(0.78f, 0.94f, 1f);
@@ -78,23 +81,26 @@ namespace Muses.Overlay
         private class Popup
         {
             public Label label;
+            /// <summary>gameplay-feel-r2.md §2。判定名の下の EARLY / LATE。</summary>
+            public Label sub;
             public bool active;
-            public int layer;
+            public float layerF;
             public float cellCenter;
             public float x, y, born;
         }
 
         private readonly List<Popup> popups = new();
 
-        /// <param name="layer">0=地上 / 1=空中（同じ層・近い位置の表示中のものは使い回す）</param>
+        /// <param name="earlyLate">-1=EARLY / +1=LATE / 0=出さない（<see cref="EarlyLate.Of"/>）</param>
+        /// <param name="layerF">判定点の高さ（近い高さ・近い位置の表示中のものは使い回す）</param>
         /// <param name="cellCenter">ノーツ中央のセル座標（使い回し判定用）</param>
-        public void SpawnPopup(JudgeKind kind, int layer, float cellCenter, float x, float yJudge, float now)
+        public void SpawnPopup(JudgeKind kind, int earlyLate, float layerF, float cellCenter, float x, float yJudge, float now)
         {
-            // Slide のコンボ点は毎秒4〜8回出るので、同じ層で近い位置（0.75セル以内）に表示中のものがあれば
+            // Slide のコンボ点は毎秒4〜8回出るので、近い高さ・近い位置（0.75セル以内）に表示中のものがあれば
             // 積み重ねずにそれを使い回す（gameplay-feel-r1.md §3）。
             Popup p = null;
             foreach (var q in popups)
-                if (q.active && q.layer == layer && Mathf.Abs(q.cellCenter - cellCenter) < 0.75f) { p = q; break; }
+                if (q.active && Mathf.Abs(q.layerF - layerF) < 0.1f && Mathf.Abs(q.cellCenter - cellCenter) < 0.75f) { p = q; break; }
             if (p == null)
             {
                 foreach (var q in popups)
@@ -110,13 +116,13 @@ namespace Muses.Overlay
                 }
                 else
                 {
-                    p = new Popup { label = NewPopupLabel() };
+                    p = new Popup { label = NewPopupLabel(240f, 60f), sub = NewPopupLabel(160f, 30f) };
                     popups.Add(p);
                 }
             }
 
             p.active = true;
-            p.layer = layer;
+            p.layerF = layerF;
             p.cellCenter = cellCenter;
             p.x = x;
             p.y = yJudge - h * 0.045f; // 判定線の少し上
@@ -132,16 +138,26 @@ namespace Muses.Overlay
             p.label.style.color = color;
             p.label.style.fontSize = Mathf.Round(h * 0.03f);
             p.label.style.visibility = Visibility.Visible;
+
+            if (earlyLate != 0)
+            {
+                string subText = earlyLate < 0 ? "EARLY" : "LATE";
+                if (p.sub.text != subText) p.sub.text = subText;
+                p.sub.style.color = earlyLate < 0 ? EarlyColor : LateColor;
+                p.sub.style.fontSize = Mathf.Round(h * 0.018f);
+                p.sub.style.visibility = Visibility.Visible;
+            }
+            else p.sub.style.visibility = Visibility.Hidden;
         }
 
-        private Label NewPopupLabel()
+        private Label NewPopupLabel(float width, float height)
         {
             var l = new Label { pickingMode = PickingMode.Ignore };
             l.style.position = Position.Absolute;
             l.style.left = 0;
             l.style.top = 0;
-            l.style.width = 240;
-            l.style.height = 60;
+            l.style.width = width;
+            l.style.height = height;
             l.style.marginLeft = l.style.marginRight = l.style.marginTop = l.style.marginBottom = 0;
             l.style.paddingLeft = l.style.paddingRight = l.style.paddingTop = l.style.paddingBottom = 0;
             l.style.unityTextAlign = TextAnchor.MiddleCenter;
@@ -164,13 +180,18 @@ namespace Muses.Overlay
                 {
                     p.active = false;
                     p.label.style.visibility = Visibility.Hidden;
+                    p.sub.style.visibility = Visibility.Hidden;
                     continue;
                 }
                 float rise = h * 0.03f * EaseOut(k);
                 float pop = k < 0.15f ? Mathf.Lerp(1.3f, 1f, k / 0.15f) : 1f;
+                float opacity = k < 0.6f ? 1f : 1f - (k - 0.6f) / 0.4f;
                 p.label.style.translate = new Translate(p.x - 120f, p.y - 30f - rise);
                 p.label.style.scale = new Scale(new Vector2(pop, pop));
-                p.label.style.opacity = k < 0.6f ? 1f : 1f - (k - 0.6f) / 0.4f;
+                p.label.style.opacity = opacity;
+                // EARLY/LATE は判定名のすぐ下（判定名の文字高 ≒ h*0.03 の少し下）に一緒に流す
+                p.sub.style.translate = new Translate(p.x - 80f, p.y - 15f - rise + h * 0.026f);
+                p.sub.style.opacity = opacity;
             }
         }
 
@@ -375,7 +396,12 @@ namespace Muses.Overlay
         /// <summary>リトライ・タイトル戻りなど、演出を即座に消したいとき。</summary>
         public void Clear()
         {
-            foreach (var p in popups) { p.active = false; p.label.style.visibility = Visibility.Hidden; }
+            foreach (var p in popups)
+            {
+                p.active = false;
+                p.label.style.visibility = Visibility.Hidden;
+                p.sub.style.visibility = Visibility.Hidden;
+            }
             foreach (var s in sprites) { s.active = false; s.ve.style.visibility = Visibility.Hidden; }
             SetCombo(0, 0f);
         }

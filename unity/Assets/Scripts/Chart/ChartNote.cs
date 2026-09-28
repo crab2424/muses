@@ -87,9 +87,10 @@ namespace Muses.Chart
             {
                 // note-spec.md §4.6.1（rev.7）。Flickと同じ行（motion=Flick機構を再利用）。
                 // 方向制約・閾値の測り方の違いはJudge側の個別ロジックで扱う（属性としては追加しない）。
-                // chainExemptの扱いもFlickと同じ片側例外（早い側のみ免除、§4.6.5）。
+                // gameplay-feel-r2.md §4.2: 縦連判定を前後とも受けない（旧: Flickと同じ早い側のみ免除）。
+                // Ex Tap と同じく、他ノーツにとっての縦連の境界としては機能する。
                 startTrigger = StartTrigger.Presence, sustain = Sustain.None, motion = Motion.Flick,
-                resolution = Resolution.Continuous, judgeProfile = JudgeProfile.Normal, chainExempt = false,
+                resolution = Resolution.Continuous, judgeProfile = JudgeProfile.Normal, chainExempt = true,
             },
         };
 

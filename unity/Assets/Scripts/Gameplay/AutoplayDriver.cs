@@ -51,6 +51,17 @@ namespace Muses.Gameplay
                     continue;
                 }
 
+                if (note.kind == NoteKind.Riser)
+                {
+                    // gameplay-feel-r2.md §4.2: ノーツ時刻を跨いだ最初のフレームで「判定域の中で、指定方向へ閾値以上
+                    // 動いた」接触を置く。反応は立ち上がりの1回だけ記録されるので、この1フレームで確定する。
+                    if (rt.state != NoteState.Pending) continue;
+                    var wp = note.points[0];
+                    if (curTime < wp.time) continue;
+                    contacts.Add(MakeRiserContact(cfg, wp, curTime, syntheticId--));
+                    continue;
+                }
+
                 if (note.kind == NoteKind.Slide)
                 {
                     if (rt.state == NoteState.Hit || rt.state == NoteState.Missed) continue;
@@ -91,6 +102,26 @@ namespace Muses.Gameplay
             }
 
             return contacts;
+        }
+
+        private static Contact MakeRiserContact(StageConfig cfg, Waypoint wp, float curTime, int id)
+        {
+            // 判定域は現在位置(cellF/layerF)で満たし、移動量は v の履歴差分で作る（Judge.RiserReacted の2条件）。
+            float dir = MathF.Sign(wp.layerTo - wp.layerF);
+            float distance = 0.5f * MathF.Abs(cfg.vSkyJudge - cfg.vGroundJudge) * cfg.riserReachFrac * 1.5f;
+            var c = new Contact
+            {
+                id = id,
+                layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground,
+                cell = (int)MathF.Round(wp.cellF),
+                cellF = wp.cellF,
+                layerF = wp.layerF,
+                since = curTime,
+                u = 0f,
+                v = 0f,
+            };
+            c.history.Add((0f, -dir * distance, curTime));
+            return c;
         }
 
         private static Contact MakeFlickContact(StageConfig cfg, Waypoint wp, float curTime, int id)

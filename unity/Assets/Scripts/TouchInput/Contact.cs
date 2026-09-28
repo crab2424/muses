@@ -14,6 +14,9 @@ namespace Muses.TouchInput
         /// <summary>note-spec.md §0.1。層内のvバンド（0/1固定、bandsPerLayer=2確定）。判定側は無視し、
         /// 枠内更新を発生させるためだけに使う。</summary>
         public int band;
+        /// <summary>gameplay-feel-r2.md §3。地上パネル上端の重なり帯にいるか（layer は Ground のまま、空中 Tap の候補にもなる）。
+        /// layer が Sky の接触では常に false。</summary>
+        public bool skyReach;
         /// <summary>note-spec.md §0.2。連続座標の cellF（u の線形写像）。Slide/Flick の包含判定に使う。</summary>
         public float cellF;
         /// <summary>note-spec.md §0.2。連続座標の layerF（vGroundJudge/vSkyJudge の線形逆変換）。同上。</summary>
@@ -45,5 +48,8 @@ namespace Muses.TouchInput
         /// <summary>note-spec.md §0.2。このイベントを発生させた接触点の連続座標（Slide始点の包含判定用、item16）</summary>
         public float cellF;
         public float layerF;
+        /// <summary>gameplay-feel-r2.md §3。地上パネル上端の重なり帯の接触なら true。Judge は layer に加えて
+        /// 空中 Tap も候補にする（1タッチ1ノーツ）。</summary>
+        public bool skyReach;
     }
 }

@@ -155,6 +155,7 @@ namespace Muses.Overlay
             float w = overlayRoot.contentRect.width, h = overlayRoot.contentRect.height;
             if (float.IsNaN(w) || w < 2f || h < 2f) { flashes.Clear(); return; }
             var cfg = stageController.Config;
+            var d = stageController.Derived;
             float CellU(float cellIdx) => -cfg.U + 2f * cfg.U * cellIdx / cfg.cells;
 
             foreach (var f in flashes)
@@ -162,10 +163,11 @@ namespace Muses.Overlay
                 float center = f.cellF + f.width * 0.5f;
                 float x = OvX(w, CellU(center));
                 float noteW = OvX(w, CellU(f.cellF + f.width)) - OvX(w, CellU(f.cellF));
-                float y = OvY(h, f.layer == Layer.Sky ? cfg.vSkyJudge : cfg.vGroundJudge);
+                // gameplay-feel-r2.md §5: 層の中間（layerF 0〜1）の判定点でもその高さに出す
+                float y = OvY(h, StageDerive.JudgeLineV(cfg, d, f.layerF));
 
                 fx.SpawnHit(f.kind, f.slideTick, x, y, noteW, fxNow);
-                fx.SpawnPopup(f.kind, (int)f.layer, center, x, y, fxNow);
+                fx.SpawnPopup(f.kind, EarlyLate.Of(f.kind, f.ms), f.layerF, center, x, y, fxNow);
                 if (f.kind == JudgeKind.Good || f.kind == JudgeKind.Miss) rectFlashes.Add((f, fxNow));
             }
             flashes.Clear();
@@ -324,7 +326,7 @@ namespace Muses.Overlay
                 foreach (var (f, t0) in rectFlashes)
                 {
                     float k = Mathf.Clamp01((fxNow - t0) / RectFlashDuration);
-                    float vJ = f.layer == Layer.Sky ? cfg.vSkyJudge : cfg.vGroundJudge;
+                    float vJ = StageDerive.JudgeLineV(cfg, d, f.layerF);
                     float x0 = PxX(CellU(f.cellF));
                     float x1 = PxX(CellU(f.cellF + f.width));
                     float y = PxY(vJ);

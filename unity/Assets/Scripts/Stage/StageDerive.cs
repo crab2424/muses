@@ -130,6 +130,17 @@ namespace Muses.Stage
         }
 
         /// <summary>
+        /// gameplay-feel-r2.md §5。判定線の奥行き zJudge・高さ layerF×skyHeight の点が画面のどの行 (NDC v) に来るか。
+        /// layerF=0/1 で vGroundJudge/vSkyJudge に一致し、その間は透視投影どおり（layerF に線形ではない）。
+        /// 判定線上では横位置 u は層によらない（LaneX で zc=zcJudge になるため）ので、v だけ求めればよい。
+        /// </summary>
+        public static float JudgeLineV(StageConfig cfg, in Derived d, float layerF)
+        {
+            float y = layerF * d.skyHeight;
+            return MathF.Tan(d.theta - MathF.Atan((cfg.yCam - y) / d.zJudge)) / d.tanHalfPhi;
+        }
+
+        /// <summary>
         /// theta の有効域。判定線が地平線を越えず、かつ視野の裏側に回らない範囲。
         /// 端ちょうどでは奥行きが発散するのでマージン (psi in [1.5, 88.5] deg) を取る。
         /// </summary>

@@ -34,6 +34,10 @@ namespace Muses.Gameplay
     /// gameplay-feel-r1.md（2026-09-27）: Slide 始点を枠内更新駆動から他のコンボ点と同じ占有駆動へ変更（§2）、
     /// Slide 帯の包含判定に静的余白と時間ずれ許容を追加（§1.2）、連続座標の包含判定で接触の layerF を
     /// [0,1] にクランプ（§1.3、空中パネル上部が判定外だった穴の修正）、コンボ点の早期確定（§2.5）。
+    ///
+    /// gameplay-feel-r2.md（2026-09-28）: 重なり帯の接触は空中 Tap の候補にもなる（1タッチ1ノーツ、§3）、
+    /// Riser/Diver を縦連なし・窓内最良・遅い側延長・救済GOOD廃止に作り直し（§4）、
+    /// 判定ごとに種別×層の内訳と EARLY/LATE を Score へ記録（§2・§6）、演出に判定点の layerF を渡す（§5）。
     /// </summary>
     public class Judge
     {
@@ -95,6 +99,8 @@ namespace Muses.Gameplay
                 rt.nextComboIndex = 0;
                 rt.startResolved = false;
                 rt.flickEnterSeen = false;
+                rt.riserReactions.Clear();
+                rt.riserReacting.Clear();
 
                 // ipad-test-findings-r1.md §④: シークは各区間を「実際にプレイした」結果ではなく
                 // 素直に見た状態へ組み直すため、食べる/通り過ぎるの判定履歴も一律リセットする
@@ -179,9 +185,11 @@ namespace Muses.Gameplay
                 }
 
                 var traits = NoteKindTraits.Of(rt.note.kind);
-                if (traits.chainExempt) { lo = float.NegativeInfinity; hi = float.PositiveInfinity; } // Ex Tap: 自身は切られない
-                if (rt.note.kind == NoteKind.Flick || rt.note.kind == NoteKind.Riser)
-                    lo = float.NegativeInfinity; // Flick/Riser: 早い側だけ免除(§6.2、§4.6.5)
+                // Ex Tap / Riser(gameplay-feel-r2.md §4.2): 自身は切られない（他ノーツの境界にはなる）。
+                // Riser は窓も独自（UpdateRiserPending）なので、ここでの値は参照されない。
+                if (traits.chainExempt) { lo = float.NegativeInfinity; hi = float.PositiveInfinity; }
+                if (rt.note.kind == NoteKind.Flick)
+                    lo = float.NegativeInfinity; // Flick: 早い側だけ免除(§6.2)
 
                 chainWindows[rt] = (MathF.Max(lo, t - w), MathF.Min(hi, t + w));
             }
@@ -292,13 +300,24 @@ namespace Muses.Gameplay
         /// EnterEvent がノーツ N の包含判定を満たすか。Tap/ExTap は離散セル(§0.2)。
         /// Slide（gameplay-feel-r1.md §2 で占有駆動に変更）と Flick/Riser（Presence 駆動）はここでは扱わない。
         /// </summary>
-        private static bool Contains(Waypoint wp, EnterEvent e)
+        private static bool Contains(Waypoint wp, Layer layer, int eCell)
         {
-            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-            if (layer != e.layer) return false;
+            var noteLayer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            if (noteLayer != layer) return false;
             int cell = (int)MathF.Round(wp.cellF);
             int w = Math.Max(1, (int)MathF.Round(wp.width));
-            return e.cell >= cell && e.cell < cell + w;
+            return eCell >= cell && eCell < cell + w;
+        }
+
+        /// <summary>
+        /// gameplay-feel-r2.md §3。EnterEvent がノーツの候補になるなら、そのノーツの層を返す。
+        /// 重なり帯（e.skyReach）の接触は、本来の層（e.layer）に加えて空中ノーツの候補にもなる。
+        /// </summary>
+        private static Layer? CandidateLayer(Waypoint wp, EnterEvent e)
+        {
+            if (Contains(wp, e.layer, e.cell)) return e.layer;
+            if (e.skyReach && e.layer != Layer.Sky && Contains(wp, Layer.Sky, e.cell)) return Layer.Sky;
+            return null;
         }
 
         /// <summary>「入力範囲内に新規の接触点が検出された」= ヒット判定のトリガ（Tap/ExTap）</summary>
@@ -307,6 +326,7 @@ namespace Muses.Gameplay
             var rts = runtimes;
             NoteRuntime best = null;
             float bestDt = float.PositiveInfinity;
+            Layer bestLayer = e.layer;
             float rawWin = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの素の半幅。中点分割は窓を狭めるだけなのでこれを打ち切り境界に使える
 
             for (int i = cursor; i < rts.Count; i++)
@@ -319,12 +339,19 @@ namespace Muses.Gameplay
                 if (!chainWindows.TryGetValue(rt, out var win)) continue;
                 if (songTime < win.lo || songTime > win.hi) continue;
                 var wp = n.points[0];
-                if (!Contains(wp, e)) continue;
+                var layer = CandidateLayer(wp, e);
+                if (layer == null) continue;
                 float dt = wp.time - songTime;
-                if (MathF.Abs(dt) < MathF.Abs(bestDt))
+                // gameplay-feel-r2.md §3「1タッチ1ノーツ」: 両層の候補から |dt| 最小を1つ。
+                // |dt| が同じなら、その接触が本来いる層（e.layer）を優先する。
+                bool closer = MathF.Abs(dt) < MathF.Abs(bestDt) - 1e-6f;
+                bool tieNative = MathF.Abs(MathF.Abs(dt) - MathF.Abs(bestDt)) <= 1e-6f &&
+                                 layer.Value == e.layer && bestLayer != e.layer;
+                if (closer || tieNative)
                 {
                     best = rt;
                     bestDt = dt;
+                    bestLayer = layer.Value;
                 }
             }
 
@@ -333,6 +360,7 @@ namespace Muses.Gameplay
 
             // note-spec.md §6.4: 同時刻グループのうち、入力位置が包含判定を満たすノーツを全て
             // 同じ入力イベント(同じ dt)でまとめて解決する。ティアはノーツごとに個別に決まる。
+            // gameplay-feel-r2.md §3: まとめ解決は best の層の中だけ（重なり帯でも両層は同時に取らない）。
             for (int i = cursor; i < rts.Count; i++)
             {
                 var rt = rts[i];
@@ -342,11 +370,10 @@ namespace Muses.Gameplay
                 if (rt.state != NoteState.Pending) continue;
                 var wp = n.points[0];
                 if (MathF.Abs(wp.time - bestTime) > 1e-4f) continue;
-                if (!Contains(wp, e)) continue;
+                if (!Contains(wp, bestLayer, e.cell)) continue;
 
                 float dt = wp.time - songTime;
-                var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                ResolveHit(rt, wp, layer, dt, songTime);
+                ResolveHit(rt, wp, dt, songTime);
             }
         }
 
@@ -362,18 +389,31 @@ namespace Muses.Gameplay
             return JudgeTiers.TierFor(absMs)?.kind;
         }
 
+        /// <summary>Tap/ExTap/Flick は層にスナップして描いている（NoteGeometry）ので、演出・内訳も 0/1 にスナップする。</summary>
+        private static float SnapLayerF(Waypoint wp) => wp.layerF > 0.5f ? 1f : 0f;
+
+        /// <summary>gameplay-feel-r2.md §6。リザルトの内訳の行。layerF は判定点の高さ（Slide はコンボ点ごと）。</summary>
+        private static ResultCategory CategoryOf(Note n, float layerF)
+        {
+            bool sky = layerF > 0.5f;
+            return n.kind switch
+            {
+                NoteKind.Tap => sky ? ResultCategory.TapSky : ResultCategory.TapGround,
+                NoteKind.ExTap => sky ? ResultCategory.ExTapSky : ResultCategory.ExTapGround,
+                NoteKind.Slide => sky ? ResultCategory.SlideSky : ResultCategory.SlideGround,
+                NoteKind.Flick => sky ? ResultCategory.FlickSky : ResultCategory.FlickGround,
+                _ => n.points[0].layerTo > n.points[0].layerF ? ResultCategory.Riser : ResultCategory.Diver,
+            };
+        }
+
         /// <summary>判定結果をスコア/コンボ/演出に反映する（MISS以外）。
-        /// cellF は演出（判定名・ヒット演出）の横位置に使う連続値の左端。slideTick は Slide の始点以外の
-        /// コンボ点（演出を軽量版にするため、gameplay-feel-r1.md §4）。</summary>
-        private void CommitJudgement(JudgeKind judged, Layer layer, float cellF, float width, float songTime, float ms,
+        /// layerF・cellF は演出（判定名・ヒット演出）の位置（cellF は連続値の左端）。slideTick は Slide の始点以外の
+        /// コンボ点（演出を軽量版にするため、gameplay-feel-r1.md §4）。ms は入力時刻−ノーツ時刻（正=遅い）、
+        /// NaN は早い/遅いが意味を持たない判定（gameplay-feel-r2.md §2）。</summary>
+        private void CommitJudgement(JudgeKind judged, Note n, float layerF, float cellF, float width, float songTime, float ms,
             bool slideTick = false)
         {
-            switch (judged)
-            {
-                case JudgeKind.PerfectPlus: Score.perfectPlus++; break;
-                case JudgeKind.Perfect: Score.perfect++; break;
-                case JudgeKind.Good: Score.good++; break;
-            }
+            Score.Add(CategoryOf(n, layerF), judged, ms);
             Score.combo++;
             Score.maxCombo = Math.Max(Score.maxCombo, Score.combo);
             Score.lastJudge = judged switch
@@ -383,30 +423,30 @@ namespace Muses.Gameplay
                 JudgeKind.Good => "GOOD",
                 _ => "",
             };
-            Score.lastMs = ms;
-            AddFlash(layer, cellF, width, songTime, judged, slideTick);
+            Score.lastMs = float.IsNaN(ms) ? 0f : ms;
+            AddFlash(layerF, cellF, width, songTime, judged, ms, slideTick);
             onJudged?.Invoke(judged);
         }
 
-        private void CommitMiss(Layer layer, float cellF, float width, float songTime, bool slideTick = false)
+        private void CommitMiss(Note n, float layerF, float cellF, float width, float songTime, bool slideTick = false)
         {
-            Score.miss++;
+            Score.Add(CategoryOf(n, layerF), JudgeKind.Miss, float.NaN);
             Score.combo = 0;
             Score.lastJudge = "MISS";
-            AddFlash(layer, cellF, width, songTime, JudgeKind.Miss, slideTick);
+            AddFlash(layerF, cellF, width, songTime, JudgeKind.Miss, float.NaN, slideTick);
         }
 
         /// <summary>Flashes は StageOverlay が毎フレーム取り込んで空にする。取り込む側が居ない
         /// （譜面エディタのプレビュー等）と溜まり続けるので、古いものから捨てて上限を設ける。</summary>
         private const int MaxPendingFlashes = 64;
 
-        private void AddFlash(Layer layer, float cellF, float width, float songTime, JudgeKind kind, bool slideTick)
+        private void AddFlash(float layerF, float cellF, float width, float songTime, JudgeKind kind, float ms, bool slideTick)
         {
             if (Flashes.Count >= MaxPendingFlashes) Flashes.RemoveAt(0);
             Flashes.Add(new HitFlash
             {
-                layer = layer, cell = (int)MathF.Round(cellF), cellF = cellF, width = width,
-                born = songTime, kind = kind, slideTick = slideTick,
+                layer = layerF > 0.5f ? Layer.Sky : Layer.Ground, cell = (int)MathF.Round(cellF), cellF = cellF, width = width,
+                layerF = layerF, born = songTime, kind = kind, ms = ms, slideTick = slideTick,
             });
         }
 
@@ -414,7 +454,7 @@ namespace Muses.Gameplay
         /// note-spec.md §6.1。トレイト駆動でティアを決め、スコア/コンボ/演出を反映する。
         /// 有効なティアが無い場合（chainWindow の外＝理論上到達しない）は null を返し、呼び出し側は状態を変えない。
         /// </summary>
-        private JudgeKind? ApplyJudgement(NoteKind kind, float dt, Layer layer, float cellF, float width, float songTime,
+        private JudgeKind? ApplyJudgement(Note n, float dt, float layerF, float cellF, float width, float songTime,
             bool exBoosted = false, bool slideTick = false)
         {
             // dt = ノーツ時刻 - 入力時刻 なので ms = 入力時刻 - ノーツ時刻。
@@ -423,16 +463,16 @@ namespace Muses.Gameplay
             // オフセット校正はこの値の符号を見て行う（perf-r1.md §12）ため、実害のある誤りだった。
             // 他の算出箇所(TryResolveSlidePoint等の `(songTime - wp.time) * 1000f`)は同じ符号規則。
             float ms = -dt * 1000f;
-            var judged = TierFor(kind, MathF.Abs(ms), exBoosted);
+            var judged = TierFor(n.kind, MathF.Abs(ms), exBoosted);
             if (judged == null) return null;
-            CommitJudgement(judged.Value, layer, cellF, width, songTime, ms, slideTick);
+            CommitJudgement(judged.Value, n, layerF, cellF, width, songTime, ms, slideTick);
             return judged;
         }
 
         /// <summary>Tap/ExTap: 接触即ヒット確定。</summary>
-        private void ResolveHit(NoteRuntime rt, Waypoint wp, Layer layer, float dt, float songTime)
+        private void ResolveHit(NoteRuntime rt, Waypoint wp, float dt, float songTime)
         {
-            var judged = ApplyJudgement(rt.note.kind, dt, layer, wp.cellF, wp.width, songTime, rt.exBoosted);
+            var judged = ApplyJudgement(rt.note, dt, SnapLayerF(wp), wp.cellF, wp.width, songTime, rt.exBoosted);
             if (judged == null) return;
             rt.state = NoteState.Hit;
             setAlpha(rt, 0f);
@@ -488,8 +528,7 @@ namespace Muses.Gameplay
                         if (songTime > hi)
                         {
                             var wp = n.points[0];
-                            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                            CommitMiss(layer, wp.cellF, wp.width, songTime);
+                            CommitMiss(n, SnapLayerF(wp), wp.cellF, wp.width, songTime);
                             rt.state = NoteState.Missed;
                             setAlpha(rt, 0.12f);
                         }
@@ -584,9 +623,8 @@ namespace Muses.Gameplay
             if (!final) return false;
 
             var (layerF, cellF, width) = ChartMath.At(n, tp);
-            var layer = layerF > 0.5f ? Layer.Sky : Layer.Ground;
-            if (!found) CommitMiss(layer, cellF, width, songTime, slideTick);
-            else ApplyJudgement(NoteKind.Slide, -bestDiff, layer, cellF, width, songTime, slideTick: slideTick); // dt = ノーツ時刻 - 入力時刻
+            if (!found) CommitMiss(n, layerF, cellF, width, songTime, slideTick);
+            else ApplyJudgement(n, -bestDiff, layerF, cellF, width, songTime, slideTick: slideTick); // dt = ノーツ時刻 - 入力時刻
             return true;
         }
 
@@ -599,7 +637,7 @@ namespace Muses.Gameplay
         {
             if (!chainWindows.TryGetValue(rt, out var win)) return;
             var wp = n.points[0];
-            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+            float lf = SnapLayerF(wp);
             float flickDistance = cfg.U / cfg.cells; // note-spec.md §4.2: 0.5セル幅
 
             if (songTime <= win.hi)
@@ -621,13 +659,13 @@ namespace Muses.Gameplay
 
                     if (judged == JudgeKind.Miss)
                     {
-                        CommitMiss(layer, wp.cellF, wp.width, songTime);
+                        CommitMiss(n, lf, wp.cellF, wp.width, songTime);
                         rt.state = NoteState.Missed;
                         setAlpha(rt, 0.12f);
                     }
                     else
                     {
-                        CommitJudgement(judged, layer, wp.cellF, wp.width, songTime, ms);
+                        CommitJudgement(judged, n, lf, wp.cellF, wp.width, songTime, ms);
                         rt.state = NoteState.Hit;
                         setAlpha(rt, 0f);
                     }
@@ -637,16 +675,17 @@ namespace Muses.Gameplay
                 return;
             }
 
-            // note-spec.md §4.4: 判定窓を過ぎても移動が確認できなかった場合
+            // note-spec.md §4.4: 判定窓を過ぎても移動が確認できなかった場合。
+            // 早い/遅いは意味を持たないので ms=NaN（EARLY/LATE を出さない、gameplay-feel-r2.md §2）。
             if (rt.flickEnterSeen)
             {
-                CommitJudgement(JudgeKind.Good, layer, wp.cellF, wp.width, songTime, (songTime - wp.time) * 1000f);
+                CommitJudgement(JudgeKind.Good, n, lf, wp.cellF, wp.width, songTime, float.NaN);
                 rt.state = NoteState.Hit;
                 setAlpha(rt, 0f);
             }
             else
             {
-                CommitMiss(layer, wp.cellF, wp.width, songTime);
+                CommitMiss(n, lf, wp.cellF, wp.width, songTime);
                 rt.state = NoteState.Missed;
                 setAlpha(rt, 0.12f);
             }
@@ -659,81 +698,143 @@ namespace Muses.Gameplay
         /// 発火することで、後続の Tap が Judge の構造を変えずに引き継げるようにする。
         /// 後続 Slide（gameplay-feel-r1.md §2 で占有駆動）へは、handoff 中の実効 layerF の読み替え
         /// （EffectiveLayerF）で引き継がれる。
-        /// フォールバック（窓を過ぎても移動なし、§4.4 と同じ表）は UpdateFlickPending と共通の規則。
+        ///
+        /// gameplay-feel-r2.md §4.2 で判定を作り直した（ユーザー判断）:
+        /// - 縦連判定を受けない（前後とも。窓は [t−100ms, t+100ms+riserLateShiftMs]）。
+        /// - 毎フレーム「反応」(<see cref="RiserReacted"/>)の有無をサンプルし、窓内で最も良い反応でティアを決める
+        ///   （Slide コンボ点と同じ時間対称のサンプル方式。早 GOOD の反応があっても、後で PERFECT+ の反応があればそちら）。
+        /// - ティアは早い側が通常どおり、遅い側は全境界を riserLateShiftMs 後ろへずらす（擦り切るまでの時間を吸収）。
+        ///   実装は実効ずれ <see cref="RiserEff"/> の絶対値で通常ティア表を引く。
+        /// - 旧 §4.4 の救済 GOOD は廃止。窓の中で一度も反応しなければ MISS。
         /// </summary>
         private void UpdateRiserPending(NoteRuntime rt, Note n, float songTime, IEnumerable<Contact> contacts)
         {
-            if (!chainWindows.TryGetValue(rt, out var win)) return;
             var wp = n.points[0];
-            var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
             float dir = MathF.Sign(wp.layerTo - wp.layerF); // +1: 上向き(Riser) / -1: 下向き(Diver)
             if (dir == 0f) return; // layerTo==layerF は不正データ(ChartValidator V13)。判定不能として無視する
+
+            float t = wp.time;
+            float shift = cfg.riserLateShiftMs / 1000f;
+            float w = JudgeTiers.All[^1].halfWidthMs / 1000f;
+            float lo = t - w, hi = t + w + shift;
 
             // note-spec.md §4.6.2: 絶対layerF 0.5への到達を基準1.0とする倍率。layerTo自体には依らない。
             float riserDistanceV = 0.5f * MathF.Abs(cfg.vSkyJudge - cfg.vGroundJudge) * cfg.riserReachFrac;
 
-            if (songTime <= win.hi)
+            // 反応は「条件を満たした瞬間」（接触ごとの立ち上がり）だけを記録する。満たしている間を毎フレーム数えると、
+            // 擦り切った後に指を止めていても履歴（flickWindowMs）が残る間は反応し続け、早く擦っても後ろの
+            // PERFECT+ 窓まで反応が伸びて早 GOOD が実質出なくなる（ユーザー仕様: 早く反応し PERFECT 窓で反応していなければ GOOD）。
+            if (songTime >= lo && songTime <= hi)
             {
                 foreach (var c in contacts)
                 {
-                    if (!InBand(c, wp.layerF, wp.cellF, wp.width, songTime, cfg.riserMarginCells)) continue;
-                    rt.flickEnterSeen = true; // §4.4フォールバック用（Flickと同じ規則を再利用）
-
-                    if (c.history.Count == 0) continue;
-                    var oldest = c.history[0];
-                    float dv = (c.v - oldest.v) * dir; // 指定方向への符号付き移動量（逆方向は負になり不成立）
-                    if (dv < riserDistanceV) continue;
-
-                    // note-spec.md §4.3と同じ非対称窓（Flickと共有）
-                    float ms = (songTime - wp.time) * 1000f;
-                    JudgeKind judged = ms <= 33.33f ? JudgeKind.PerfectPlus
-                        : JudgeTiers.TierFor(MathF.Abs(ms))?.kind ?? JudgeKind.Miss;
-
-                    if (judged == JudgeKind.Miss)
+                    if (RiserReacted(c, wp, dir, riserDistanceV, songTime))
                     {
-                        CommitMiss(layer, wp.cellF, wp.width, songTime);
-                        rt.state = NoteState.Missed;
-                        setAlpha(rt, 0.12f);
+                        if (rt.riserReacting.Add(c.id)) rt.riserReactions.Add((songTime, c.id));
                     }
-                    else
-                    {
-                        CommitJudgement(judged, layer, wp.cellF, wp.width, songTime, ms);
-                        rt.state = NoteState.Hit;
-                        setAlpha(rt, 0f);
-
-                        // note-spec.md §4.6.4: handoffを記録し、終端層でのEnterEventを1回合成して発火する。
-                        c.layerHandoffTo = wp.layerTo;
-                        c.layerHandoffUntil = songTime + cfg.handoffWindowMs / 1000f;
-                        var targetLayer = wp.layerTo > 0.5f ? Layer.Sky : Layer.Ground;
-                        OnEnter(new EnterEvent
-                        {
-                            layer = targetLayer,
-                            cell = (int)MathF.Round(c.cellF),
-                            fresh = true,
-                            at = songTime,
-                            cellF = c.cellF,
-                            layerF = wp.layerTo,
-                        }, songTime);
-                    }
-                    c.history.Clear();
-                    return;
+                    else rt.riserReacting.Remove(c.id);
                 }
+            }
+
+            if (songTime < t) return; // ノーツ時刻より前は、後からもっと良い反応が来うるので確定しない
+
+            bool found = false;
+            float bestEff = 0f;
+            int bestContact = 0;
+            foreach (var (time, id) in rt.riserReactions)
+            {
+                if (time < lo || time > hi) continue;
+                float eff = RiserEff(time - t, shift);
+                if (!found || MathF.Abs(eff) < MathF.Abs(bestEff)) { bestEff = eff; bestContact = id; found = true; }
+            }
+
+            // 早期確定（Slide §2.5 と同じ理屈）: これから来るサンプルの実効ずれは RiserEff(now − t) 以上なので、
+            // 既知の最良のティアがそれで取りうるティア以上なら、待っても判定は変わらない
+            // （ずれの大小ではなくティアで比べる。PERFECT+ の反応なら t を過ぎた時点で確定できる）。
+            bool final = songTime > hi ||
+                         (found && TierRank(bestEff) <= TierRank(RiserEff(songTime - t, shift)));
+            if (!final) return;
+
+            if (!found)
+            {
+                CommitMiss(n, wp.layerF, wp.cellF, wp.width, songTime);
+                rt.state = NoteState.Missed;
+                setAlpha(rt, 0.12f);
                 return;
             }
 
-            // note-spec.md §4.4と同じフォールバック（Flickと共通）
-            if (rt.flickEnterSeen)
+            // ms は実効ずれで記録する（ティアと EARLY/LATE の表示が食い違わないように）。
+            float ms = bestEff * 1000f;
+            var judged = JudgeTiers.TierFor(MathF.Abs(ms))?.kind ?? JudgeKind.Good; // 窓内なので理論上 null にならない
+            CommitJudgement(judged, n, wp.layerF, wp.cellF, wp.width, songTime, ms);
+            rt.state = NoteState.Hit;
+            setAlpha(rt, 0f);
+
+            Contact hitContact = null;
+            foreach (var c in contacts)
+                if (c.id == bestContact) { hitContact = c; break; }
+            if (hitContact == null) return; // 指が既に離れている（handoff の対象が無い）
+
+            // note-spec.md §4.6.4: handoffを記録し、終端層でのEnterEventを1回合成して発火する。
+            // gameplay-feel-r2.md §4.2: 合成イベントの判定時刻は t + 実効ずれ。擦り切るまでの時間ぶん、
+            // Riser と同時刻の行き先層 Tap が遅押し扱いになるのを防ぐ。
+            hitContact.layerHandoffTo = wp.layerTo;
+            hitContact.layerHandoffUntil = songTime + cfg.handoffWindowMs / 1000f;
+            float enterTime = t + bestEff;
+            OnEnter(new EnterEvent
             {
-                CommitJudgement(JudgeKind.Good, layer, wp.cellF, wp.width, songTime, (songTime - wp.time) * 1000f);
-                rt.state = NoteState.Hit;
-                setAlpha(rt, 0f);
-            }
-            else
+                layer = wp.layerTo > 0.5f ? Layer.Sky : Layer.Ground,
+                cell = (int)MathF.Round(hitContact.cellF),
+                fresh = true,
+                at = enterTime,
+                cellF = hitContact.cellF,
+                layerF = wp.layerTo,
+            }, enterTime);
+            hitContact.history.Clear(); // 1回の擦りで成立させられる Riser は1つまで
+        }
+
+        /// <summary>gameplay-feel-r2.md §4.2。Riser の実効ずれ（秒）。早い側はそのまま、遅い側は shift を差し引いて 0 で止める。</summary>
+        private static float RiserEff(float diff, float shift) => diff <= 0f ? diff : MathF.Max(0f, diff - shift);
+
+        /// <summary>ずれ（秒）のティアの順位。0=PERFECT+ / 1=PERFECT / 2=GOOD / 3=窓外。</summary>
+        private static int TierRank(float diffSec)
+        {
+            float absMs = MathF.Abs(diffSec) * 1000f;
+            for (int i = 0; i < JudgeTiers.All.Length; i++)
+                if (absMs <= JudgeTiers.All[i].halfWidthMs) return i;
+            return JudgeTiers.All.Length;
+        }
+
+        /// <summary>
+        /// gameplay-feel-r2.md §4.2。接触 c が今フレーム Riser に「反応」しているか:
+        /// 直近 flickWindowMs の履歴で、指定方向への最大変位（履歴中で一番後ろの点から現在まで）が閾値以上、かつ
+        /// 履歴のどこか（現在位置を含む）で元の層の判定域の中を通ったこと。
+        /// 旧実装は「いまの位置が判定域の中」を要求していたが、閾値の到達点が判定域の端（layerF 0.5）と一致するため、
+        /// 判定線より上から擦り始めると成立しないまま窓が閉じ、救済の GOOD になっていた（§4.1）。
+        /// </summary>
+        private bool RiserReacted(Contact c, Waypoint wp, float dir, float distanceV, float songTime)
+        {
+            if (c.history.Count == 0) return false;
+            float back = dir * c.v;
+            bool passedBand = InBand(c, wp.layerF, wp.cellF, wp.width, songTime, cfg.riserMarginCells);
+            foreach (var (u, v, time) in c.history)
             {
-                CommitMiss(layer, wp.cellF, wp.width, songTime);
-                rt.state = NoteState.Missed;
-                setAlpha(rt, 0.12f);
+                back = MathF.Min(back, dir * v);
+                if (!passedBand && SampleInBand(c, u, v, time, wp)) passedBand = true;
             }
+            return passedBand && dir * c.v - back >= distanceV;
+        }
+
+        /// <summary>履歴の1点 (u, v, time) が Riser の判定域の中か。<see cref="InBand"/> と同じ規則（layerF クランプ・handoff 読み替え・横余白）。</summary>
+        private bool SampleInBand(Contact c, float u, float v, float time, Waypoint wp)
+        {
+            float lf = time <= c.layerHandoffUntil ? c.layerHandoffTo
+                : (v - cfg.vGroundJudge) / (cfg.vSkyJudge - cfg.vGroundJudge);
+            lf = Math.Clamp(lf, 0f, 1f);
+            if (MathF.Abs(lf - wp.layerF) > cfg.layerJudgeRadius) return false;
+            float cellF = (u + cfg.U) * cfg.cells / (2f * cfg.U);
+            float m = cfg.riserMarginCells;
+            return cellF >= wp.cellF - m && cellF <= wp.cellF + wp.width + m;
         }
     }
 }

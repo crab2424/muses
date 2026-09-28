@@ -96,6 +96,12 @@ namespace Muses.Stage
         public float flickMarginCells = 0f;
         /// <summary>gameplay-feel-r1.md §1.4。Riserの左右の余白（セル）。</summary>
         public float riserMarginCells = 0.5f;
+        /// <summary>gameplay-feel-r2.md §3。空中 Tap の判定枠を地上パネル側へ広げる量 (NDC v)。
+        /// v &gt; vSplit − これ の地上の接触は、空中 Tap の候補にもなる（1タッチ1ノーツ）。0 で無効。</summary>
+        public float skyTapExtendV = 0.15f;
+        /// <summary>gameplay-feel-r2.md §4.2。Riser/Diver の遅い側のティア境界を後ろへずらす量 (ms)。
+        /// 擦り始めてから閾値の距離に届くまでの時間を吸収する。</summary>
+        public float riserLateShiftMs = 50f;
 
         /// <summary>
         /// 判定オフセット (ms)。音と入力のズレ補正。正の値 = 入力を遅らせて評価する
@@ -173,6 +179,8 @@ namespace Muses.Stage
             slideLeadMs = 60f,
             flickMarginCells = 0f,
             riserMarginCells = 0.5f,
+            skyTapExtendV = 0.15f,
+            riserLateShiftMs = 50f,
             judgeOffsetMs = 0f,
             visualOffsetMs = 0f,
 

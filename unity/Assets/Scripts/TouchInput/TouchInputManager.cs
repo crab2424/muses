@@ -95,6 +95,20 @@ namespace Muses.TouchInput
         }
 
         /// <summary>
+        /// gameplay-feel-r2.md §3。地上パネル上端の重なり帯（v &gt; vSplit − skyTapExtendV）にいるか。
+        /// 空中の接触では false。境界には層境界と同じヒステリシスを入れる（押下中のみ）。
+        /// </summary>
+        private bool SkyReachOf(Layer layer, float v, bool? prev)
+        {
+            var cfg = stageController.Config;
+            if (layer == Layer.Sky || cfg.skyTapExtendV <= 0f) return false;
+            float edge = cfg.vSplit - cfg.skyTapExtendV;
+            if (prev == null) return v > edge;
+            float h = cfg.splitHysteresis;
+            return prev.Value ? v > edge - h : v > edge + h;
+        }
+
+        /// <summary>
         /// note-spec.md §0.1。層内の v 方向バンド分割（bandsPerLayer=2 確定）。
         /// 判定側はbandを無視するが、バンド境界をまたいだだけで同じセルへの枠内更新を発生させる
         /// （擦りで縦連を処理するため）。
@@ -156,24 +170,30 @@ namespace Muses.TouchInput
                 c = new Contact
                 {
                     id = id, u = u, v = v, layer = layer, cell = cell, band = band,
+                    skyReach = SkyReachOf(layer, v, null),
                     cellF = cellF, layerF = layerF, since = at,
                 };
                 Contacts[id] = c;
                 Occupied.Add(Key(layer, cell));
                 PushHistory(c, at);
-                Emit(layer, cell, true, at, cellF, layerF);
+                Emit(layer, cell, true, at, cellF, layerF, c.skyReach);
                 return;
             }
 
             var newLayer = LayerOf(v, c.layer);
             var newCell = CellOf(u);
             var newBand = BandOf(newLayer, v);
+            // 層が変わったら前の値は引き継がない（空中→地上に入った直後はヒステリシス無しで判定する）
+            var newSkyReach = SkyReachOf(newLayer, v, newLayer == c.layer ? c.skyReach : null);
             bool cellOrLayerChanged = newLayer != c.layer || newCell != c.cell;
             bool bandChanged = newBand != c.band;
+            // gameplay-feel-r2.md §3: 重なり帯への出入りもバンド境界と同じく枠内更新にする（擦り対応）
+            bool skyReachChanged = newSkyReach != c.skyReach;
             c.u = u;
             c.v = v;
             c.cellF = cellF;
             c.layerF = layerF;
+            c.skyReach = newSkyReach;
             PushHistory(c, at); // note-spec.md §4.1: Flickの移動履歴は境界またぎに関わらず毎フレーム積む
 
             if (cellOrLayerChanged)
@@ -182,12 +202,12 @@ namespace Muses.TouchInput
                 c.layer = newLayer;
                 c.cell = newCell;
             }
-            if (cellOrLayerChanged || bandChanged)
+            if (cellOrLayerChanged || bandChanged || skyReachChanged)
             {
                 c.band = newBand;
                 if (cellOrLayerChanged) Occupied.Add(Key(newLayer, newCell));
                 // バンド境界のみをまたいだ場合も同じセルへの枠内更新として発行する（§0.1の擦り対応）。
-                Emit(newLayer, newCell, false, at, cellF, layerF);
+                Emit(newLayer, newCell, false, at, cellF, layerF, newSkyReach);
             }
         }
 
@@ -207,12 +227,24 @@ namespace Muses.TouchInput
             Occupied.Remove(Key(layer, cell));
         }
 
-        private void Emit(Layer layer, int cell, bool fresh, float at, float cellF, float layerF)
+        private void Emit(Layer layer, int cell, bool fresh, float at, float cellF, float layerF, bool skyReach)
         {
             Ripples.Add((layer, cell, at));
-            OnEnter?.Invoke(new EnterEvent { layer = layer, cell = cell, fresh = fresh, at = at, cellF = cellF, layerF = layerF });
+            OnEnter?.Invoke(new EnterEvent
+            {
+                layer = layer, cell = cell, fresh = fresh, at = at, cellF = cellF, layerF = layerF, skyReach = skyReach,
+            });
         }
 
-        public bool IsOccupied(Layer layer, int cell) => Occupied.Contains(Key(layer, cell));
+        /// <summary>セルのハイライト用。gameplay-feel-r2.md §3: 重なり帯の接触は空中側のセルも占有中として返す
+        /// （空中 Tap が取れる位置だと分かるように）。接触は高々10本程度なので線形に数える。</summary>
+        public bool IsOccupied(Layer layer, int cell)
+        {
+            if (Occupied.Contains(Key(layer, cell))) return true;
+            if (layer != Layer.Sky) return false;
+            foreach (var c in Contacts.Values)
+                if (c.skyReach && c.cell == cell) return true;
+            return false;
+        }
     }
 }

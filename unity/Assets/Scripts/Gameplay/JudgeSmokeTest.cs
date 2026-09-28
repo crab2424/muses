@@ -38,6 +38,16 @@ namespace Muses.Gameplay
             TestSlideLateralLagIsTolerated();
             TestSkyTopRegionCountsForSlide();
             TestSlideComboPointConfirmsEarly();
+            // gameplay-feel-r2.md
+            TestSkyReachPicksNearestOneNote();
+            TestSkyReachTiePrefersNativeLayer();
+            TestRiserStartedAboveJudgeLine();
+            TestRiserBestInWindow();
+            TestRiserEarlyOnlyIsEarlyGood();
+            TestRiserTouchedWithoutSwipeIsMiss();
+            TestRiserNotCutByChain();
+            TestRiserLateShift();
+            TestResultCategoryAndEarlyLate();
 
             Debug.Log(fail == 0
                 ? $"JudgeSmokeTest: ALL PASS ({pass})"
@@ -311,6 +321,204 @@ namespace Muses.Gameplay
             for (float t = 1.01f; t <= 1.15f; t += 0.01f) judge.Update(t, contacts);
             Check("Riser handoff -> 後続Slide始点が実効layerFの読み替えで成立",
                 rtSlide.state == NoteState.Active && rtSlide.startResolved && judge.Score.perfectPlus == 2);
+        }
+
+        // ================= gameplay-feel-r2.md =================
+
+        private static EnterEvent Enter(Layer layer, int cell, float at, bool skyReach = false) => new()
+        {
+            layer = layer, cell = cell, fresh = true, at = at, cellF = cell, layerF = layer == Layer.Sky ? 1f : 0f,
+            skyReach = skyReach,
+        };
+
+        /// <summary>§3。重なり帯の接触は両層の候補から |dt| 最小の1つだけを取る（地上Tapは残る）。</summary>
+        private void TestSkyReachPicksNearestOneNote()
+        {
+            var ground = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3) };
+            var sky = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.05f, Layer.Sky, 3) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { ground, sky });
+
+            judge.OnEnter(Enter(Layer.Ground, 3, 1.04f, skyReach: true), 1.04f);
+
+            Check("重なり帯: 近い空中Tapだけ取る（1タッチ1ノーツ）",
+                sky.state == NoteState.Hit && ground.state == NoteState.Pending && judge.Score.perfectPlus == 1);
+
+            var judge2 = new Judge(Cfg(), (r, a) => { });
+            var sky2 = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Sky, 3) };
+            judge2.Prepare(new List<NoteRuntime> { sky2 });
+            judge2.OnEnter(Enter(Layer.Ground, 3, 1.0f, skyReach: false), 1.0f);
+            Check("重なり帯の外（skyReach=false）の地上接触では空中Tapは取れない", sky2.state == NoteState.Pending);
+        }
+
+        /// <summary>§3。|dt| が同じ（地上と空中の同時押し）なら接触の本来の層だけを取る。もう一方は2本目の指が要る。</summary>
+        private void TestSkyReachTiePrefersNativeLayer()
+        {
+            var ground = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3) };
+            var sky = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Sky, 3) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { sky, ground });
+
+            judge.OnEnter(Enter(Layer.Ground, 3, 1.0f, skyReach: true), 1.0f);
+
+            Check("重なり帯: 同時押しは本来の層(地上)だけ",
+                ground.state == NoteState.Hit && sky.state == NoteState.Pending && judge.Score.perfectPlus == 1);
+        }
+
+        private static Note RiserNote(float time, float cell = 3f, bool up = true) => new()
+        {
+            kind = NoteKind.Riser,
+            points = new List<Waypoint>
+            {
+                new() { time = time, layerF = up ? 0f : 1f, layerTo = up ? 1f : 0f, cellF = cell, width = 2f },
+            },
+        };
+
+        /// <summary>画面座標(u,v)を連続座標(cellF,layerF)と整合させた接触。</summary>
+        private static Contact ContactAt(StageConfig cfg, float cellF, float layerF) => new()
+        {
+            u = cellF * 2f * cfg.U / cfg.cells - cfg.U,
+            v = cfg.vGroundJudge + layerF * (cfg.vSkyJudge - cfg.vGroundJudge),
+            cellF = cellF,
+            layerF = layerF,
+        };
+
+        private static void MoveTo(StageConfig cfg, Contact c, float layerF, float time)
+        {
+            c.v = cfg.vGroundJudge + layerF * (cfg.vSkyJudge - cfg.vGroundJudge);
+            c.layerF = layerF;
+            c.history.Add((c.u, c.v, time));
+            while (c.history.Count > 0 && c.history[0].t < time - cfg.flickWindowMs / 1000f) c.history.RemoveAt(0);
+        }
+
+        /// <summary>1ストローク: 始点 fromLayerF から toLayerF まで dur 秒で等速に擦る（8ms刻み）。各フレームで judge.Update。</summary>
+        private static void Stroke(Judge judge, StageConfig cfg, Contact c, float t0, float dur, float fromLayerF, float toLayerF)
+        {
+            for (float t = t0; t <= t0 + dur + 1e-4f; t += 0.008f)
+            {
+                MoveTo(cfg, c, fromLayerF + (toLayerF - fromLayerF) * Math.Clamp((t - t0) / dur, 0f, 1f), t);
+                judge.Update(t, new List<Contact> { c });
+            }
+        }
+
+        /// <summary>§4.1-1。判定線より上(layerF 0.2)から擦り始めても成立する（旧: 判定域を出てから閾値に届くので救済GOOD）。</summary>
+        private void TestRiserStartedAboveJudgeLine()
+        {
+            var cfg = Cfg();
+            var rt = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var c = ContactAt(cfg, 3.5f, 0.2f);
+            Stroke(judge, cfg, c, 0.96f, 0.06f, 0.2f, 1.0f); // 60msで layerF 0.2→1.0（閾値=0.5相当の移動は途中で満たす）
+            for (float t = 1.03f; t <= 1.3f; t += 0.008f) { MoveTo(cfg, c, 1.0f, t); judge.Update(t, new List<Contact> { c }); }
+
+            Check("Riser 判定線より上から擦り始め -> PERFECT+",
+                rt.state == NoteState.Hit && judge.Score.perfectPlus == 1 && judge.Score.good == 0);
+        }
+
+        /// <summary>§4.2 窓内最良。早い反応(−80ms=GOOD相当)の後、ノーツ時刻付近で再度擦れば PERFECT+ を採る。</summary>
+        private void TestRiserBestInWindow()
+        {
+            var cfg = Cfg();
+            var rt = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var c = ContactAt(cfg, 3.5f, 0f);
+            Stroke(judge, cfg, c, 0.88f, 0.04f, 0f, 0.8f);                   // 反応 ≒ 0.92 (−80ms)
+            for (float t = 0.93f; t < 0.98f; t += 0.008f) { MoveTo(cfg, c, 0f, t); judge.Update(t, new List<Contact> { c }); } // 下へ戻す
+            bool pendingAfterEarly = rt.state == NoteState.Pending;
+            Stroke(judge, cfg, c, 0.98f, 0.03f, 0f, 0.8f);                   // 反応 ≒ 1.00
+            for (float t = 1.02f; t <= 1.3f; t += 0.008f) judge.Update(t, new List<Contact> { c });
+
+            Check("Riser 窓内最良: 早GOODの反応では確定せず、後のPERFECT+を採る",
+                pendingAfterEarly && judge.Score.perfectPlus == 1 && judge.Score.good == 0);
+        }
+
+        /// <summary>§4.2。早く擦り切って、その後 PERFECT 窓で反応が無ければ早 GOOD（指を止めていても反応は伸びない）。</summary>
+        private void TestRiserEarlyOnlyIsEarlyGood()
+        {
+            var cfg = Cfg();
+            var rt = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var c = ContactAt(cfg, 3.5f, 0f);
+            Stroke(judge, cfg, c, 0.88f, 0.04f, 0f, 0.8f); // 反応 ≒ 0.92 (−80ms)
+            for (float t = 0.93f; t <= 1.3f; t += 0.008f) { MoveTo(cfg, c, 0.8f, t); judge.Update(t, new List<Contact> { c }); } // 止めたまま
+
+            Check("Riser 早い反応のみ -> GOOD かつ EARLY",
+                judge.Score.good == 1 && judge.Score.early == 1 && judge.Score.perfectPlus == 0);
+        }
+
+        /// <summary>§4.2。判定域に触れていても擦りが成立しなければ MISS（旧 §4.4 の救済GOODは Riser では廃止）。</summary>
+        private void TestRiserTouchedWithoutSwipeIsMiss()
+        {
+            var cfg = Cfg();
+            var rt = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+
+            var c = ContactAt(cfg, 3.5f, 0f);
+            for (float t = 0.9f; t <= 1.3f; t += 0.008f) { MoveTo(cfg, c, 0f, t); judge.Update(t, new List<Contact> { c }); }
+
+            Check("Riser 触れただけ -> MISS（救済GOODなし）", judge.Score.miss == 1 && judge.Score.good == 0);
+        }
+
+        /// <summary>§4.2。同層・同セルの Tap が直後(+60ms)にあっても Riser の窓は削られない（旧: hi=+30msで切れた）。</summary>
+        private void TestRiserNotCutByChain()
+        {
+            var cfg = Cfg();
+            var riser = new NoteRuntime { note = RiserNote(1.0f) };
+            var tap = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.06f, Layer.Ground, 3) };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { riser, tap });
+
+            var c = ContactAt(cfg, 3.5f, 0f);
+            Stroke(judge, cfg, c, 1.0f, 0.05f, 0f, 0.8f); // 反応 ≒ +50ms（旧実装なら縦連で窓の外）
+
+            Check("Riser 直後に同セルTapがあっても窓が削られない", riser.state == NoteState.Hit && judge.Score.perfectPlus >= 1);
+        }
+
+        /// <summary>§4.2。遅い側は riserLateShiftMs(50) ずらす: +70ms は PERFECT+、+110ms は PERFECT(LATE)。</summary>
+        private void TestRiserLateShift()
+        {
+            var cfg = Cfg();
+            JudgeKind? Run(float reactAt)
+            {
+                var rt = new NoteRuntime { note = RiserNote(1.0f) };
+                var judge = new Judge(cfg, (r, a) => { });
+                judge.Prepare(new List<NoteRuntime> { rt });
+                var c = ContactAt(cfg, 3.5f, 0f);
+                for (float t = 0.9f; t < reactAt - 0.03f; t += 0.008f) { MoveTo(cfg, c, 0f, t); judge.Update(t, new List<Contact> { c }); }
+                Stroke(judge, cfg, c, reactAt - 0.03f, 0.03f, 0f, 0.8f);
+                for (float t = reactAt + 0.008f; t <= 1.3f; t += 0.008f) judge.Update(t, new List<Contact> { c });
+                var s = judge.Score;
+                return s.perfectPlus == 1 ? JudgeKind.PerfectPlus : s.perfect == 1 && s.late == 1 ? JudgeKind.Perfect
+                    : s.good == 1 ? JudgeKind.Good : s.miss == 1 ? JudgeKind.Miss : null;
+            }
+            Check("Riser 遅い側延長: +70ms -> PERFECT+", Run(1.07f) == JudgeKind.PerfectPlus);
+            Check("Riser 遅い側延長: +110ms -> PERFECT (LATE)", Run(1.11f) == JudgeKind.Perfect);
+        }
+
+        /// <summary>§6/§2。内訳は種別×層で数え、EARLY/LATE は PERFECT/GOOD のみ。</summary>
+        private void TestResultCategoryAndEarlyLate()
+        {
+            var sky = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Sky, 3) };
+            var ground = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 2.0f, Layer.Ground, 3) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { sky, ground });
+
+            judge.OnEnter(Enter(Layer.Sky, 3, 0.95f), 0.95f);   // −50ms: PERFECT / EARLY
+            judge.OnEnter(Enter(Layer.Ground, 3, 2.01f), 2.01f); // +10ms: PERFECT+ （EARLY/LATEは数えない）
+
+            var s = judge.Score;
+            var tapSky = s.byCategory[(int)ResultCategory.TapSky];
+            var tapGround = s.byCategory[(int)ResultCategory.TapGround];
+            Check("内訳: Tap空中にPERFECT(EARLY)、Tap地上にPERFECT+",
+                tapSky.perfect == 1 && tapSky.early == 1 && tapGround.perfectPlus == 1 &&
+                tapGround.early + tapGround.late == 0 && s.early == 1 && s.late == 0);
         }
 
         private void TestSeekSkipsPastNotesWithoutScoring()
