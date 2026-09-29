@@ -27,7 +27,10 @@ namespace Muses.Notes
         /// - y=3  Slide の Visible 中継点マーカー。角丸矩形。帯と一緒に判定線で食べる（§5.4）。
         /// - y=0  Slide帯。x のみ意味を持つ。輪郭線・中央線は x 方向のみに引く
         ///        （帯を時間方向に分割しても継ぎ目が出ないように）。
-        /// - y=-1 Riserの縁線・矢印など。SDF処理をせず頂点色をそのまま使う。
+        /// - y=-1 Riser/Diver の壁。
+        /// - y=4  Riser/Diver の ∧（∨）の腕（r3、スキン「ネオン」）。**x には腕の断面 -1（下辺）/+1（上辺）を入れる**
+        ///        （side は頂点シェーダが厚みに使うので流用しない）。
+        /// 形・色の描き分けは Note.shader（スキン「ネオン」）の frag を参照。
         ///
         /// 2026-08-07: 旧実装はタグを (side, localUv.y) の組で表現していたが、**side は頂点シェーダが
         /// 厚みを付けるための座標で面の内部では -1→+1 に補間される**ため、`abs(side)>0.5` は
@@ -35,6 +38,13 @@ namespace Muses.Notes
         /// Slide帯の分岐へ落ち、中央に縦線・境目に横線が出て内部の色も別処理になっていた。
         /// タグは補間で不変な値でなければならない。</summary>
         public Vector2[] localUv;
+        /// <summary>r3（design-lab/note-skin）。種別ごとの追加データ（TEXCOORD4）。
+        /// - Tap/ExTap/Flick: (uL, uR, ExTapなら1, 0)。インポスターの中心・半長を頂点シェーダで求めるため、全頂点に両端の u を持たせる。
+        /// - Riser/Diver の壁: (k=根元0→到達点1, span=層の移動量, 0, 0)。
+        /// - ∧ の腕: (offset=先端からの層のずれ, span, dirSign=Riser+1/Diver-1, ノーツの実時刻)。
+        ///   実時刻は ∧ の位相用（スクロールグループの X(t) を通さないので、停止・逆走中も一定の速さで流れる）。
+        /// - その他: 0。</summary>
+        public Vector4[] extra;
         public List<NoteRuntime> runtimes;
 
         public Vector3[] beatPositions;
@@ -55,7 +65,7 @@ namespace Muses.Notes
     /// </summary>
     public static class NoteGeometry
     {
-        private delegate void PushFn(float u, float y, float time, float layerF, Color c, float nearD, float localU, float localV);
+        private delegate void PushFn(float u, float y, float time, float layerF, Color c, float nearD, float localU, float localV, Vector4 extra);
 
         public static NoteMeshData Build(StageConfig cfg, in Derived d, List<Note> notes,
             Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null, List<float> barTimes = null)
@@ -79,6 +89,7 @@ namespace Muses.Notes
             var sideArr = new List<float>();
             var groupArr = new List<float>();
             var uv3Arr = new List<Vector2>();
+            var extraArr = new List<Vector4>();
             var runtimes = new List<NoteRuntime>();
 
             // 2026-08-07: プロジェクトは Linear カラースペース(m_ActiveColorSpace:1)。
@@ -92,7 +103,7 @@ namespace Muses.Notes
             Color ToVertexColor(Color c) =>
                 QualitySettings.activeColorSpace == ColorSpace.Linear ? c.linear : c;
 
-            void Push(float u, float y, float time, float layerF, Color c, float nearD, float localU, float localV)
+            void Push(float u, float y, float time, float layerF, Color c, float nearD, float localU, float localV, Vector4 extra)
             {
                 pos.Add(new Vector3(u, y, time));
                 col.Add(ToVertexColor(c));
@@ -101,6 +112,7 @@ namespace Muses.Notes
                 layerArr.Add(layerF);
                 sideArr.Add(0f);
                 uv3Arr.Add(new Vector2(localU, localV));
+                extraArr.Add(extra);
             }
 
             // タップ系ノーツ用: 奥行き方向に薄い板を、頂点シェーダ側で「現在の奥行きに
@@ -108,7 +120,8 @@ namespace Muses.Notes
             // near/far側の判定を side (-1/+1) に持たせる）。
             // note-visual-r1.md §3-3/§8-3: ローカルUV(0..1, 0..1)も同時に積み、フラグメント側の
             // 角丸+輪郭線SDF（Note.shader）で使う。
-            void QuadThin(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD, float shapeTag)
+            // r3: Tap 系は extra に (uL, uR, ExTap, 0) を入れる（NoteMeshData.extra 参照）。マーカーは 0。
+            void QuadThin(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD, float shapeTag, Vector4 extra)
             {
                 float[] uu = { u0, u1, u1, u0 };
                 float[] su = { -1f, -1f, 1f, 1f };
@@ -126,6 +139,7 @@ namespace Muses.Notes
                     // localUv.y は「種別タグ」なので4頂点とも同じ値にする（1/2/3、NoteMeshData.localUv 参照）。
                     // 厚み方向の座標は side から導く（side*0.5+0.5 は旧 localUv.y={0,0,1,1} と完全に同値）。
                     uv3Arr.Add(new Vector2(lu[i], shapeTag));
+                    extraArr.Add(extra);
                 }
             }
 
@@ -134,11 +148,8 @@ namespace Muses.Notes
             var cTap = NoteColors.Tap; // note-visual-r1.md §4.2: Tapは「操作」の色、層で変えない
             var cEx = NoteColors.ExTap;
             var cFlick = NoteColors.Flick;
-            // note-visual-r1.md §6: 壁の塗りを撤去し、左右の細い縁線＋矢印だけにしたため、
-            // 大面積の半透明(旧alpha0.35)ではなく縁線として視認できるalphaへ上げる。
-            var cRiser = new Color(NoteColors.Riser.r, NoteColors.Riser.g, NoteColors.Riser.b, 0.9f);
-            var cDiver = new Color(NoteColors.Diver.r, NoteColors.Diver.g, NoteColors.Diver.b, 0.9f);
-            var cRiserArrow = new Color(1f, 1f, 1f, 0.9f); // riser-r2.md §3.2 由来。矢印は白のまま
+            var cRiser = NoteColors.Riser;
+            var cDiver = NoteColors.Diver;
 
             // 2026-08-07: 重なり順を NoteDrawOrder（エディタのタイムラインと共有）に揃える。
             // 従来は notes リスト順（＝おおむね追加順）で積んでいたため、同じ譜面でも
@@ -175,15 +186,16 @@ namespace Muses.Notes
                         : n.kind == NoteKind.Flick ? cFlick
                         : cTap;
                     QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF),
-                        n.kind == NoteKind.Flick ? 2f : 1f); // gameplay-feel-r1.md §5.1: Flickは `< >`、他は `( )`
+                        n.kind == NoteKind.Flick ? 2f : 1f, // gameplay-feel-r1.md §5.1: Flickは `< >`、他は `( )`
+                        new Vector4(u0, u1, n.kind == NoteKind.ExTap ? 1f : 0f, 0f));
                 }
                 else if (n.kind == NoteKind.Riser)
                 {
                     // note-spec.md §4.6.6: 時刻を1つだけ持つ垂直な壁。layerF方向にスイープする
                     // （時間でスイープする PushSlideBand とは別の生成関数）。
                     var wp = n.points[0];
-                    var cEdge = wp.layerTo > wp.layerF ? cRiser : cDiver;
-                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cEdge, cRiserArrow, timeline.XAt(wp.time));
+                    var cWall = wp.layerTo > wp.layerF ? cRiser : cDiver;
+                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cWall, timeline.XAt(wp.time));
                 }
                 else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
@@ -205,7 +217,7 @@ namespace Muses.Notes
                         float y = YAt(wp.layerF, dCopy.skyHeight) + dCopy.zJudge * 0.012f; // 帯(0.01)より上にして隠れないようにする
                         float u0 = UAt(wp.cellF + 0.04f);
                         float u1 = UAt(wp.cellF + wp.width - 0.04f);
-                        QuadThin(u0, u1, y, timeline.XAt(wp.time), wp.layerF, NoteColors.SlideMarkerColor(wp.layerF), NearOf(wp.layerF), 3f);
+                        QuadThin(u0, u1, y, timeline.XAt(wp.time), wp.layerF, NoteColors.SlideMarkerColor(wp.layerF), NearOf(wp.layerF), 3f, Vector4.zero);
 
                         int seg = 0;
                         while (seg < n.comboTimes.Count - 1 && n.comboTimes[seg] < wp.time - 1e-4f) seg++;
@@ -280,6 +292,7 @@ namespace Muses.Notes
                 side = sideArr.ToArray(),
                 group = groupArr.ToArray(),
                 localUv = uv3Arr.ToArray(),
+                extra = extraArr.ToArray(),
                 runtimes = runtimes,
                 beatPositions = beatPos.ToArray(),
                 beatNear = beatNear.ToArray(),
@@ -321,7 +334,7 @@ namespace Muses.Notes
             // 常に真の左右端に対応するので継ぎ目が出ない（yは未使用、0固定）。
             void Emit((float cellF, float y, float t, float layerF, float width) p, float side) =>
                 push(uAt(side < 0f ? p.cellF : p.cellF + p.width), p.y, p.t, p.layerF,
-                    NoteColors.SlideColor(p.layerF), nearOf(p.layerF), side < 0f ? 0f : 1f, 0f);
+                    NoteColors.SlideColor(p.layerF), nearOf(p.layerF), side < 0f ? 0f : 1f, 0f, Vector4.zero);
 
             var comboTimes = slide.comboTimes;
             var ranges = new (int start, int count)[comboTimes.Count];
@@ -356,87 +369,74 @@ namespace Muses.Notes
             return ranges;
         }
 
+        // ∧ の寸法（design-lab/note-skin/skins/shared/chevron.js の CHEVRON_DEFAULTS）。
+        // ChevronTh / ChevronSl は Note.shader の CHEV_TH / CHEV_SL と一致させること（周期の計算に使う）。
+        private const float ChevronTh = 0.32f;       // 厚み（層）
+        private const float ChevronSl = 0.30f;       // 傾き（層）。中央→端での下がり量
+        private const float ChevronTileCells = 3f;   // ∧ 1つ分のセル幅の目安（幅に応じて横に並べる）
+
         /// <summary>
-        /// note-spec.md §4.6.6（rev.7）。Riser（層跨ぎ）の見た目。全頂点が同じ時刻
-        /// centerTime を持つ（＝ワールド空間で判定線に平行な垂直面）点が PushSlideBand との違い。
-        /// layerF ∈ [wp.layerF, wp.layerTo] を分割してスイープする。直線移動なので分割数は固定8〜16で足りる。
-        /// u（左右端）は各分割点で同じ cellF/width から求めるが、シェーダ側で頂点ごとの layerF 属性
-        /// （uv1.x）に応じて LaneX の収束補正が変わるため、ワールド空間では厳密な垂直線にならない
-        /// （unity-stage-port-design.md の「最遠端でワールド x は層ごとに違う」と同じ理由。正しい挙動）。
+        /// note-spec.md §4.6.6（rev.7）。Riser/Diver の見た目（r3、スキン「ネオン」。移植元 design-lab/note-skin/skins/neon.js）。
+        /// 全頂点が同じ時刻 centerTime を持つ（＝判定線に平行な垂直面）。
         ///
-        /// note-visual-r1.md §6: 旧実装は12分割×2三角の大面積な半透明の壁だった
-        /// （`ZTest Always`で早期棄却も効かずオーバードローが重い上、視認性の面でも「矢印だけの方がいい」
-        /// というユーザー判断）。**壁の塗りは撤去し、左右端の細い縁線2本（レーン幅の手掛かり）＋
-        /// 進行方向に並べた矢印3つ（層のつながりと方向感の手掛かり）に置き換える。**
-        /// 縁線・矢印とも同じ(u, layerF)空間の座標で指定するだけでよい（頂点シェーダのPlaceNoteが
-        /// 層ごとのレーン収束補正を含めて正しく変形してくれるため）。
+        /// 1. 壁: layerF ∈ [wp.layerF, wp.layerTo] を 12 分割した発光面（タグ -1、extra = (k, span)）。
+        ///    左右の縁・到達点の白線・ハローはフラグメントで描く。
+        /// 2. ∧（Diver は ∨）: 腕ごとのクアッド（タグ 4）。層位置は頂点シェーダが実時刻から決める
+        ///    （Note.shader の ChevronPlace。腕の両端だけを置くので画面上で直線になる）。
+        ///    ここでは基準層 = wp.layerF で積み、先端からの層のずれ offset を extra.x に焼く。
+        ///    1周期に1枚だけ見え、判定時刻に先端が到達点へ届く。幅に応じて ChevronTileCells ごとに横に並べる。
         /// </summary>
         private static void PushRiserWall(
             Waypoint wp, Derived d,
             PushFn push, Func<float, float> nearOf,
-            Func<float, float> uAt, Func<float, float, float> yAt, Color edgeColor, Color arrowColor, float centerTime)
+            Func<float, float> uAt, Func<float, float, float> yAt, Color wallColor, float centerTime)
         {
             const int steps = 12;
             float u0 = uAt(wp.cellF);
             float u1 = uAt(wp.cellF + wp.width);
+            float span = Mathf.Abs(wp.layerTo - wp.layerF);
+            float yUp = d.zJudge * 0.01f;
 
-            (float y, float near) At(float layerF) =>
-                (yAt(layerF, d.skyHeight) + d.zJudge * 0.01f, nearOf(layerF));
-
-            // note-visual-r1.md §6.2: レーン幅の手掛かりとして左右端に細い縁線を残す。
-            // ワールド固定の小さい半幅で近似する（本格的なスクリーン空間一定幅のSDF化は
-            // §4のQuadThin/帯と違い、この程度の装飾要素まではやり過ぎと判断し見送った）。
-            const float edgeHalfWidth = 0.006f;
-            void EmitEdge(float uCenter, float layerA, float layerB)
+            float LayerAt(float k) => wp.layerF + (wp.layerTo - wp.layerF) * k;
+            void EmitWall(float u, float k, float localU)
             {
-                var a = At(layerA);
-                var b = At(layerB);
-                float ul = uCenter - edgeHalfWidth, ur = uCenter + edgeHalfWidth;
-                push(ul, a.y, centerTime, layerA, edgeColor, a.near, 0f, -1f);
-                push(ur, a.y, centerTime, layerA, edgeColor, a.near, 1f, -1f);
-                push(ur, b.y, centerTime, layerB, edgeColor, b.near, 1f, -1f);
-                push(ul, a.y, centerTime, layerA, edgeColor, a.near, 0f, -1f);
-                push(ur, b.y, centerTime, layerB, edgeColor, b.near, 1f, -1f);
-                push(ul, b.y, centerTime, layerB, edgeColor, b.near, 0f, -1f);
+                float l = LayerAt(k);
+                push(u, yAt(l, d.skyHeight) + yUp, centerTime, l, wallColor, nearOf(l), localU, -1f, new Vector4(k, span, 0f, 0f));
             }
 
             for (int i = 0; i < steps; i++)
             {
-                float lA = wp.layerF + (wp.layerTo - wp.layerF) * i / steps;
-                float lB = wp.layerF + (wp.layerTo - wp.layerF) * (i + 1) / steps;
-                EmitEdge(u0, lA, lB);
-                EmitEdge(u1, lA, lB);
+                float ka = (float)i / steps, kb = (float)(i + 1) / steps;
+                EmitWall(u0, ka, 0f); EmitWall(u1, ka, 1f); EmitWall(u1, kb, 1f);
+                EmitWall(u0, ka, 0f); EmitWall(u1, kb, 1f); EmitWall(u0, kb, 0f);
             }
 
-            // ---- 矢印（進行方向に3つ並べ、単発の大矢印より「動き」を読めるようにする） ----
-            float uc = (u0 + u1) * 0.5f;
-            float halfW = (u1 - u0) * 0.30f;
-            float dir = Mathf.Sign(wp.layerTo - wp.layerF);
-            float span = Mathf.Abs(wp.layerTo - wp.layerF);
-            float armH = span * 0.16f;
-            float thick = span * 0.08f;
+            // ---- ∧ の腕（shared/chevron.js の buildChevrons）----
+            float dirSign = wp.layerTo < wp.layerF ? -1f : 1f;
+            int n = Math.Max(1, Mathf.FloorToInt(wp.width / ChevronTileCells + 0.5f)); // JS の Math.round と同じ丸め
+            float h = ChevronTh * 0.5f;
+            float baseY = yAt(wp.layerF, d.skyHeight) + yUp;
+            float baseNear = nearOf(wp.layerF);
 
-            // 左腕・右腕とも4隅がu/layerFとも異なる四角形なので、EmitEdgeの矩形前提には乗らない。
-            // 頂点1つずつ座標を指定する汎用の四角形をここだけ別に組む。
-            void EmitFreeQuad((float u, float l) p0, (float u, float l) p1, (float u, float l) p2, (float u, float l) p3)
+            // 1頂点: u, 先端からの層のずれ, 腕の断面(-1/+1)
+            void EmitChev(float u, float offset, float armSide) =>
+                push(u, baseY, centerTime, wp.layerF, wallColor, baseNear, armSide, 4f,
+                    new Vector4(offset, span, dirSign, wp.time));
+
+            // fa/fb = 幅に対する位置(0..1)、xla/xlb = 先端からの横位置(0=先端/1=端)
+            void Arm(float fa, float xla, float fb, float xlb)
             {
-                var a = At(p0.l); var b = At(p1.l); var c2 = At(p2.l); var e = At(p3.l);
-                push(p0.u, a.y, centerTime, p0.l, arrowColor, a.near, 0f, -1f);
-                push(p1.u, b.y, centerTime, p1.l, arrowColor, b.near, 0f, -1f);
-                push(p2.u, c2.y, centerTime, p2.l, arrowColor, c2.near, 0f, -1f);
-                push(p0.u, a.y, centerTime, p0.l, arrowColor, a.near, 0f, -1f);
-                push(p2.u, c2.y, centerTime, p2.l, arrowColor, c2.near, 0f, -1f);
-                push(p3.u, e.y, centerTime, p3.l, arrowColor, e.near, 0f, -1f);
+                float ua = uAt(wp.cellF + fa * wp.width), ub = uAt(wp.cellF + fb * wp.width);
+                float oa = -ChevronSl * xla, ob = -ChevronSl * xlb;
+                EmitChev(ua, oa - h, -1f); EmitChev(ub, ob - h, -1f); EmitChev(ub, ob + h, 1f);
+                EmitChev(ua, oa - h, -1f); EmitChev(ub, ob + h, 1f); EmitChev(ua, oa + h, 1f);
             }
 
-            float[] fracs = { 0.22f, 0.5f, 0.78f };
-            foreach (var frac in fracs)
+            for (int i = 0; i < n; i++)
             {
-                float lMid = wp.layerF + (wp.layerTo - wp.layerF) * frac;
-                float lTip = lMid + dir * armH * 0.5f;
-                float lBase = lMid - dir * armH * 0.5f;
-                EmitFreeQuad((uc - halfW, lBase), (uc - halfW, lBase + dir * thick), (uc, lTip + dir * thick), (uc, lTip));
-                EmitFreeQuad((uc + halfW, lBase), (uc + halfW, lBase + dir * thick), (uc, lTip + dir * thick), (uc, lTip));
+                float f0 = (float)i / n, f1 = (float)(i + 1) / n, fc = (f0 + f1) * 0.5f;
+                Arm(f0, 1f, fc, 0f); // 左の腕（端 → 先端）
+                Arm(fc, 0f, f1, 1f); // 右の腕（先端 → 端）
             }
         }
     }

@@ -211,3 +211,24 @@ Sonnet には r2 と同様、**描画を見ながら反復**させる。
   `shared/edge.js`（museEdge・uEdgeMinPx・uEdgeScale）→ Note.shader のマテリアルプロパティ。
 - 注意: ∧ の位相は uSongTime − ノーツ時刻。Unity のスクロールグループ（停止・逆走）でノーツ時刻の扱いを決める必要がある。
 - ラボは three.js（sRGB で premultiply して Unity の Linear ブレンドに近似）。移植後に実機で色・明るさを再確認する。
+
+## 12. Unity 移植 ① ネオン（2026-09-29）
+
+ラボの `skins/neon.js` ＋ `shared/chevron.js` ＋ `shared/edge.js` を Unity に移植した（Unity 上での見た目確認・iPad 実機確認は未実施）。
+
+- `Note.shader`（シェーダ名 `Muses/Note` のまま＝シーンの参照を保つ。中身をスキン「ネオン」に置き換え）。
+  全ノーツ premultiplied（Blend One OneMinusSrcAlpha）。旧 `_BandPremul` / `_BandAlpha` / `_BandAdd` と NoteView の
+  groundBandAlpha/Add は廃止（地上帯のステンシル＝重なり4枚まではそのまま）。
+- `NotePlacement.hlsl`: PlaceNote を `MusesRemapDepth` / `MusesZcMix` / `PlaceNoteCore`（見かけの倍率 scale も返す）/ `MusesHalfThickness` に分解（挙動は同じ）。
+- Tap / ExTap / Flick: 頂点シェーダで stage.js の placeNote と同じ中心・倍率 (sx, sx, sz) を求め、
+  `TransformWorldToObject(_WorldSpaceCameraPos)` でカメラをノーツのローカル空間へ移してインポスターを解く。
+  頂点に両端の u が要るので **TEXCOORD4（NoteMeshData.extra）** を追加（Tap: uL, uR, ExTap）。
+- Riser / Diver: 壁（タグ -1、extra=(k, span)）＋ ∧ の腕（タグ 4、extra=(offset, span, dirSign, 実時刻)、
+  腕の断面 ±1 は localUv.x に入れる）。基準層は wp.layerF、chevronPlace の手前端は `_GroundNear`/`_SkyNear` から補間。
+- **∧ の位相は実時間基準**（ユーザー指定）: `_SongTime`（NoteView.UpdateScroll で渡す実時間）− ノーツの実時刻。
+  壁の位置はスクロールグループの X(t) に従うが、∧ はスクロール停止・逆走中も一定の速さ（1周期0.5秒）で流れ続け、
+  判定時刻に先端が到達点へ届く。
+- 白線: `_EdgeMinPx`（既定 0.5）/ `_EdgeScale`（1.0）。NoteView の edgeMinPx / edgeScale（プロパティ EdgeMinPx / EdgeScale）。
+- ラボとの差: 色の合成はラボ(sRGB 空間)と違い Linear 空間。発光・半透明の明るさは実機で再確認する。
+  Slide マーカー・Tap の厚みは従来どおり奥行きに応じた下限つき（点滅防止）。
+- 次: iPad 実機確認（色・負荷。Tap は毎画素二次方程式、Riser 壁の塗りが復活したのでオーバードロー）→ ② キーキャップ → ③ スキン切替 UI。

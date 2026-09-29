@@ -99,45 +99,66 @@ float DepthFromV(float h, float v, float theta)
     return h / tan(psi);
 }
 
-float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out float depthOut)
+// 層ごとの奥行き再マップ（上のコメント参照）。地上・帯の外側は恒等。
+float MusesRemapDepth(float d0, float layerF)
 {
-    float layerF = uv1.x;
+    if (layerF <= 1e-6 || d0 <= _ZJudge || d0 >= _Far) return d0;
+    float hL = _YCam - layerF * _SkyHeight;
+    float theta = atan2(_SinTheta, _CosTheta);
+    float vgj = VAt(_YCam, _ZJudge, theta);
+    float vgf = VAt(_YCam, _Far, theta);
+    float pg = (VAt(_YCam, d0, theta) - vgj) / (vgf - vgj); // 構成上 [0,1]
+    float vj = VAt(hL, _ZJudge, theta);
+    float vf = VAt(hL, _Far, theta);
+    return DepthFromV(hL, vj + pg * (vf - vj), theta);
+}
 
-    // 地上基準の奥行き。タイミングの正であり、厚みもこの空間で足してから再マップする
-    // （そうすると画面上の厚みも地上と揃う。空中だけ薄く見える問題も同時に解消する）。
-    float d0 = _ZJudge + (positionOS.z - groupX) * _Speed;
-    // note-visual-r1.md §3: 奥行き再マップ後、空中ノーツの画面上の厚みは地上のちょうど0.509倍
-    // （奥行きに依らず一定）になる。_SkyThicknessMul(既定1.96=1/0.509)で地上と一致させる。
-    // layerFで連続的に補間するのは、層を跨ぐSlideが中間のlayerFを取り得るため。
-    float halfThickness = max(_ZJudge * _ThicknessFrac, d0 * _ThicknessMinFrac)
-        * lerp(1.0, _SkyThicknessMul, layerF);
-    d0 += uv1.y * halfThickness;
-
-    float yPlane = layerF * _SkyHeight;
-    float hL = _YCam - yPlane;
-
-    // 地上(layerF=0、拍線を含む)は恒等。帯の外側も恒等（上のコメント「訂正2」参照）。
-    float depth = d0;
-    if (layerF > 1e-6 && d0 > _ZJudge && d0 < _Far)
-    {
-        float theta = atan2(_SinTheta, _CosTheta);
-        float vgj = VAt(_YCam, _ZJudge, theta);
-        float vgf = VAt(_YCam, _Far, theta);
-        float pg = (VAt(_YCam, d0, theta) - vgj) / (vgf - vgj); // 構成上 [0,1]
-        float vj = VAt(hL, _ZJudge, theta);
-        float vf = VAt(hL, _Far, theta);
-        depth = DepthFromV(hL, vj + pg * (vf - vj), theta);
-    }
-
-    float a = hL * _SinTheta;
+// レーンの横方向の係数（x = u * _LaneK * zcMix）。層 layerF・奥行き depth での値。
+float MusesZcMix(float layerF, float depth)
+{
+    float a = (_YCam - layerF * _SkyHeight) * _SinTheta;
     float zcJudge = a + _ZJudge * _CosTheta;
     float zcFar = a + _Far * _CosTheta;
     float c = clamp(_LaneConverge * (zcFar / _ZcFarGround), 0.0, 1.0);
-    float zc = a + depth * _CosTheta;
-    float zcMix = lerp(zc, zcJudge, c);
-    float x = positionOS.x * _LaneK * zcMix;
+    return lerp(a + depth * _CosTheta, zcJudge, c);
+}
+
+// 地上・判定線上の zcMix。ある地点の見かけの倍率 = MusesZcMix(...) / MusesZcJudgeGround()
+// （ラボ design-lab/note-long/long.js の musePlace の out scale と同じ）。
+float MusesZcJudgeGround()
+{
+    return _YCam * _SinTheta + _ZJudge * _CosTheta;
+}
+
+// 厚みを付けない配置の本体。x = ノーツの表示位置 X(noteTime)、dz = 地上基準の奥行きのずらし（再マップ前）。
+// scaleOut = その地点の見かけの倍率（判定線上の地上=1）。白線の幅（NoteNeon の MusesEdge）に使う。
+float3 PlaceNoteCore(float u, float y, float x, float layerF, float dz, float groupX,
+    out float depthOut, out float scaleOut)
+{
+    float d0 = _ZJudge + (x - groupX) * _Speed + dz;
+    float depth = MusesRemapDepth(d0, layerF);
+    float zcMix = MusesZcMix(layerF, depth);
     depthOut = depth;
-    return float3(x, positionOS.y, depth); // Unity は +z が奥（StageGeometry参照）
+    scaleOut = zcMix / MusesZcJudgeGround();
+    return float3(u * _LaneK * zcMix, y, depth); // Unity は +z が奥（StageGeometry参照）
+}
+
+// タップ系の厚み（半分、地上基準のワールド単位）。上の「厚みの決め方」のコメント参照。
+// note-visual-r1.md §3: 空中は _SkyThicknessMul 倍（layerF で連続補間。層を跨ぐSlideが中間のlayerFを取り得るため）。
+float MusesHalfThickness(float d0, float layerF)
+{
+    return max(_ZJudge * _ThicknessFrac, d0 * _ThicknessMinFrac) * lerp(1.0, _SkyThicknessMul, layerF);
+}
+
+float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out float depthOut)
+{
+    float layerF = uv1.x;
+    // 地上基準の奥行き。タイミングの正であり、厚みもこの空間で足してから再マップする
+    // （そうすると画面上の厚みも地上と揃う。空中だけ薄く見える問題も同時に解消する）。
+    float d0 = _ZJudge + (positionOS.z - groupX) * _Speed;
+    float scale;
+    return PlaceNoteCore(positionOS.x, positionOS.y, positionOS.z, layerF,
+        uv1.y * MusesHalfThickness(d0, layerF), groupX, depthOut, scale);
 }
 
 #endif

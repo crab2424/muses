@@ -84,11 +84,33 @@ namespace Muses.Notes
         private const int GroundBandRenderQueue = 3008;
         private const int SkyBandRenderQueue = 3009;
 
-        /// <summary>gameplay-feel-r1.md §5.3/§8。地上帯の合成の強さ（実機で調整する値）。
-        /// 1枚あたり「通常合成 α=BandAlpha」＋「加算 BandAdd×色」。</summary>
-        [Header("地上Slide帯: 重なるほど明るく（上限4枚）")]
-        [SerializeField] private float groundBandAlpha = 0.30f;
-        [SerializeField] private float groundBandAdd = 0.22f;
+        /// <summary>r3 §9/§10（design-lab/note-skin/skins/shared/edge.js）。白線（縁・レール・輪郭）は
+        /// 「判定線上での幅 × 見かけの倍率」で遠方ほど細くなる。その下限(px)と全体の太さの倍率。</summary>
+        [Header("白線（縁・レール・輪郭）")]
+        [Tooltip("白線の下限(px)。0 で遠方では消える。r3 §10 で 0.5 に決定")]
+        [SerializeField] private float edgeMinPx = 0.5f;
+        [Tooltip("白線の太さの全体倍率")]
+        [SerializeField] private float edgeScale = 1f;
+
+        public float EdgeMinPx
+        {
+            get => edgeMinPx;
+            set { edgeMinPx = value; ApplyEdgeUniforms(); }
+        }
+        public float EdgeScale
+        {
+            get => edgeScale;
+            set { edgeScale = value; ApplyEdgeUniforms(); }
+        }
+
+        private void ApplyEdgeUniforms()
+        {
+            foreach (var m in NoteMaterials())
+            {
+                m.SetFloat("_EdgeMinPx", edgeMinPx);
+                m.SetFloat("_EdgeScale", edgeScale);
+            }
+        }
 
         /// <summary>note-spec.md §5.5。シェーダの _GroupX[] と同じ長さで固定（グループ数に理論上限はないが、
         /// GPUへ渡す配列は実装上の上限を設ける。Note.shader の MUSES_MAX_SCROLL_GROUPS と一致させること）。</summary>
@@ -151,6 +173,8 @@ namespace Muses.Notes
             notesMesh.SetUVs(2, notesUv2);
             // note-visual-r1.md §3-3/§8-3: SDF描画(角丸+輪郭線)用のローカルUV。
             notesMesh.SetUVs(3, data.localUv);
+            // r3: 種別ごとの追加データ（Tap の両端 u、Riser 壁の k、∧ のずれ・実時刻。NoteMeshData.extra 参照）。
+            notesMesh.SetUVs(4, data.extra);
 
             // gameplay-feel-r1.md §5.3: 三角形を「地上帯/空中帯/その他」の3サブメッシュへ振り分ける。
             // 頂点配列は共有なので、Judge が書く頂点範囲（alpha・食べる/通り過ぎる）はそのまま使える。
@@ -198,6 +222,7 @@ namespace Muses.Notes
         /// シェーダの _GroupX[] に渡し、実効速度 baseSpeed×hiSpeed を _Speed に渡す。
         /// scrollEvents を持たないグループは Chart.ScrollTimeline.Identity（X(t)=t）を使うため、
         /// ソフラン未使用の譜面では従来（_SongTime を直接引く）と同じ結果になる。
+        /// r3: 実時間 songTime も _SongTime に渡す（Riser の ∧ の位相用。スクロールの停止・逆走中も一定の速さで流すため）。
         /// </summary>
         public void UpdateScroll(float songTime, float hiSpeed)
         {
@@ -212,6 +237,7 @@ namespace Muses.Notes
             {
                 m.SetFloatArray("_GroupX", groupXBuffer);
                 m.SetFloat("_Speed", speed);
+                m.SetFloat("_SongTime", songTime);
             }
             if (beatMaterial != null)
             {
@@ -303,13 +329,15 @@ namespace Muses.Notes
                 m.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
 
-            foreach (var m in NoteMaterials()) Apply(m);
-            Apply(beatMaterial);
-            if (groundBandMaterial != null)
+            foreach (var m in NoteMaterials())
             {
-                groundBandMaterial.SetFloat("_BandAlpha", groundBandAlpha);
-                groundBandMaterial.SetFloat("_BandAdd", groundBandAdd);
+                Apply(m);
+                // r3: ∧ は層が動くので、層ごとの手前端をシェーダで補間する（NoteGeometry.NearOf と同じ式）
+                m.SetFloat("_GroundNear", dCopy.groundNear);
+                m.SetFloat("_SkyNear", dCopy.skyNear);
             }
+            Apply(beatMaterial);
+            ApplyEdgeUniforms();
         }
 
         private IEnumerable<Material> NoteMaterials()
@@ -344,7 +372,8 @@ namespace Muses.Notes
             notesMesh.MarkDynamic();
             notesFilter.sharedMesh = notesMesh;
 
-            // gameplay-feel-r1.md §5.3: 地上帯 / 空中帯 / その他 の3マテリアル（シェーダは共通、合成とステンシルだけ違う）。
+            // gameplay-feel-r1.md §5.3: 地上帯 / 空中帯 / その他 の3マテリアル（シェーダは共通、ステンシルと描画順だけ違う）。
+            // 合成はシェーダ側で全ノーツ premultiplied（Blend One OneMinusSrcAlpha）に固定（r3 スキン「ネオン」）。
             var existingMats = notesRenderer.sharedMaterials;
             Material Reuse(int i, string name) =>
                 existingMats != null && existingMats.Length == 3 && existingMats[i] != null && existingMats[i].shader == noteShader
@@ -353,11 +382,6 @@ namespace Muses.Notes
 
             groundBandMaterial = Reuse(0, "NotesGroundBand");
             groundBandMaterial.renderQueue = GroundBandRenderQueue;
-            groundBandMaterial.SetFloat("_SrcBlend", (float)BlendMode.One); // premultiplied（シェーダの _BandPremul 分岐）
-            groundBandMaterial.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
-            groundBandMaterial.SetFloat("_BandPremul", 1f);
-            groundBandMaterial.SetFloat("_BandAlpha", groundBandAlpha);
-            groundBandMaterial.SetFloat("_BandAdd", groundBandAdd);
             // そのピクセルに既に描いた地上帯が4枚未満なら描いて+1（Ref 4 > 枚数）。5枚目以降は描かない。
             groundBandMaterial.SetFloat("_StencilRef", 4f);
             groundBandMaterial.SetFloat("_StencilComp", (float)CompareFunction.Greater);
