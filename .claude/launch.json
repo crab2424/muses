@@ -4,14 +4,44 @@
     {
       "name": "muses-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "web-prototype", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "web-prototype",
+        "run",
+        "dev"
+      ],
       "port": 5173
     },
     {
       "name": "muses-dev-alt",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "web-prototype", "run", "dev", "--", "--port", "5174", "--strictPort"],
+      "runtimeArgs": [
+        "--prefix",
+        "web-prototype",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
       "port": 5174
+    },
+    {
+      "name": "tap-lab",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "web-prototype",
+        "exec",
+        "--",
+        "vite",
+        "/Users/crab2424/Documents/muses/design-lab/note-tap",
+        "--port",
+        "5180",
+        "--strictPort"
+      ],
+      "port": 5180
     }
   ]
 }
