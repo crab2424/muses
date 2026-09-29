@@ -123,15 +123,16 @@ const LONG_VERT = /* glsl */ `
   void main() {
     float depth, sc;
     float layer = position.y, m = 0.0;
-    if (aExtra.w > 3.5) layer = chevronLayer(position.y, aColor.w, position.z, aColor.x, aColor.y, m);
-    vec3 wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
+    vec3 wp;
+    if (aExtra.w > 3.5) wp = chevronPlace(position, aExtra, aColor, layer, m, depth, sc);
+    else wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
     vM = m; vScale = sc;
     vDepth = depth; vLayer = layer; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
   }`;
 
 // ∧ の寸法（shared/chevron.js。速さ 0.46 層/秒・ノーツ時刻基準の位相は既定のまま）
-const CHEV = { ...CHEVRON_DEFAULTS, th: 0.14, sl: 0.26, tileCells: 2.5 };
+const CHEV = { ...CHEVRON_DEFAULTS, th: 0.28, sl: 0.26, tileCells: 2.5 }; // th は r3 §10 で 0.14→0.28（2倍）
 
 export default {
   id: 'keycap', name: 'キーキャップ', model: 'Sonnet 5.5',
@@ -250,6 +251,7 @@ export default {
             vec2 eA = museEdge(3.0, vScale);                          // 白縁: 判定線上で約3px（半断面の約2割）、遠方で細く
             float edgeW = eA.x * fs;
             float edge = smoothstep(1.0 - edgeW - fs, 1.0 - edgeW + fs, abs(vSide)) * eA.y;
+            edge *= smoothstep(0.12 * ${CHEV.th.toFixed(3)}, 0.5 * ${CHEV.th.toFixed(3)}, min(vM, span - vM)) * smoothstep(eA.x, eA.x + 2.0, min(vM, span - vM) / fm);   // 切られた端（壁の出入り口）付近は白縁を出さない: 入ってきた矢印の先端が白い三角に見えるのを防ぐ
             float lit = 0.86 + 0.24 * (vSide * 0.5 + 0.5);            // 進行側ほど少し明るいマット
             vec3 rgb = mix(col * lit, vec3(1.0), edge);
             gl_FragColor = museOut(rgb, inR, 0.0);

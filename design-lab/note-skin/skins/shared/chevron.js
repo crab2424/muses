@@ -16,38 +16,57 @@
 //                        dir   : 進行方向の符号（Riser +1 / Diver -1）。層 = layerF + dir * m
 //                   side(=aSide)   = 腕の断面方向 -1（下辺）/ +1（上辺）
 // 2. 頂点シェーダ（GLSL）: chevronGLSL(params) を musePlace より後ろに連結し、tag>3.5 の頂点で
-//        float m; float layer = chevronLayer(position.y, aColor.w, position.z, aColor.x, aColor.y, m);
-//    の layer を musePlace の layerF 引数と varying vLayer に使う。m（先端基準でなくノーツ起点からの移動量、層）は
-//    varying でフラグメントへ渡す。
+//        wp = chevronPlace(position, aExtra, aColor, layer, m, depth, sc);
+//    をワールド座標に使う。layer は varying vLayer に、
+//    m（ノーツ起点からの移動量、層）は varying でフラグメントへ渡す。
 // 3. フラグメント: m < 0 または m > span（壁の根元より下・到達点より上）は discard（境界は fwidth(m) で薄く消す）。
 //    見た目（色・発光・縁）は各スキンで決める。壁のフラグメントには ∧ の模様を描かない。
 //
 // ## 位相（リード指定）
-//   ノーツ時刻基準。判定時刻（uSongTime == noteT）に先端が到達点（m = span）へ届く。速さは speed 層/秒で一定。
+//   ノーツ時刻基準。判定時刻（uSongTime == noteT）に先端が到達点（m = span）へ届く。1周期は cycleSec 秒（高さに依らず共通）。
 //   1周期 P = span + (th + sl) + pad なので、壁の上に同時に2枚は見えない。Diver は dir=-1 で ∨ が下へ流れる。
 // ## 幅
 //   幅に応じて ∧ を横に並べる（tileCells セルごとに1つ、最低1つ）。幅1でも ∧ に読める（傾きは層単位で固定）。
 
 export const CHEVRON_DEFAULTS = {
-  th: 0.16,        // 厚み（層）。腕の縦方向の太さ
+  th: 0.32,        // 厚み（層）。腕の縦方向の太さ。r3: 0.16 → 0.32（2倍、ユーザー指定）
   sl: 0.30,        // 傾き（層）。中央→端での下がり量
   pad: 0.05,       // 周期の余白（層）
-  speed: 0.92,     // 流れる速さ（層/秒）。r3: 0.23（旧ネオン）→0.46（2倍）→0.92（さらに2倍、ユーザー指定）
+  cycleSec: 0.5,   // 1周期の秒数（Riser の高さに依らず共通。ユーザー指定 r3 §10）。旧 speed(層/秒) は廃止
   tileCells: 3.0,  // ∧ 1つ分のセル幅の目安
   tag: 4,          // aExtra.w に入れる印
   yUp: 0,          // 面からの高さ（ワールド単位、musePlace の yUp）
 };
 
-/** 頂点シェーダ用 GLSL。uSongTime は glsl.place の uniform を使う（musePlace より後ろに置くこと）。 */
+/**
+ * 頂点シェーダ用 GLSL。uSongTime は glsl.place の uniform を使う（musePlace より後ろに置くこと）。
+ *   vec3 chevronPlace(vec3 pos, vec4 extra, vec4 col, out float layer, out float m, out float depth, out float sc)
+ *     pos=position, extra=aExtra, col=aColor。戻り値はワールド座標。
+ *   全頂点で共通の基準層 Lc（先端中心の層を壁の範囲にクランプ）で、各頂点の u における壁上の位置と層方向の微分を取り、
+ *   頂点ごとの層差ぶんその方向へずらして置く。基準層が全頂点で共通なので ∧ 全体が一緒に動き（端と中央の速さが揃う）、
+ *   腕は画面上で直線のまま、隣り合う ∧ の継ぎ目も一致する。
+ *   （以前は頂点ごとに自分の層で musePlace していたため、奥行き再マップの層依存で Diver の端と中央の速さがずれ、
+ *     途中で形が変わった。r3 §10）
+ */
 export function chevronGLSL(params = {}) {
   const p = { ...CHEVRON_DEFAULTS, ...params };
   const f = (x) => x.toFixed(5);
   return /* glsl */ `
-float chevronLayer(float layerF, float dirSign, float noteT, float offsetM, float span, out float m) {
+float chevronTipM(float noteT, float span) {
   float P = span + ${f(p.th + p.sl)} + ${f(p.pad)};
-  float pos = mod((uSongTime - noteT) * ${f(p.speed)} + span + ${f(p.pad)}, P) - ${f(p.th * 0.5 + p.pad)};
-  m = pos + offsetM;
-  return layerF + dirSign * m;
+  // 1周期 = cycleSec 秒（高さに依らず共通）。判定時刻（uSongTime == noteT）に先端が到達点（m = span）へ届く
+  return mod((uSongTime - noteT) / ${f(p.cycleSec)} * P + span + ${f(p.pad)}, P) - ${f(p.th * 0.5 + p.pad)};
+}
+vec3 chevronPlace(vec3 pos, vec4 extra, vec4 col, out float layer, out float m, out float depth, out float sc) {
+  float dirSign = col.w, span = col.y, offsetM = col.x;
+  float tipM = chevronTipM(pos.z, span);
+  float Lc = pos.y + dirSign * clamp(tipM, 0.0, span);
+  m = tipM + offsetM;
+  layer = pos.y + dirSign * m;
+  vec3 p0 = musePlace(pos.x, Lc, pos.z, 0.0, extra.y, depth, sc);
+  float d1, s1;
+  vec3 pL = musePlace(pos.x, Lc + 0.01, pos.z, 0.0, extra.y, d1, s1);
+  return p0 + (layer - Lc) * (pL - p0) / 0.01;
 }`;
 }
 

@@ -165,14 +165,15 @@ const LONG_VERT = /* glsl */ `
     float depth, sc;
     float layer = position.y, m = 0.0;
     // ∧ の板（tag 4）: 層位置を頂点シェーダで計算（腕の両端だけ musePlace で置くので画面上で直線になる）
-    if (aExtra.w > 3.5) layer = chevronLayer(position.y, aColor.w, position.z, aColor.x, aColor.y, m);
-    vec3 wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
+    vec3 wp;
+    if (aExtra.w > 3.5) wp = chevronPlace(position, aExtra, aColor, layer, m, depth, sc);
+    else wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
     vM = m; vScale = sc;
     vDepth = depth; vLayer = layer; vT = position.z; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
   }`;
 
-// Riser の∧の寸法は shared/chevron.js の既定値（厚み0.16層・傾き0.30層・0.46層/秒・3セルごと）
+// Riser の∧の寸法は shared/chevron.js の既定値（厚み0.32層・傾き0.30層・1周期0.5秒・3セルごと）
 const CHEV = { ...CHEVRON_DEFAULTS };
 
 export default {
