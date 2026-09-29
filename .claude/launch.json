@@ -42,6 +42,22 @@
         "--strictPort"
       ],
       "port": 5180
+    },
+    {
+      "name": "design-lab",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "web-prototype",
+        "exec",
+        "--",
+        "vite",
+        "/Users/crab2424/Documents/muses/design-lab",
+        "--port",
+        "5181",
+        "--strictPort"
+      ],
+      "port": 5181
     }
   ]
 }
