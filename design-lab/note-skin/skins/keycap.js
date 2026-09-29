@@ -1,7 +1,9 @@
 // スキン「キーキャップ」（r3）: 全ノーツを不透明マットのキーキャップ素材（面取りの明暗＋白リング＋塗り）で統一。
-//  Tap/ExTap/Flick = 立体メッシュ（地上は 平面 / 薄型 切替、空中は本物の立体＋遠方で高さ→0）
+//  Tap/ExTap/Flick = 立体メッシュ（地上は薄型、空中は本物の立体＋遠方で高さ→0）
 //  Slide = マット板＋縁レール＋中央芯線（枕木なし）、始点/Visible中継点は Tap と同じキーキャップのマーカー
 //  Riser/Diver = 白縁＋塗りの分厚い ∧ 1枚が 0.46層/秒 で層方向に流れる壁
+
+import { buildChevrons, chevronGLSL, CHEVRON_DEFAULTS } from './shared/chevron.js';
 
 // ================= Tap 系: 断面リングを積んだ押し出しソリッド =================
 // loop = 平面の輪郭 [{ p:[x,z], m:[mx,mz](内側への縮み方向・単位はミター補正込み), n:[nx,nz](外向き法線) }]
@@ -110,32 +112,30 @@ const TAP_FRAG = /* glsl */ `
 
 // ================= Slide / Riser: 頂点シェーダ配置 =================
 const LONG_VERT = /* glsl */ `
-  attribute vec4 aExtra;  // x=dz, y=yUp, z=localX(0..1), w=tag(0=帯,1=マーカー,3=Riser壁)
-  attribute vec4 aColor;  // 壁: x=s(流れ方向の層距離), y=span, z=横の ∧ 個数, w=rise(層)
+  attribute vec4 aExtra;  // x=dz, y=yUp, z=localX(0..1), w=tag(0=帯,1=マーカー,3=Riser壁,4=∧の腕)
+  attribute vec4 aColor;  // 壁: x=s(流れ方向の層距離), y=span, z=Diver(0/1) / 腕: shared/chevron.js の仕様
   attribute float aSide;
-  varying float vDepth, vLayer, vTag, vSide, vT; varying float vLocalX; varying vec4 vColor;
+  varying float vDepth, vLayer, vTag, vSide, vM; varying float vLocalX; varying vec4 vColor;
   void main() {
     float depth, sc;
-    vec3 wp = musePlace(position.x, position.y, position.z, aExtra.x, aExtra.y, depth, sc);
-    vDepth = depth; vLayer = position.y; vT = position.z; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
+    float layer = position.y, m = 0.0;
+    if (aExtra.w > 3.5) layer = chevronLayer(position.y, aColor.w, position.z, aColor.x, aColor.y, m);
+    vec3 wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
+    vM = m;
+    vDepth = depth; vLayer = layer; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
   }`;
 
-// Riser の ∧ の寸法（層単位）と流速
-const RISER_SPEED = 0.46;   // 層/秒（層単位で一定）
-const CHEV_TH = 0.12;       // ∧ の帯の（縦方向の）太さ
-const CHEV_GAP = 0.10;      // 1 枚が壁を出てから次が入るまでの余白
+// ∧ の寸法（shared/chevron.js。速さ 0.46 層/秒・ノーツ時刻基準の位相は既定のまま）
+const CHEV = { ...CHEVRON_DEFAULTS, th: 0.14, sl: 0.26, tileCells: 2.5 };
 
 export default {
   id: 'keycap', name: 'キーキャップ', model: 'Sonnet 5.5',
-  concept: '全ノーツを「不透明でマットなキーキャップ」に統一。Tap/Ex Tap/Flick は面取り付きの立体（白リング付き）で、地上は「平面（厚み0の板に面取りの陰影だけ描く）」か「薄型」を選べ、空中は本物の立体メッシュ＋遠方で高さを0へ縮めて二重見えを防ぐ。Flick は端を尖らせた < >。Slide は枕木なしのマット板＋縁レール＋中央芯線、始点/中継点は Tap と同素材で帯の色のキーキャップ。Riser/Diver は白縁＋塗りの分厚い ∧（Diver は ∨）が 1 枚だけ 0.46 層/秒で流れ、左右レールと到達点バーで範囲を示す。加算発光は使わない。',
-  unityCost: 'Tap 系: メッシュ約 110 頂点/個（現行 4 頂点。法線・縁距離 c の頂点属性が増える）。平面版は h=0 の同メッシュで頂点数は同じ（板1枚のシェーダ陰影に置き換えれば 4 頂点＋fragment 計算にもできる）。凸形なので背面カリング（Cull Back）だけで ZTest Always のまま自己重なりが崩れない＝現行の「全ノーツ1メッシュ・ZWrite Off・ZTest Always」を保てるが、頂点シェーダで「遠方ほど高さ→0」を掛ける（深度→高さ係数 1 行）必要あり。Slide は現行と同頂点数で枕木を削ったぶん軽い。マーカーはフラグメントで面取り陰影を計算（現行＋数十命令）。Riser は壁 12 分割×2 三角形（ネオンと同じ頂点の積み方で、fragment だけ差し替え）。∧ は uSongTime で流す fract 1 回＋SDF 的な距離計算のみ。半透明（Slide 帯・Riser 壁の薄い塗り）以外は不透明色で出せる。',
-  options: [
-    { key: 'ground', label: '地上Tap', choices: [['flat', '平面'], ['thin', '薄型']], default: 'flat' },
-  ],
+  concept: '全ノーツを「不透明でマットなキーキャップ」に統一。Tap/Ex Tap/Flick は面取り付きの立体（白リング付き）で、地上は薄型（高さ0.7×halfT・奥行き1.25倍）、空中は本物の立体メッシュ＋遠方で高さを0へ縮めて二重見えを防ぐ。Flick は端を尖らせた < >。Slide は枕木なしのマット板＋縁レール＋中央芯線、始点/中継点は Tap と同素材で帯の色のキーキャップ。Riser/Diver は白縁＋塗りの分厚い ∧（Diver は ∨）が 1 枚だけ 0.46 層/秒で流れ、左右レールと到達点バーで範囲を示す。加算発光は使わない。',
+  unityCost: 'Tap 系: メッシュ約 110 頂点/個（現行 4 頂点。法線・縁距離 c の頂点属性が増える）。凸形なので背面カリング（Cull Back）だけで ZTest Always のまま自己重なりが崩れない＝現行の「全ノーツ1メッシュ・ZWrite Off・ZTest Always」を保てるが、頂点シェーダで「遠方ほど高さ→0」を掛ける（深度→高さ係数 1 行）必要あり。Slide は現行と同頂点数で枕木を削ったぶん軽い。マーカーはフラグメントで面取り陰影を計算（現行＋数十命令）。Riser は壁 12 分割×2 三角形＋∧の腕ごとのクアッド（1腕6頂点。shared/chevron.js でネオンと共通、層位置は頂点シェーダが uSongTime から計算し腕が画面上で直線）。fragment だけスキンごとに差し替え。半透明（Slide 帯・Riser 壁の薄い塗り）以外は不透明色で出せる。',
+  options: [],
   create(ctx) {
     const { THREE, cfg, d, colors, uniforms, glsl, sampleSlide, uAt } = ctx;
-    const groundMode = ctx.opts.ground || 'flat';
     const SKY_H = d.skyHeight;
 
     // ---------- Tap ----------
@@ -149,13 +149,15 @@ export default {
       });
     }
     const geoCache = new Map();
-    const HEIGHT = { flat: 0, thin: 0.45, air: 1.3 };   // halfT 比
+    const HEIGHT = { thin: 0.7, air: 1.3 };
+    const Z_FAT = 1.25;   // 奥行き方向を太らせる（見た目のみ。ネオンの縦の大きさに合わせる）   // halfT 比
     function tapGeo(kind, widthCells, mode, wWorld, halfT) {
       const key = `${kind}|${widthCells}|${mode}`;
       let g = geoCache.get(key);
       if (!g) {
         const loop = kind === 'flick' ? loopFlick(wWorld / 2, halfT, 1.25) : loopStadium(wWorld / 2, halfT, 10);
         g = buildSolid(THREE, loop, halfT, halfT * HEIGHT[mode], RINGS);
+        g.scale(1, 1, Z_FAT);
         geoCache.set(key, g);
       }
       return g;
@@ -172,14 +174,13 @@ export default {
     const cR = new THREE.Color(colors.slide.riser), cD = new THREE.Color(colors.diver);
     const mat = new THREE.ShaderMaterial({
       uniforms: { ...uniforms, uGround: { value: cG }, uSky: { value: cS }, uRiser: { value: cR }, uDiver: { value: cD } },
-      vertexShader: `${glsl.place}\n${LONG_VERT}`,
+      vertexShader: `${glsl.place}\n${chevronGLSL(CHEV)}\n${LONG_VERT}`,
       fragmentShader: /* glsl */ `
         ${glsl.clip}
         ${KEY_SHADE}
         uniform float uSongTime;
         uniform vec3 uGround, uSky, uRiser, uDiver;
-        varying float vDepth, vLayer, vTag, vSide, vT; varying float vLocalX; varying vec4 vColor;
-        const float SPEED = ${RISER_SPEED.toFixed(3)}, TH = ${CHEV_TH.toFixed(3)}, GAP = ${CHEV_GAP.toFixed(3)};
+        varying float vDepth, vLayer, vTag, vSide, vM; varying float vLocalX; varying vec4 vColor;
         float roundedBox(vec2 p, vec2 b, float r) {
           vec2 q = abs(p) - b + r;
           return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -210,7 +211,7 @@ export default {
             a = max(a, max(center, railHi) * 0.95);
             gl_FragColor = museOut(rgb, a, 0.0);
           } else if (vTag < 1.5) {
-            // ---- マーカー: Tap（地上・平面）と同じ陰影のキーキャップ板 ----
+            // ---- マーカー: Tap と同系統の陰影のキーキャップ板 ----
             vec2 uv = vec2(vLocalX, vSide * 0.5 + 0.5);
             vec2 p = uv - 0.5;
             vec2 duv = vec2(max(fwidth(uv.x), 1e-5), max(fwidth(uv.y), 1e-5));
@@ -231,46 +232,37 @@ export default {
             float ol = (1.0 - smoothstep(w - 0.5, w + 0.5, dPx)) * smoothstep(0.0, 0.4, w) * step(0.14 * bPx.y - 0.5, -dist);
             rgb = mix(rgb, vec3(1.0), ol);
             gl_FragColor = museOut(rgb, shapeA, 0.0);
+          } else if (vTag > 3.5) {
+            // ---- ∧ の腕（独立した板）: 範囲外（根元より下・到達点より上）は捨てる。白縁＋マット塗り ----
+            float span = max(vColor.y, 0.05);
+            float fm = max(fwidth(vM), 1e-5);
+            float inR = smoothstep(0.0, fm, vM) * smoothstep(0.0, fm, span - vM);
+            if (inR <= 0.003) discard;
+            vec3 col = mix(uRiser, uDiver, vColor.z);
+            float fs = max(fwidth(vSide), 1e-5);
+            float edgeW = max(0.22, 1.8 * fs);                       // 白縁の幅（断面比。細いときは約1.8px）
+            float edge = smoothstep(1.0 - edgeW - fs, 1.0 - edgeW + fs, abs(vSide));
+            float lit = 0.86 + 0.24 * (vSide * 0.5 + 0.5);            // 進行側ほど少し明るいマット
+            vec3 rgb = mix(col * lit, vec3(1.0), edge);
+            gl_FragColor = museOut(rgb, inR, 0.0);
           } else {
-            // ---- Riser / Diver 壁 ----
-            float s = vColor.x, span = vColor.y, tiles = vColor.z, rise = vColor.w;
-            bool dive = vColor.w < 0.0;
-            rise = abs(rise);
-            vec3 col = dive ? uDiver : uRiser;
+            // ---- Riser / Diver 壁（∧ は描かない）----
+            float s = vColor.x, span = max(vColor.y, 0.05);
+            vec3 col = mix(uRiser, uDiver, vColor.z);
             float du = max(fwidth(vLocalX), 1e-5);
             float xe = min(vLocalX, 1.0 - vLocalX);
-            float ps = max(fwidth(s), 1e-5);                         // 1px あたりの層距離
-            // 壁の薄い塗り（面の広がりを示す・α小）
+            float ps = max(fwidth(s), 1e-5);
             vec3 rgb = col * 0.55; float a = 0.16;
-            // 到達点バー / 根元バー（マット塗り＋白縁）
             float dG = (span - s) / ps, dB = s / ps;
             float goalC = 1.0 - smoothstep(3.5, 4.5, dG), goalW = 1.0 - smoothstep(1.5, 2.5, dG);
             float baseC = 1.0 - smoothstep(1.5, 2.5, dB);
             rgb = mix(rgb, col, max(goalC, baseC)); a = max(a, max(goalC, baseC));
             rgb = mix(rgb, vec3(1.0), goalW * 0.95);
-            // 左右レール: 白縁の内側に塗り
             float railW = min(3.4 * du, 0.2);
             float rail = 1.0 - smoothstep(railW - du, railW, xe);
             float railHi = 1.0 - smoothstep(0.0, 1.3 * du, xe);
             rgb = mix(rgb, col, rail); a = max(a, rail);
             rgb = mix(rgb, vec3(1.0), railHi * 0.95); a = max(a, railHi);
-            // 流れる ∧（∨）: 1 枚。位相は層単位で一定速度。∧ は横に tiles 個並べて幅に依らず形を保つ
-            float P = span + rise + TH + GAP;
-            float th = max(TH, 3.2 * ps);
-            // 位相はノーツ時刻基準（リード r3）: 判定時刻に ∧ の先端が到達点へ届く。どの Riser でも同じ見え方になり、両スキンで揃う
-            float sLow = mod((uSongTime - vT) * SPEED + span + GAP, P) - (rise + TH + GAP);   // 帯の下端（層距離）
-            float q = abs(fract(vLocalX * tiles) * 2.0 - 1.0);            // 0=∧の頂点 1=谷
-            float sc = sLow + 0.5 * TH + rise * (1.0 - q);                // 帯の中心線
-            float dv = s - sc;
-            float pxv = max(ps + rise * 2.0 * tiles * du, 1e-5);   // dv の 1px 変化量（∧の傾き込み。fwidth(dv) より滑らか）
-            float half_ = 0.5 * th;
-            float edge = clamp(max(1.6 * pxv, 0.16 * th), 0.0, 0.4 * th);
-            float outer = 1.0 - smoothstep(half_ - pxv * 0.6, half_ + pxv * 0.6, abs(dv));
-            float inner = 1.0 - smoothstep(half_ - edge - pxv * 0.6, half_ - edge + pxv * 0.6, abs(dv));
-            float lit = 0.88 + 0.22 * smoothstep(-half_, half_, dv);       // 上（進行側）ほど少し明るいマット
-            vec3 fill = col * lit;
-            vec3 chev = mix(vec3(1.0), fill, inner);
-            rgb = mix(rgb, chev, outer); a = mix(a, 1.0, outer);
             gl_FragColor = museOut(rgb, a, 0.0);
           }
         }`,
@@ -302,29 +294,19 @@ export default {
       for (const [u, dz, lx, s] of q) B.v(u, p.layerF, p.t, dz, y, lx, 1, undefined, s);
     }
 
-    // ∧ の寸法: 横に n 個並べ、腕の傾きが幅に依らず読めるようにする
-    function chevronShape(widthCells) {
-      const wl = ctx.dims(widthCells).wWorld / SKY_H;           // 壁の幅（層単位）
-      const n = Math.max(1, Math.round(widthCells / 2.5));
-      const hw = wl / (2 * n);                                  // ∧ 1 個の半幅（層単位）
-      const rise = Math.min(Math.max(hw * 0.85, 0.06), 0.24);
-      return { n, rise };
-    }
-
     return {
       makeTap(spec) {
         const { kind, widthCells, layer, wWorld, halfT: hT } = spec;
-        const mode = layer ? 'air' : (groundMode === 'thin' ? 'thin' : 'flat');
+        const mode = layer ? 'air' : 'thin';
         const mesh = new THREE.Mesh(tapGeo(kind, widthCells, mode, wWorld, hT), tapMats[kind]);
         mesh.renderOrder = 0;
         const root = new THREE.Group();
         root.add(mesh);
-        root.userData.body = mesh; root.userData.flatMode = mode === 'flat';
+        root.userData.body = mesh; 
         return root;
       },
       updateTap(obj, info) {
-        if (obj.userData.flatMode) return;
-        obj.userData.body.scale.y = farFactor(info.progress);
+        obj.userData.body.scale.y = info.layer ? farFactor(info.progress) : 1;   // 遠方で高さを縮めるのは空中だけ
       },
       makeSlide(note) {
         const B = builder();
@@ -345,13 +327,13 @@ export default {
         const L = (k) => note.layerF + (note.layerTo - note.layerF) * k;
         const y = d.zJudge * 0.01;
         const span = Math.abs(note.layerTo - note.layerF);
-        const dive = note.layerTo < note.layerF;
-        const { n, rise } = chevronShape(note.width);
+        const dive = note.layerTo < note.layerF ? 1 : 0;
         for (let i = 0; i < steps; i++) {
           const ka = i / steps, kb = (i + 1) / steps;
           const pts = [[u0, ka, 0], [u1, ka, 1], [u1, kb, 1], [u0, ka, 0], [u1, kb, 1], [u0, kb, 0]];
-          for (const [u, k, lx] of pts) B.v(u, L(k), note.t, 0, y, lx, 3, [k * span, span, n, dive ? -rise : rise]);
+          for (const [u, k, lx] of pts) B.v(u, L(k), note.t, 0, y, lx, 3, [k * span, span, dive, 0]);
         }
+        buildChevrons(B, note, { ...CHEV, uAt, yUp: y });   // ∧ は腕ごとの板（壁より後に描く）
         return new THREE.Mesh(B.build(), mat);
       },
     };

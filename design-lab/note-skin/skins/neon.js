@@ -2,6 +2,8 @@
 // Slide = 発光チューブ帯（刻みなし・パルス切替）、Riser / Diver = 分厚い∧を1枚だけ流す発光壁。
 // 土台: note-tap/variants/sonnet-b-imp.js と note-long/variants/sonnet-b.js（コピーして改変）。
 
+import { buildChevrons, chevronGLSL, CHEVRON_DEFAULTS } from './shared/chevron.js';
+
 // ================= Tap 系（インポスター）=================
 const HR = 1.5;        // 高さ/半奥行の比
 const EXT_NEAR = 0.15; // 手前側へ伸ばす量
@@ -124,19 +126,25 @@ const TAP_FRAG = /* glsl */ `
     vec3 L = normalize(vec3(-0.4, 0.8, 0.45));
     float ndv = clamp(dot(N, V), 0.0, 1.0);
     float fres = pow(1.0 - ndv, 2.2);
+    // 遠方（ノーツの画面上の高さが小さい）ほど、白い縁・芯・リム・ハイライトを弱めて本体色を主にする
+    float fw = max(fwidth(vC), 1e-5);
+    float dPx = vC / fw, bPx = 1.0 / fw;   // bPx = 半奥行の画面上ピクセル数
+    float nearF = smoothstep(4.0, 14.0, bPx);
     float body = smoothstep(0.0, 0.7, vC);
     vec3 rgb = mix(uDeep, uColor, body);
     rgb *= 0.8 + 0.35 * max(dot(N, L), 0.0);
     float core = smoothstep(0.62, 1.0, vC);
-    rgb = mix(rgb, uCore, core * 0.85);
-    rgb += uRim * fres * 0.55;
+    rgb = mix(rgb, uCore, core * 0.85 * mix(0.25, 1.0, nearF));
+    rgb += uRim * fres * 0.55 * mix(0.3, 1.0, nearF);
     vec3 H = normalize(L + V);
-    rgb += vec3(1.0) * pow(max(dot(N, H), 0.0), 60.0) * 0.6;
-    float fw = max(fwidth(vC), 1e-5);
-    float dPx = vC / fw, bPx = 1.0 / fw;
+    rgb += vec3(1.0) * pow(max(dot(N, H), 0.0), 60.0) * 0.6 * nearF;
+    // 遠方はドームの陰影をやめ、本体色（やや明るめ）でほぼ均一に塗る
+    rgb = mix(min(uColor * 1.12 + 0.03, vec3(1.0)), rgb, nearF);
     float w = min(1.3, max(0.0, bPx - 0.75) * 0.5);
     float ol = (1.0 - smoothstep(w - 0.5, w + 0.5, dPx)) * smoothstep(0.0, 0.4, w);
-    rgb = mix(rgb, vec3(0.95, 0.98, 1.0), ol);
+    // 縁は近くでは白、遠くでは本体色の明るい版へ寄せる（細く・弱く）
+    vec3 olC = mix(min(uColor * 1.25 + 0.08, vec3(1.0)), vec3(0.95, 0.98, 1.0), nearF);
+    rgb = mix(rgb, olC, ol * mix(0.5, 1.0, nearF));
     if (!hit) discard;
     gl_FragColor = vec4(rgb, 1.0);
     #include <colorspace_fragment>
@@ -150,28 +158,28 @@ const LONG_VERT = /* glsl */ `
   attribute vec4 aExtra;  // x=dz, y=yUp, z=localX(0..1), w=tag(0=帯,1=マーカー,3=Riser壁)
   attribute vec4 aColor;  // 壁: x=k(0..1: 根元→到達点), y=span(層の移動量), z=幅(セル), w=Diver(0/1)
   attribute float aSide;
-  varying float vDepth, vLayer, vTag, vSide, vT; varying float vLocalX; varying vec4 vColor;
+  varying float vDepth, vLayer, vTag, vSide, vT, vM; varying float vLocalX; varying vec4 vColor;
   void main() {
     float depth, sc;
-    vec3 wp = musePlace(position.x, position.y, position.z, aExtra.x, aExtra.y, depth, sc);
-    vDepth = depth; vLayer = position.y; vT = position.z; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
+    float layer = position.y, m = 0.0;
+    // ∧ の板（tag 4）: 層位置を頂点シェーダで計算（腕の両端だけ musePlace で置くので画面上で直線になる）
+    if (aExtra.w > 3.5) layer = chevronLayer(position.y, aColor.w, position.z, aColor.x, aColor.y, m);
+    vec3 wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
+    vM = m;
+    vDepth = depth; vLayer = layer; vT = position.z; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
   }`;
 
-// Riser の∧: 厚み TH・傾き SL（層単位）。1周期 = 壁の高さ(span) + ∧の高さ(TH+SL) + 余白 なので同時に2枚は見えない。
-const CHEV_TH = 0.16, CHEV_SL = 0.30, CHEV_PAD = 0.05;
-const CHEV_SPEED = 0.46; // 層/秒（現行 sonnet-b 全移動の 2 倍）
-const CHEV_TILE_CELLS = 3.0; // 横に並べる∧ 1つ分のセル幅の目安（広い Riser は ∧∧∧ と並ぶ）
+// Riser の∧の寸法は shared/chevron.js の既定値（厚み0.16層・傾き0.30層・0.46層/秒・3セルごと）
+const CHEV = { ...CHEVRON_DEFAULTS };
 
 export default {
   id: 'neon',
   name: 'ネオン',
   model: 'Sonnet 5.5',
-  concept: '加算発光のネオン一式。Tap / Ex Tap / Flick は板1枚のインポスターで描くネオンドーム（Flick は端を尖らせた < >）。Slide は白い芯＋色ハローの縁を持つ発光帯（横線の刻みなし、光のパルスは切替）、始点・Visible 中継点は Tap と同じドーム素材。Riser / Diver は分厚い∧を壁の上に1枚だけ流す発光壁（層速度一定・幅が広い時は∧を横に並べる）。Diver は紫で流れが下向き。',
-  unityCost: '頂点の積み方は現行と同じ（Tap 系は1ノーツ4頂点の板、Slide は帯＋マーカー、Riser は壁12分割）で、全ノーツ1メッシュ・ZWrite Off / ZTest Always・半透明のまま移植可。差し替えるのはフラグメントのみ。Tap 系はレイ vs 楕円柱+楕円体2個（Flick は楕円柱+楕円錐2個）の二次方程式を毎画素解くので現行より重く、板は奥へ伸ばすため密な連打で画素が重なる（discard のため MSAA 頼み）。Riser の∧は fract/mod だけで安価。パルス・流れは uSongTime のみ。Tap 系は「ノーツはワールドで平行移動+スケールのみ」の前提でカメラをローカル化している。',
-  options: [
-    { key: 'pulse', label: 'パルス', choices: [['on', 'あり'], ['off', 'なし']], default: 'on' },
-  ],
+  concept: '加算発光のネオン一式。Tap / Ex Tap / Flick は板1枚のインポスターで描くネオンドーム（Flick は端を尖らせた < >）。Slide は白い芯＋色ハローの縁を持つ発光帯（横線の刻みなし）、始点・Visible 中継点は Tap と同じドーム素材。Riser / Diver は分厚い∧を壁の上に1枚だけ流す発光壁（層速度一定・幅が広い時は∧を横に並べる）。Diver は紫で流れが下向き。',
+  unityCost: '頂点の積み方は現行と同じ（Tap 系は1ノーツ4頂点の板、Slide は帯＋マーカー、Riser は壁12分割）で、全ノーツ1メッシュ・ZWrite Off / ZTest Always・半透明のまま移植可。差し替えるのはフラグメントのみ。Tap 系はレイ vs 楕円柱+楕円体2個（Flick は楕円柱+楕円錐2個）の二次方程式を毎画素解くので現行より重く、板は奥へ伸ばすため密な連打で画素が重なる（discard のため MSAA 頼み）。Riser の∧は腕ごとのクアッド（1腕6頂点）で、層位置は頂点シェーダが uSongTime から計算（shared/chevron.js。腕が画面上で直線）。Tap 系は「ノーツはワールドで平行移動+スケールのみ」の前提でカメラをローカル化している。',
+  options: [],
   create({ THREE, cfg, d, colors, uniforms, glsl, sampleSlide, uAt, opts }) {
     // ---------- Tap 系 ----------
     const tapStyle = {
@@ -196,15 +204,14 @@ export default {
     // ---------- Slide / Riser ----------
     const cG = new THREE.Color(colors.slide.ground), cS = new THREE.Color(colors.slide.sky);
     const cR = new THREE.Color(colors.slide.riser), cD = new THREE.Color(colors.diver);
-    const pulseOn = (opts && opts.pulse) !== 'off';
     const mat = new THREE.ShaderMaterial({
-      uniforms: { ...uniforms, uGround: { value: cG }, uSky: { value: cS }, uRiser: { value: cR }, uDiver: { value: cD }, uPulse: { value: pulseOn ? 1 : 0 } },
-      vertexShader: `${glsl.place}\n${LONG_VERT}`,
+      uniforms: { ...uniforms, uGround: { value: cG }, uSky: { value: cS }, uRiser: { value: cR }, uDiver: { value: cD } },
+      vertexShader: `${glsl.place}\n${chevronGLSL(CHEV)}\n${LONG_VERT}`,
       fragmentShader: /* glsl */ `
         ${glsl.clip}
-        uniform float uSongTime, uPulse;
+        uniform float uSongTime;
         uniform vec3 uGround, uSky, uRiser, uDiver;
-        varying float vDepth, vLayer, vTag, vSide, vT; varying float vLocalX; varying vec4 vColor;
+        varying float vDepth, vLayer, vTag, vSide, vT, vM; varying float vLocalX; varying vec4 vColor;
         float roundedBox(vec2 p, vec2 b, float r) {
           vec2 q = abs(p) - b + r;
           return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -223,11 +230,7 @@ export default {
             float xc = abs(vLocalX - 0.5);
             float cCore = 1.0 - smoothstep(0.0, du, xc);
             float cHalo = exp(-xc / max(min(3.0 * du, 0.1), 1e-4) * 2.0) * 0.35;
-            // パルス: 中央の芯線の明るさだけが判定線へ向けて流れる（帯の面や縁は変えない）。遠方では消えて一定の明るさへ。
-            float pulse = 0.5 + 0.5 * sin((vT - uSongTime) * 7.85);
-            float pw = 0.35 * uPulse * smoothstep(0.0, 1.0, 1.0 / max(fwidth(vT) * 40.0, 1.0));
-            pulse = mix(1.0, pulse, pw);
-            float glow = 0.10 + halo * 0.55 + cHalo * pulse;
+            float glow = 0.10 + halo * 0.55 + cHalo;
             vec3 rgb = mix(base, vec3(1.0), clamp(core * 0.9 + cCore * 0.85, 0.0, 1.0));
             float add = clamp(glow + core * 0.6 + cCore * 0.6, 0.0, 1.6);
             gl_FragColor = museOut(rgb, 0.10, add * 0.9);
@@ -251,6 +254,17 @@ export default {
             rgb += base * rim * 0.6;
             rgb = mix(rgb, vec3(1.0), outline);
             gl_FragColor = museOut(rgb, 0.95 * shapeA, 0.25 * shapeA);
+          } else if (vTag > 3.5) {
+            // ---- ∧ の板（腕）: 範囲外（根元より下・到達点より上）は捨てる ----
+            float span = max(vColor.y, 0.05);
+            float fm = max(fwidth(vM), 1e-5);
+            float inR = smoothstep(0.0, fm, vM) * smoothstep(0.0, fm, span - vM);
+            if (inR <= 0.003) discard;
+            vec3 col = mix(uRiser, uDiver, vColor.z);
+            float fs = max(fwidth(vSide), 1e-5);
+            float edge = smoothstep(1.0 - 2.0 * fs, 1.0, abs(vSide)); // 腕の上下の縁だけ白く
+            vec3 rgb = mix(col, vec3(1.0), 0.12 + 0.6 * edge);
+            gl_FragColor = museOut(rgb, 0.75 * inR, 0.30 * inR);
           } else {
             // ---- Riser / Diver 壁 ----
             float k = vColor.x, span = max(vColor.y, 0.05), wc = max(vColor.z, 1.0);
@@ -264,23 +278,9 @@ export default {
             float goal = 1.0 - smoothstep(0.0, 1.6 * dk, 1.0 - k);
             float goalHalo = exp(-(1.0 - k) / max(min(8.0 * dk, 0.25), 1e-4) * 2.2) * 0.5;
 
-            // 流れる∧（進行方向 = k が増える向き。Riser は上、Diver は下。∧/∨の先端は常に進行方向）
-            float m = k * span;                         // 起点からの移動量（層）
-            float CH = ${CHEV_TH.toFixed(3)} + ${CHEV_SL.toFixed(3)};
-            float P = span + CH + ${CHEV_PAD.toFixed(3)};     // 1周期 = 壁の高さ + ∧の高さ + 余白 → 同時に2枚は見えない
-            // 位相はノーツ時刻基準（リード r3）: 判定時刻に ∧ の先端が到達点へ届く。どの Riser でも同じ見え方になり、両スキンで揃う
-            float pos = mod((uSongTime - vT) * ${CHEV_SPEED.toFixed(3)} + span + ${CHEV_PAD.toFixed(3)}, P) - ${(CHEV_TH * 0.5 + CHEV_PAD).toFixed(4)}; // 先端中心の位置
-            float nT = max(1.0, floor(wc / ${CHEV_TILE_CELLS.toFixed(2)} + 0.5));
-            float xl = abs(fract(vLocalX * nT) - 0.5) * 2.0; // タイル内 0=中央 1=端
-            float c = pos - ${CHEV_SL.toFixed(3)} * xl;
-            float fm = max(fwidth(m), 1e-5);
-            float hw = max(${(CHEV_TH * 0.5).toFixed(4)}, fm * 1.3); // 遠方でも最低 約2.6px の太さ
-            float line = 1.0 - smoothstep(hw - fm * 0.6, hw + fm * 0.6, abs(m - c));
-            // 遠方でピクセルより∧が細かい時は平均の明るさへ寄せてチラつきを防ぐ
-            line = mix(line, 0.45, smoothstep(0.5, 1.5, fm / ${CHEV_TH.toFixed(3)}));
             float grad = mix(0.55, 1.0, k);
-            float wall = 0.10 * grad + line * 0.75 * grad;
-            vec3 rgb = mix(col, vec3(1.0), clamp(core * 0.9 + goal * 0.9 + line * 0.25, 0.0, 1.0));
+            float wall = 0.10 * grad;
+            vec3 rgb = mix(col, vec3(1.0), clamp(core * 0.9 + goal * 0.9, 0.0, 1.0));
             float add = wall + halo * 0.55 + goalHalo + core * 0.6 + goal * 0.8;
             gl_FragColor = museOut(rgb, 0.05, clamp(add, 0.0, 1.6));
           }
@@ -360,6 +360,7 @@ export default {
           const pts = [[u0, ka, 0], [u1, ka, 1], [u1, kb, 1], [u0, ka, 0], [u1, kb, 1], [u0, kb, 0]];
           for (const [u, k, lx] of pts) B.v(u, L(k), note.t, 0, y, lx, 3, [k, span, note.width, diver]);
         }
+        buildChevrons(B, note, { ...CHEV, uAt, yUp: y }); // ∧ は腕ごとの板（壁より後に描く）
         return new THREE.Mesh(B.build(), mat);
       },
     };

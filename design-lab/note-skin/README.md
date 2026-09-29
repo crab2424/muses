@@ -6,7 +6,7 @@
 ## 起動
 
 `.claude/launch.json` の `design-lab`（port 5181）→ http://localhost:5181/note-skin/
-`?v=neon.js` で絞り込み、`?o=key:value,...` でスキンの options の初期値を指定（例 `?o=pulse:off`）。
+`?v=neon.js` で絞り込み、`?o=key:value,...` でスキンの options の初期値を指定（現在 options を持つスキンはない）。
 
 ## ファイル
 
