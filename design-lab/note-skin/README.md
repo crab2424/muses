@@ -57,6 +57,8 @@ export default {
 - Riser / Diver の `note = { kind:'riser', t, cellF, width, layerF, layerTo, dir }`。
   **`dir = -1`（layerTo < layerF）が Diver**: 色は `colors.diver`（紫）、向きは反転（矢印が下向きに流れる）。形は Riser と同じ。
   部分移動（0→0.5、1→0.5）もある。
+- Riser / Diver の ∧（∨）は**分厚い1枚が約 0.46 層/秒で流れる**（両スキン共通）。位相は**ノーツ時刻基準**で、
+  判定時刻に ∧ の先端が到達点へ届く（`uSongTime - noteT` で求める。どの Riser でも同じ見え方になり、スキン間で揃う）。
 
 ## 評価観点
 
