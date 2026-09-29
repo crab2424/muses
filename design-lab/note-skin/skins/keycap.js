@@ -3,6 +3,7 @@
 //  Slide = マット板＋縁レール＋中央芯線（枕木なし）、始点/Visible中継点は Tap と同じキーキャップのマーカー
 //  Riser/Diver = 白縁＋塗りの分厚い ∧ 1枚が 0.46層/秒 で層方向に流れる壁
 
+import { EDGE_GLSL } from './shared/edge.js';
 import { buildChevrons, chevronGLSL, CHEVRON_DEFAULTS } from './shared/chevron.js';
 
 // ================= Tap 系: 断面リングを積んだ押し出しソリッド =================
@@ -84,26 +85,29 @@ vec3 keycapShade(vec3 col, vec3 N, vec3 V) {
 
 const TAP_VERT = /* glsl */ `
   attribute float aC;
-  varying float vC; varying vec3 vN; varying vec3 vV;
+  varying float vC; varying vec3 vN; varying vec3 vV; varying float vScale;
   void main() {
     vC = aC;
     vec4 wp = modelMatrix * vec4(position, 1.0);
     vec3 s = vec3(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz), length(modelMatrix[2].xyz));
+    vScale = s.x;   // 判定線上で 1（白リングを遠方で細くする倍率）
     vN = normalize(mat3(modelMatrix) * (normal / (s * s)));
     vV = cameraPosition - wp.xyz;
     gl_Position = projectionMatrix * viewMatrix * wp;
   }`;
 const TAP_FRAG = /* glsl */ `
   uniform vec3 uColor;
-  varying float vC; varying vec3 vN; varying vec3 vV;
+  varying float vC; varying vec3 vN; varying vec3 vV; varying float vScale;
+  ${EDGE_GLSL}
   ${KEY_SHADE}
   void main() {
     vec3 rgb = keycapShade(uColor, normalize(vN), normalize(vV));
     if (vC >= 0.0) {
       float fw = max(fwidth(vC), 1e-5);
       float dPx = vC / fw, bPx = 1.0 / fw;
-      float w = min(1.5, max(0.0, bPx - 0.75) * 0.5);
-      float ol = (1.0 - smoothstep(w - 0.5, w + 0.5, dPx)) * smoothstep(0.0, 0.4, w);
+      vec2 e = museEdge(1.5, vScale);
+      float w = min(e.x, max(0.0, bPx - 0.75) * 0.5);
+      float ol = (1.0 - smoothstep(w - 0.5, w + 0.5, dPx)) * smoothstep(0.0, 0.4, w) * e.y;
       rgb = mix(rgb, vec3(1.0), ol);
     }
     gl_FragColor = vec4(rgb, 1.0);
@@ -115,13 +119,13 @@ const LONG_VERT = /* glsl */ `
   attribute vec4 aExtra;  // x=dz, y=yUp, z=localX(0..1), w=tag(0=帯,1=マーカー,3=Riser壁,4=∧の腕)
   attribute vec4 aColor;  // 壁: x=s(流れ方向の層距離), y=span, z=Diver(0/1) / 腕: shared/chevron.js の仕様
   attribute float aSide;
-  varying float vDepth, vLayer, vTag, vSide, vM; varying float vLocalX; varying vec4 vColor;
+  varying float vDepth, vLayer, vTag, vSide, vM, vScale; varying float vLocalX; varying vec4 vColor;
   void main() {
     float depth, sc;
     float layer = position.y, m = 0.0;
     if (aExtra.w > 3.5) layer = chevronLayer(position.y, aColor.w, position.z, aColor.x, aColor.y, m);
     vec3 wp = musePlace(position.x, layer, position.z, aExtra.x, aExtra.y, depth, sc);
-    vM = m;
+    vM = m; vScale = sc;
     vDepth = depth; vLayer = layer; vTag = aExtra.w; vLocalX = aExtra.z; vColor = aColor; vSide = aSide;
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
   }`;
@@ -142,7 +146,7 @@ export default {
     const tapMats = {};
     for (const [kind, hex] of [['tap', colors.tap], ['extap', colors.exTap], ['flick', colors.flick]]) {
       tapMats[kind] = new THREE.ShaderMaterial({
-        uniforms: { uColor: { value: new THREE.Color(hex) } },
+        uniforms: { ...uniforms, uColor: { value: new THREE.Color(hex) } },
         vertexShader: TAP_VERT, fragmentShader: TAP_FRAG,
         // 凸形 + 背面カリング = 画面上の各ピクセルに前向きの面は 1 枚だけ → ZTest Always / ZWrite Off でも重なりが崩れない
         transparent: true, depthTest: false, depthWrite: false, side: THREE.FrontSide,
@@ -180,7 +184,8 @@ export default {
         ${KEY_SHADE}
         uniform float uSongTime;
         uniform vec3 uGround, uSky, uRiser, uDiver;
-        varying float vDepth, vLayer, vTag, vSide, vM; varying float vLocalX; varying vec4 vColor;
+        varying float vDepth, vLayer, vTag, vSide, vM, vScale; varying float vLocalX; varying vec4 vColor;
+        ${EDGE_GLSL}
         float roundedBox(vec2 p, vec2 b, float r) {
           vec2 q = abs(p) - b + r;
           return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -199,10 +204,11 @@ export default {
             // ---- Slide 帯: マット板 + 縁レール + 中央の芯線（横線・枕木なし）----
             float du = max(fwidth(vLocalX), 1e-5);
             float xe = min(vLocalX, 1.0 - vLocalX);
-            float railW = min(3.0 * du, 0.25);
-            float rail = 1.0 - smoothstep(railW - du, railW, xe);
-            float railHi = 1.0 - smoothstep(0.0, 1.2 * du, xe);
-            float center = 1.0 - smoothstep(0.0, du, abs(vLocalX - 0.5));
+            vec2 eR = museEdge(3.0, vScale), eH = museEdge(1.2, vScale), eC = museEdge(1.0, vScale);   // レール/白縁/芯線: 遠方で細く・下限0なら消える
+            float railW = min(eR.x * du, 0.25);
+            float rail = (1.0 - smoothstep(railW - du, railW, xe)) * eR.y;
+            float railHi = (1.0 - smoothstep(0.0, eH.x * du, xe)) * eH.y;
+            float center = (1.0 - smoothstep(0.0, eC.x * du, abs(vLocalX - 0.5))) * eC.y;
             vec3 rgb = base * 0.55;
             rgb = mix(rgb, base, rail);
             rgb = mix(rgb, vec3(1.0), clamp(railHi * 0.85 + center * 0.9, 0.0, 1.0));
@@ -227,9 +233,10 @@ export default {
             vec3 N = normalize(vec3(pf.x * dir.x, pf.y, -pf.x * dir.y));
             vec3 rgb = keycapShade(base, N, normalize(vec3(0.0, 0.8, 0.6)));
             // 白リング: 天面の縁（inset=0.14）から内側へ
-            float w = min(1.5, max(0.0, bPx.y - 0.75) * 0.5);
+            vec2 eM = museEdge(1.5, vScale);
+            float w = min(eM.x, max(0.0, bPx.y - 0.75) * 0.5);
             float dPx = max(-dist - 0.14 * bPx.y, 0.0);
-            float ol = (1.0 - smoothstep(w - 0.5, w + 0.5, dPx)) * smoothstep(0.0, 0.4, w) * step(0.14 * bPx.y - 0.5, -dist);
+            float ol = eM.y * (1.0 - smoothstep(w - 0.5, w + 0.5, dPx)) * smoothstep(0.0, 0.4, w) * step(0.14 * bPx.y - 0.5, -dist);
             rgb = mix(rgb, vec3(1.0), ol);
             gl_FragColor = museOut(rgb, shapeA, 0.0);
           } else if (vTag > 3.5) {
@@ -240,8 +247,9 @@ export default {
             if (inR <= 0.003) discard;
             vec3 col = mix(uRiser, uDiver, vColor.z);
             float fs = max(fwidth(vSide), 1e-5);
-            float edgeW = max(0.22, 1.8 * fs);                       // 白縁の幅（断面比。細いときは約1.8px）
-            float edge = smoothstep(1.0 - edgeW - fs, 1.0 - edgeW + fs, abs(vSide));
+            vec2 eA = museEdge(3.0, vScale);                          // 白縁: 判定線上で約3px（半断面の約2割）、遠方で細く
+            float edgeW = eA.x * fs;
+            float edge = smoothstep(1.0 - edgeW - fs, 1.0 - edgeW + fs, abs(vSide)) * eA.y;
             float lit = 0.86 + 0.24 * (vSide * 0.5 + 0.5);            // 進行側ほど少し明るいマット
             vec3 rgb = mix(col * lit, vec3(1.0), edge);
             gl_FragColor = museOut(rgb, inR, 0.0);
@@ -254,13 +262,15 @@ export default {
             float ps = max(fwidth(s), 1e-5);
             vec3 rgb = col * 0.55; float a = 0.16;
             float dG = (span - s) / ps, dB = s / ps;
-            float goalC = 1.0 - smoothstep(3.5, 4.5, dG), goalW = 1.0 - smoothstep(1.5, 2.5, dG);
-            float baseC = 1.0 - smoothstep(1.5, 2.5, dB);
+            vec2 eG = museEdge(4.0, vScale), eGW = museEdge(2.0, vScale);
+            float goalC = (1.0 - smoothstep(eG.x - 0.5, eG.x + 0.5, dG)) * eG.y, goalW = (1.0 - smoothstep(eGW.x - 0.5, eGW.x + 0.5, dG)) * eGW.y;
+            float baseC = (1.0 - smoothstep(eGW.x - 0.5, eGW.x + 0.5, dB)) * eGW.y;
             rgb = mix(rgb, col, max(goalC, baseC)); a = max(a, max(goalC, baseC));
             rgb = mix(rgb, vec3(1.0), goalW * 0.95);
-            float railW = min(3.4 * du, 0.2);
-            float rail = 1.0 - smoothstep(railW - du, railW, xe);
-            float railHi = 1.0 - smoothstep(0.0, 1.3 * du, xe);
+            vec2 eR = museEdge(3.4, vScale), eH = museEdge(1.3, vScale);
+            float railW = min(eR.x * du, 0.2);
+            float rail = (1.0 - smoothstep(railW - du, railW, xe)) * eR.y;
+            float railHi = (1.0 - smoothstep(0.0, eH.x * du, xe)) * eH.y;
             rgb = mix(rgb, col, rail); a = max(a, rail);
             rgb = mix(rgb, vec3(1.0), railHi * 0.95); a = max(a, railHi);
             gl_FragColor = museOut(rgb, a, 0.0);
