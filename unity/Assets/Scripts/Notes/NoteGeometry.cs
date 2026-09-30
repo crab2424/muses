@@ -6,6 +6,14 @@ using UnityEngine;
 
 namespace Muses.Notes
 {
+    /// <summary>r3（design-lab/note-skin）。ノーツの見た目一式。プレイヤーが設定で選ぶ（既定=ネオン）。
+    /// Note.shader のキーワード（_SKIN_KEYCAP）と、Tap 系・∧ のメッシュの作り方が変わる。</summary>
+    public enum NoteSkin
+    {
+        Neon = 0,
+        Keycap = 1,
+    }
+
     public struct NoteMeshData
     {
         public Vector3[] positions; // (u, y, ノーツ時刻)
@@ -39,12 +47,21 @@ namespace Muses.Notes
         /// タグは補間で不変な値でなければならない。</summary>
         public Vector2[] localUv;
         /// <summary>r3（design-lab/note-skin）。種別ごとの追加データ（TEXCOORD4）。
-        /// - Tap/ExTap/Flick: (uL, uR, ExTapなら1, 0)。インポスターの中心・半長を頂点シェーダで求めるため、全頂点に両端の u を持たせる。
+        /// - Tap/ExTap/Flick: (uL, uR, ExTapなら1, キーキャップの立体の縁距離 c)。中心・半長を頂点シェーダで求めるため、全頂点に両端の u を持たせる。
+        ///   c は白リング用（天面だけ 0→1、それ以外 -1。ネオンでは 0）。
         /// - Riser/Diver の壁: (k=根元0→到達点1, span=層の移動量, 0, 0)。
         /// - ∧ の腕: (offset=先端からの層のずれ, span, dirSign=Riser+1/Diver-1, ノーツの実時刻)。
         ///   実時刻は ∧ の位相用（スクロールグループの X(t) を通さないので、停止・逆走中も一定の速さで流れる）。
         /// - その他: 0。</summary>
         public Vector4[] extra;
+        /// <summary>r3。三角形の頂点インデックス。キーキャップの Tap の立体だけ頂点を共有し、それ以外は頂点を3つずつ順に使う。
+        /// NoteView がサブメッシュ（地上帯/空中帯/その他）へ振り分ける。</summary>
+        public int[] indices;
+        /// <summary>r3。キーキャップの Tap の立体の法線（ラボのローカル座標: x=横, y=上, z=手前が+）。それ以外は 0。</summary>
+        public Vector3[] normals;
+        /// <summary>r3（TEXCOORD5）。キーキャップの Tap の立体の頂点 (A, B, zN, yN)。ラボのローカル座標で
+        /// x = A*半長 + B*半奥行、z = zN*半奥行、y = yN*半奥行（半長・半奥行は頂点シェーダで求める）。それ以外は 0。</summary>
+        public Vector4[] solid;
         public List<NoteRuntime> runtimes;
 
         public Vector3[] beatPositions;
@@ -68,7 +85,8 @@ namespace Muses.Notes
         private delegate void PushFn(float u, float y, float time, float layerF, Color c, float nearD, float localU, float localV, Vector4 extra);
 
         public static NoteMeshData Build(StageConfig cfg, in Derived d, List<Note> notes,
-            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null, List<float> barTimes = null)
+            Dictionary<int, Chart.ScrollTimeline> scrollTimelines = null, List<float> barTimes = null,
+            NoteSkin skin = NoteSkin.Neon)
         {
             Derived dCopy = d; // in パラメータはローカル関数から直接キャプチャできない (CS1628)
             int cells = cfg.cells;
@@ -90,6 +108,9 @@ namespace Muses.Notes
             var groupArr = new List<float>();
             var uv3Arr = new List<Vector2>();
             var extraArr = new List<Vector4>();
+            var idxArr = new List<int>();
+            var normArr = new List<Vector3>();
+            var solidArr = new List<Vector4>();
             var runtimes = new List<NoteRuntime>();
 
             // 2026-08-07: プロジェクトは Linear カラースペース(m_ActiveColorSpace:1)。
@@ -113,6 +134,9 @@ namespace Muses.Notes
                 sideArr.Add(0f);
                 uv3Arr.Add(new Vector2(localU, localV));
                 extraArr.Add(extra);
+                normArr.Add(Vector3.zero);
+                solidArr.Add(Vector4.zero);
+                idxArr.Add(pos.Count - 1); // 立体以外は頂点を3つずつ順に三角形にする
             }
 
             // タップ系ノーツ用: 奥行き方向に薄い板を、頂点シェーダ側で「現在の奥行きに
@@ -140,7 +164,34 @@ namespace Muses.Notes
                     // 厚み方向の座標は side から導く（side*0.5+0.5 は旧 localUv.y={0,0,1,1} と完全に同値）。
                     uv3Arr.Add(new Vector2(lu[i], shapeTag));
                     extraArr.Add(extra);
+                    normArr.Add(Vector3.zero);
+                    solidArr.Add(Vector4.zero);
+                    idxArr.Add(pos.Count - 1);
                 }
+            }
+
+            // r3: キーキャップの Tap 系の立体（KeycapSolid のひな形を1個ぶん積む）。頂点を共有してインデックスで三角形を張る。
+            void PushKeycapSolid(float u0, float u1, float y, float centerTime, float layerF, Color c, float nearD,
+                bool flick, bool exTap)
+            {
+                var t = KeycapSolid.Get(flick, layerF > 0.5f);
+                int baseIdx = pos.Count;
+                var cv = ToVertexColor(c);
+                float uc = (u0 + u1) * 0.5f;
+                for (int i = 0; i < t.solid.Length; i++)
+                {
+                    pos.Add(new Vector3(uc, y, centerTime));
+                    col.Add(cv);
+                    st.Add(1f);
+                    nearArr.Add(nearD);
+                    layerArr.Add(layerF);
+                    sideArr.Add(0f);
+                    uv3Arr.Add(new Vector2(0f, flick ? 2f : 1f));
+                    extraArr.Add(new Vector4(u0, u1, exTap ? 1f : 0f, t.edge[i]));
+                    normArr.Add(t.normals[i]);
+                    solidArr.Add(t.solid[i]);
+                }
+                foreach (var k in t.indices) idxArr.Add(baseIdx + k);
             }
 
             // note-visual-r1.md §4: 色は NoteColors に一元化済み（旧: このファイル・エディタ・
@@ -185,9 +236,13 @@ namespace Muses.Notes
                     var c = n.kind == NoteKind.ExTap ? cEx
                         : n.kind == NoteKind.Flick ? cFlick
                         : cTap;
-                    QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF),
-                        n.kind == NoteKind.Flick ? 2f : 1f, // gameplay-feel-r1.md §5.1: Flickは `< >`、他は `( )`
-                        new Vector4(u0, u1, n.kind == NoteKind.ExTap ? 1f : 0f, 0f));
+                    if (skin == NoteSkin.Keycap)
+                        PushKeycapSolid(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF),
+                            n.kind == NoteKind.Flick, n.kind == NoteKind.ExTap);
+                    else
+                        QuadThin(u0, u1, y, timeline.XAt(wp.time), layerF, c, NearOf(layerF),
+                            n.kind == NoteKind.Flick ? 2f : 1f, // gameplay-feel-r1.md §5.1: Flickは `< >`、他は `( )`
+                            new Vector4(u0, u1, n.kind == NoteKind.ExTap ? 1f : 0f, 0f));
                 }
                 else if (n.kind == NoteKind.Riser)
                 {
@@ -195,7 +250,7 @@ namespace Muses.Notes
                     // （時間でスイープする PushSlideBand とは別の生成関数）。
                     var wp = n.points[0];
                     var cWall = wp.layerTo > wp.layerF ? cRiser : cDiver;
-                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cWall, timeline.XAt(wp.time));
+                    PushRiserWall(wp, dCopy, Push, NearOf, UAt, YAt, cWall, timeline.XAt(wp.time), ChevronDims(skin));
                 }
                 else // Slide（旧Hold+旧Arcの統合）: Waypoint列を通した1本の帯
                 {
@@ -293,6 +348,9 @@ namespace Muses.Notes
                 group = groupArr.ToArray(),
                 localUv = uv3Arr.ToArray(),
                 extra = extraArr.ToArray(),
+                indices = idxArr.ToArray(),
+                normals = normArr.ToArray(),
+                solid = solidArr.ToArray(),
                 runtimes = runtimes,
                 beatPositions = beatPos.ToArray(),
                 beatNear = beatNear.ToArray(),
@@ -370,9 +428,10 @@ namespace Muses.Notes
         }
 
         // ∧ の寸法（design-lab/note-skin/skins/shared/chevron.js の CHEVRON_DEFAULTS）。
-        // ChevronTh / ChevronSl は Note.shader の CHEV_TH / CHEV_SL と一致させること（周期の計算に使う）。
-        private const float ChevronTh = 0.32f;       // 厚み（層）
-        private const float ChevronSl = 0.30f;       // 傾き（層）。中央→端での下がり量
+        // 厚み th・傾き sl（層）はスキンごと。Include/NoteSkinNeon.hlsl / NoteSkinKeycap.hlsl の SKIN_CHEV_TH / SKIN_CHEV_SL と
+        // 一致させること（周期の計算に使う）。sl は中央→端での下がり量。
+        private static (float th, float sl) ChevronDims(NoteSkin skin) =>
+            skin == NoteSkin.Keycap ? (0.28f, 0.26f) : (0.32f, 0.30f);
 
         /// <summary>
         /// note-spec.md §4.6.6（rev.7）。Riser/Diver の見た目（r3、スキン「ネオン」。移植元 design-lab/note-skin/skins/neon.js）。
@@ -388,7 +447,8 @@ namespace Muses.Notes
         private static void PushRiserWall(
             Waypoint wp, Derived d,
             PushFn push, Func<float, float> nearOf,
-            Func<float, float> uAt, Func<float, float, float> yAt, Color wallColor, float centerTime)
+            Func<float, float> uAt, Func<float, float, float> yAt, Color wallColor, float centerTime,
+            (float th, float sl) chev)
         {
             const int steps = 12;
             float u0 = uAt(wp.cellF);
@@ -414,7 +474,7 @@ namespace Muses.Notes
             float dirSign = wp.layerTo < wp.layerF ? -1f : 1f;
             // 幅に依らず ∧ は1つ（ノーツ全幅の大きい1本）。横に並べると大きいノーツと隣接した小さいノーツの集まりの区別がつかない（r3 §13）
             const int n = 1;
-            float h = ChevronTh * 0.5f;
+            float h = chev.th * 0.5f;
             float baseY = yAt(wp.layerF, d.skyHeight) + yUp;
             float baseNear = nearOf(wp.layerF);
 
@@ -427,7 +487,7 @@ namespace Muses.Notes
             void Arm(float fa, float xla, float fb, float xlb)
             {
                 float ua = uAt(wp.cellF + fa * wp.width), ub = uAt(wp.cellF + fb * wp.width);
-                float oa = -ChevronSl * xla, ob = -ChevronSl * xlb;
+                float oa = -chev.sl * xla, ob = -chev.sl * xlb;
                 EmitChev(ua, oa - h, -1f); EmitChev(ub, ob - h, -1f); EmitChev(ub, ob + h, 1f);
                 EmitChev(ua, oa - h, -1f); EmitChev(ub, ob + h, 1f); EmitChev(ua, oa + h, 1f);
             }

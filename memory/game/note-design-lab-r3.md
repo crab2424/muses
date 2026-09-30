@@ -241,3 +241,19 @@ Sonnet には r2 と同様、**描画を見ながら反復**させる。
 2. **ネオン Tap 系がラボより手前の影が強く、全体的に暗い** → 深色を本体色へ 45% 寄せ、縁の深色の幅を狭め（body smoothstep 0.7→0.45）、
    陰影を 0.8+0.35·NL → 0.92+0.25·NL に（Unity とラボ neon.js の両方）。
    推定原因: nearF（画面上の半奥行 px で近景の陰影を出す閾値）が解像度依存で、iPad/Game ビューはラボのタイルより px が多く近景の陰影（深色の縁）が出やすい。
+
+## 14. Unity 移植 ② キーキャップ（2026-09-30）
+
+`skins/keycap.js` を移植。Unity 上の目視・iPad 実機は未確認（両スキンとも Metal 向けの頂点・フラグメントのコンパイル成功は確認）。
+
+- シェーダは1つ（`Muses/Note`）で、`#pragma multi_compile_local _ _SKIN_KEYCAP` のキーワードで切り替え。
+  共通部品 `Include/NoteSkinCommon.hlsl`（頂点入出力・∧ の ChevronPlace・MusesEdge・Tap の中心 MakeTapFrame）、
+  スキン別 `Include/NoteSkinNeon.hlsl` / `NoteSkinKeycap.hlsl`（SkinTapPlace / SkinFrag / ∧ の th・sl）。
+- スキンの選択は `NoteView.skin`（enum `NoteSkin`、既定 Neon、Inspector は「ノーツスキン」）。**次の Build（曲の開始）から反映**
+  （Tap の頂点の積み方がスキンで違い、途中で作り直すと Judge の頂点範囲がずれるため。③ の設定 UI は曲の外で変える）。
+- キーキャップの Tap 系は本物の立体（`KeycapSolid.cs`: Stadium 111 頂点・Flick 61 頂点、地上=薄型 0.7・空中=1.3＋遠方で高さ→0.06）。
+  頂点は寸法に依らない (A, B, zN, yN)（x = A·半長 + B·半奥行）で TEXCOORD5 に、法線は NORMAL に持ち、半長・半奥行はシェーダで求める。
+  メッシュはインデックス付きに変更（NoteMeshData.indices。立体以外は従来どおり3頂点ずつ）。背面は SV_IsFrontFace で discard
+  （Cull Off のまま、凸形なので ZTest Always でも前後が崩れない）。
+- ∧ の寸法: ネオン th 0.32 / sl 0.30、キーキャップ th 0.28 / sl 0.26（C# の ChevronDims と hlsl の SKIN_CHEV_* を一致させる）。
+- 次: Unity・iPad でキーキャップの見た目確認（特に立体の表裏＝前面判定の向き、明るさ）→ ③ スキン切替の設定 UI。

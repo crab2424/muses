@@ -84,6 +84,26 @@ namespace Muses.Notes
         private const int GroundBandRenderQueue = 3008;
         private const int SkyBandRenderQueue = 3009;
 
+        /// <summary>r3（design-lab/note-skin）。ノーツの見た目一式。**次の Build（曲の開始）から反映される**:
+        /// Tap 系の頂点の積み方がスキンで違い、途中で作り直すと Judge が持つ頂点範囲（NoteRuntime）がずれるため。</summary>
+        [Header("ノーツスキン（次の曲の開始から反映）")]
+        [SerializeField] private NoteSkin skin = NoteSkin.Neon;
+
+        public NoteSkin Skin
+        {
+            get => skin;
+            set => skin = value;
+        }
+
+        private void ApplySkinKeyword()
+        {
+            foreach (var m in NoteMaterials())
+            {
+                if (skin == NoteSkin.Keycap) m.EnableKeyword("_SKIN_KEYCAP");
+                else m.DisableKeyword("_SKIN_KEYCAP");
+            }
+        }
+
         /// <summary>r3 §9/§10（design-lab/note-skin/skins/shared/edge.js）。白線（縁・レール・輪郭）は
         /// 「判定線上での幅 × 見かけの倍率」で遠方ほど細くなる。その下限(px)と全体の太さの倍率。</summary>
         [Header("白線（縁・レール・輪郭）")]
@@ -154,10 +174,11 @@ namespace Muses.Notes
             this.scrollTimelines = scrollTimelines ?? new Dictionary<int, Chart.ScrollTimeline>();
             baseSpeed = d.speed;
 
-            var data = NoteGeometry.Build(cfg, d, notes, this.scrollTimelines, barTimes);
+            var data = NoteGeometry.Build(cfg, d, notes, this.scrollTimelines, barTimes, skin);
             Runtimes = data.runtimes;
 
             EnsureNotesObject();
+            ApplySkinKeyword();
             notesMesh.Clear();
             // 既定の16bitインデックス（上限65535頂点）では長時間譜面で頂点数が溢れ、
             // インデックスが 65536 で巻き戻って「あるノーツの最終頂点＋次のノーツの先頭2頂点」を
@@ -175,25 +196,31 @@ namespace Muses.Notes
             notesMesh.SetUVs(3, data.localUv);
             // r3: 種別ごとの追加データ（Tap の両端 u、Riser 壁の k、∧ のずれ・実時刻。NoteMeshData.extra 参照）。
             notesMesh.SetUVs(4, data.extra);
+            // r3: キーキャップの Tap の立体（法線と頂点。ネオンでは 0）。
+            notesMesh.SetNormals(data.normals);
+            notesMesh.SetUVs(5, data.solid);
 
             // gameplay-feel-r1.md §5.3: 三角形を「地上帯/空中帯/その他」の3サブメッシュへ振り分ける。
             // 頂点配列は共有なので、Judge が書く頂点範囲（alpha・食べる/通り過ぎる）はそのまま使える。
             // 帯は localUv.y==0 のタグ（NoteMeshData.localUv）。層を跨ぐ帯は三角形の layerF 平均で振り分ける
             // （色は元々 layerF で連続補間しているので、合成方式が途中で切り替わるだけ）。
+            // r3: 三角形は data.indices で張る（キーキャップの Tap の立体は頂点を共有するため）。
+            var idx = data.indices;
             var groundBand = new List<int>();
             var skyBand = new List<int>();
-            var rest = new List<int>(data.positions.Length);
-            for (int i = 0; i + 2 < data.positions.Length; i += 3)
+            var rest = new List<int>(idx.Length);
+            for (int t = 0; t + 2 < idx.Length; t += 3)
             {
+                int i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2];
                 List<int> dst = rest;
-                if (Mathf.Abs(data.localUv[i].y) < 0.5f)
+                if (Mathf.Abs(data.localUv[i0].y) < 0.5f)
                 {
-                    float lf = (data.layerF[i] + data.layerF[i + 1] + data.layerF[i + 2]) / 3f;
+                    float lf = (data.layerF[i0] + data.layerF[i1] + data.layerF[i2]) / 3f;
                     dst = lf < 0.5f ? groundBand : skyBand;
                 }
-                dst.Add(i);
-                dst.Add(i + 1);
-                dst.Add(i + 2);
+                dst.Add(i0);
+                dst.Add(i1);
+                dst.Add(i2);
             }
             notesMesh.subMeshCount = 3;
             notesMesh.SetTriangles(groundBand, 0);
