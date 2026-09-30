@@ -373,7 +373,6 @@ namespace Muses.Notes
         // ChevronTh / ChevronSl は Note.shader の CHEV_TH / CHEV_SL と一致させること（周期の計算に使う）。
         private const float ChevronTh = 0.32f;       // 厚み（層）
         private const float ChevronSl = 0.30f;       // 傾き（層）。中央→端での下がり量
-        private const float ChevronTileCells = 3f;   // ∧ 1つ分のセル幅の目安（幅に応じて横に並べる）
 
         /// <summary>
         /// note-spec.md §4.6.6（rev.7）。Riser/Diver の見た目（r3、スキン「ネオン」。移植元 design-lab/note-skin/skins/neon.js）。
@@ -384,7 +383,7 @@ namespace Muses.Notes
         /// 2. ∧（Diver は ∨）: 腕ごとのクアッド（タグ 4）。層位置は頂点シェーダが実時刻から決める
         ///    （Note.shader の ChevronPlace。腕の両端だけを置くので画面上で直線になる）。
         ///    ここでは基準層 = wp.layerF で積み、先端からの層のずれ offset を extra.x に焼く。
-        ///    1周期に1枚だけ見え、判定時刻に先端が到達点へ届く。幅に応じて ChevronTileCells ごとに横に並べる。
+        ///    1周期に1枚だけ見え、判定時刻に先端が到達点へ届く。幅に依らず全幅で1つ（r3 §13）。
         /// </summary>
         private static void PushRiserWall(
             Waypoint wp, Derived d,
@@ -413,7 +412,8 @@ namespace Muses.Notes
 
             // ---- ∧ の腕（shared/chevron.js の buildChevrons）----
             float dirSign = wp.layerTo < wp.layerF ? -1f : 1f;
-            int n = Math.Max(1, Mathf.FloorToInt(wp.width / ChevronTileCells + 0.5f)); // JS の Math.round と同じ丸め
+            // 幅に依らず ∧ は1つ（ノーツ全幅の大きい1本）。横に並べると大きいノーツと隣接した小さいノーツの集まりの区別がつかない（r3 §13）
+            const int n = 1;
             float h = ChevronTh * 0.5f;
             float baseY = yAt(wp.layerF, d.skyHeight) + yUp;
             float baseNear = nearOf(wp.layerF);

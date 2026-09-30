@@ -132,7 +132,7 @@ const LONG_VERT = /* glsl */ `
   }`;
 
 // ∧ の寸法（shared/chevron.js。速さ 0.46 層/秒・ノーツ時刻基準の位相は既定のまま）
-const CHEV = { ...CHEVRON_DEFAULTS, th: 0.28, sl: 0.26, tileCells: 2.5 }; // th は r3 §10 で 0.14→0.28（2倍）
+const CHEV = { ...CHEVRON_DEFAULTS, th: 0.28, sl: 0.26 }; // th は r3 §10 で 0.14→0.28（2倍）
 
 export default {
   id: 'keycap', name: 'キーキャップ', model: 'Sonnet 5.5',

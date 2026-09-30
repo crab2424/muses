@@ -26,14 +26,14 @@
 //   ノーツ時刻基準。判定時刻（uSongTime == noteT）に先端が到達点（m = span）へ届く。1周期は cycleSec 秒（高さに依らず共通）。
 //   1周期 P = span + (th + sl) + pad なので、壁の上に同時に2枚は見えない。Diver は dir=-1 で ∨ が下へ流れる。
 // ## 幅
-//   幅に応じて ∧ を横に並べる（tileCells セルごとに1つ、最低1つ）。幅1でも ∧ に読める（傾きは層単位で固定）。
+//   幅に依らず ∧ は常に1つ（ノーツの全幅にわたる大きい1本）。横に並べると「大きいノーツ」と「隣接した小さいノーツの集まり」の
+//   区別がつかないため（r3 §13、ユーザー指定）。幅1でも ∧ に読める（傾きは層単位で固定）。
 
 export const CHEVRON_DEFAULTS = {
   th: 0.32,        // 厚み（層）。腕の縦方向の太さ。r3: 0.16 → 0.32（2倍、ユーザー指定）
   sl: 0.30,        // 傾き（層）。中央→端での下がり量
   pad: 0.05,       // 周期の余白（層）
   cycleSec: 0.5,   // 1周期の秒数（Riser の高さに依らず共通。ユーザー指定 r3 §10）。旧 speed(層/秒) は廃止
-  tileCells: 3.0,  // ∧ 1つ分のセル幅の目安
   tag: 4,          // aExtra.w に入れる印
   yUp: 0,          // 面からの高さ（ワールド単位、musePlace の yUp）
 };
@@ -77,7 +77,7 @@ export function buildChevrons(B, note, params = {}) {
   const span = Math.abs(note.layerTo - note.layerF);
   const dirSign = note.layerTo < note.layerF || note.dir === -1 ? -1 : 1;
   const diver = dirSign < 0 ? 1 : 0;
-  const n = Math.max(1, Math.round(note.width / p.tileCells));
+  const n = 1; // 幅に依らず1つ（r3 §13）
   const h = p.th / 2;
   const arm = (fa, xla, fb, xlb) => {
     const ua = uAt(note.cellF + fa * note.width), ub = uAt(note.cellF + fb * note.width);

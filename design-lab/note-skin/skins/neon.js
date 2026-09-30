@@ -132,9 +132,10 @@ const TAP_FRAG = /* glsl */ `
     float fw = max(fwidth(vC), 1e-5);
     float dPx = vC / fw, bPx = 1.0 / fw;   // bPx = 半奥行の画面上ピクセル数
     float nearF = smoothstep(4.0, 14.0, bPx);
-    float body = smoothstep(0.0, 0.7, vC);
-    vec3 rgb = mix(uDeep, uColor, body);
-    rgb *= 0.8 + 0.35 * max(dot(N, L), 0.0);
+    // r3 §13: 手前の縁（深色）が強く全体に暗い、の指摘で深色を本体色へ寄せ・縁の幅を狭め・陰影の下限を上げた（Unity と同じ）
+    float body = smoothstep(0.0, 0.45, vC);
+    vec3 rgb = mix(mix(uDeep, uColor, 0.45), uColor, body);
+    rgb *= 0.92 + 0.25 * max(dot(N, L), 0.0);
     float core = smoothstep(0.62, 1.0, vC);
     rgb = mix(rgb, uCore, core * 0.85 * mix(0.25, 1.0, nearF));
     rgb += uRim * fres * 0.55 * mix(0.3, 1.0, nearF);
