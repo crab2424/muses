@@ -38,6 +38,9 @@ namespace Muses.Game
         /// <summary>NoteView.ThicknessFrac に対応。既定値はシーンの調整値(NoteView.thicknessFrac)と同じ。</summary>
         public float noteThickness = 0.06f;
 
+        // ---- ノーツスキン（r3、design-lab/note-skin）。メッシュの作り直しが要るので次の開始（はじめから・次の曲）から反映 ----
+        public Notes.NoteSkin noteSkin = Notes.NoteSkin.Neon;
+
         // ---- その他 ----
         public bool metronome;
 

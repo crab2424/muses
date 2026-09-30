@@ -111,6 +111,8 @@ namespace Muses.Game
             cfg.hiSpeed = ps.hiSpeed;
             cfg.metronome = ps.metronome;
             noteView.ThicknessFrac = ps.noteThickness;
+            // r3: スキンは次の Rechart（はじめから・次の曲）でメッシュを作り直したときに反映される
+            noteView.Skin = ps.noteSkin;
             AudioListener.volume = ps.masterVolume;
             if (musicSource != null) musicSource.volume = ps.bgmVolume;
             if (seSource != null) seSource.volume = ps.seVolume;
@@ -222,14 +224,17 @@ namespace Muses.Game
         /// いなければ「同じ譜面」とみなす（ステージ角度・アスペクト比はv1ではプレイ中に変わらない
         /// ため、参照比較だけで安全に判定できる）。</summary>
         private Chart.ChartData lastBuiltChart;
+        /// <summary>r3: 直前に作ったメッシュのスキン。設定でスキンを変えたら、同じ譜面でも作り直す。</summary>
+        private NoteSkin lastBuiltSkin;
 
         private void Rechart()
         {
-            if (!ReferenceEquals(chart, lastBuiltChart))
+            if (!ReferenceEquals(chart, lastBuiltChart) || noteView.Skin != lastBuiltSkin)
             {
                 var scrollTimelines = Chart.ChartFormat.BuildScrollTimelines(chart); // note-spec.md §5.5
                 noteView.Build(stageController.Config, stageController.Derived, chart.notes, scrollTimelines);
                 lastBuiltChart = chart;
+                lastBuiltSkin = noteView.Skin;
             }
             judge.SetConfig(stageController.Config);
             // gameplay-feel-r2.md §7: Prepare(新ノーツ) → Reset の順でなければならない。逆順だと Reset(=Seek(0))が

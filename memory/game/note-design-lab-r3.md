@@ -257,3 +257,14 @@ Sonnet には r2 と同様、**描画を見ながら反復**させる。
   （Cull Off のまま、凸形なので ZTest Always でも前後が崩れない）。
 - ∧ の寸法: ネオン th 0.32 / sl 0.30、キーキャップ th 0.28 / sl 0.26（C# の ChevronDims と hlsl の SKIN_CHEV_* を一致させる）。
 - 次: Unity・iPad でキーキャップの見た目確認（特に立体の表裏＝前面判定の向き、明るさ）→ ③ スキン切替の設定 UI。
+
+## 15. ③ スキン切替の設定 UI（2026-09-30）
+
+ユーザー確認: キーキャップの移植は問題なし（立体の表裏・見た目とも）。
+
+- 設定画面（AppController、タイトル／ポーズメニューの「設定」）に **「ノーツスキン」ドロップダウン（ネオン／キーキャップ）** を追加。
+  `PlayerSettings.noteSkin`（NoteSkin、既定 Neon、player-settings.json に保存）→ GameController.ApplyPlayerSettings → NoteView.Skin。
+- 反映タイミング: メッシュを作り直す必要があるので **次の Rechart（次の曲の開始・「はじめから」・リザルトの「もう一度」）**。
+  GameController.Rechart は「譜面が変わった or 直前に作ったメッシュとスキンが違う」ときに作り直す。
+  プレイ中に変えて「再開」した場合はその曲の間は元のスキンのまま（設定画面に注記を表示）。
+- 譜面エディタのプレビューは既定スキン（ネオン）固定（r3 §3 の方針どおり）。

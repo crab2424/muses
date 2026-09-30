@@ -407,6 +407,24 @@ namespace Muses.Game
             scroll.Add(MakeSliderRow("ノーツの厚み", 0.01f, 0.15f, () => settings.noteThickness,
                 v => settings.noteThickness = v, v => $"{v:F3}"));
 
+            // r3（design-lab/note-skin）: ノーツの見た目一式。メッシュの作り直しが要るので、プレイ中に変えた場合は
+            // 「はじめから」か次の曲から反映される（GameController.Rechart）。
+            var skinChoices = new List<string> { "ネオン", "キーキャップ" }; // 並びは NoteSkin の値の順
+            var skinDropdown = new DropdownField("ノーツスキン", skinChoices,
+                Mathf.Clamp((int)settings.noteSkin, 0, skinChoices.Count - 1));
+            skinDropdown.RegisterValueChangedCallback(evt =>
+            {
+                settings.noteSkin = (Notes.NoteSkin)Mathf.Max(0, skinChoices.IndexOf(evt.newValue));
+                ApplySettingsToGame();
+            });
+            scroll.Add(skinDropdown);
+            var skinHint = new Label("スキンの変更はプレイ中なら「はじめから」または次の曲から反映されます");
+            skinHint.style.fontSize = 12;
+            skinHint.style.color = new Color(0.7f, 0.7f, 0.75f);
+            skinHint.style.marginBottom = 8;
+            skinHint.style.whiteSpace = WhiteSpace.Normal;
+            scroll.Add(skinHint);
+
             var metronomeToggle = new Toggle("メトロノーム");
             metronomeToggle.value = settings.metronome;
             metronomeToggle.RegisterValueChangedCallback(evt => settings.metronome = evt.newValue);
