@@ -8,7 +8,7 @@
 //   segs: [{ a:[x,y,z], b:[x,y,z], c:[r,g,b], k?:強さ(1), p?:任意の値(0) }]
 //   opts: { widthPx=1.5, opacity=0.6, uniforms={}, frag='' }
 //     frag … フラグメントに差し込む GLSL。使える変数: vec3 col（加算前の色）, float a（不透明度）,
-//            float vP（線分ごとの p を線に沿って補間）, float vU（線分の始点0→終点1）, vec3 vW（ワールド座標）
+//            float vP（線分ごとの p、線分内で一定）, float vU（線分の始点0→終点1）, vec3 vW（ワールド座標）
 //            uniform は opts.uniforms で足す（uTime は常にある）。
 // 暗部ゾーン内は自動で消える（museSpawnMask）。加算合成・深度なし。
 export const REF_HEIGHT_PX = 1668;
