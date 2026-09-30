@@ -88,3 +88,20 @@ export function setZoneView(zone, vp, vo) {
   // clip = base*s + o（base→拡大後の NDC）
   zone.uniforms.uBaseToClip.value.set(fw / w, fh / h, (fw - 2 * x) / w - 1, 1 - (fh - 2 * y) / h);
 }
+
+// ゲート（ノーツ出現位置の奥に置く真円）の画面上の位置と半径。単位は NDC の縦（横は ÷aspect）⇒ 画面上で真円。
+// 条件: (1) 円全体が画面内（上端 ≤ topMax）  (2) 最遠端の断面の4隅を覆う（半径 ≥ 隅までの距離 × margin）。
+// 中心を下げるほど必要な半径は増えるが上端は下がるので、上端 = topMax となる中心を二分法で解く。
+export function gateCircle(zone, aspect, { topMax = 0.98, margin = 1.0 } = {}) {
+  const hw = Math.max(zone.farGround.uR, zone.farSky.uR) * aspect; // 断面の半幅（縦単位）
+  const vLo = Math.min(zone.farGround.v, zone.farSky.v), vHi = Math.max(zone.farGround.v, zone.farSky.v);
+  const need = (cy) => margin * Math.max(Math.hypot(hw, vHi - cy), Math.hypot(hw, cy - vLo));
+  let lo = -1, hi = (vLo + vHi) / 2;
+  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (m + need(m) > topMax) hi = m; else lo = m; }
+  return { cx: 0, cy: lo, r: need(lo) };
+}
+// GLSL: 画面上の真円までの符号付き距離（縦単位、内側が負）。uGate = (cx, cy, r, aspect)
+export const GATE_GLSL = /* glsl */ `
+  uniform vec4 uGate;
+  float museGateDist(vec2 ndc) { vec2 q = (ndc - uGate.xy) * vec2(uGate.w, 1.0); return length(q) - uGate.z; }
+`;
