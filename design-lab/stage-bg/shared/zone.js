@@ -90,15 +90,16 @@ export function setZoneView(zone, vp, vo) {
 }
 
 // ゲート（ノーツ出現位置の奥に置く真円）の画面上の位置と半径。単位は NDC の縦（横は ÷aspect）⇒ 画面上で真円。
-// 条件: (1) 円全体が画面内（上端 ≤ topMax）  (2) 最遠端の断面の4隅を覆う（半径 ≥ 隅までの距離 × margin）。
-// 中心を下げるほど必要な半径は増えるが上端は下がるので、上端 = topMax となる中心を二分法で解く。
-export function gateCircle(zone, aspect, { topMax = 0.98, margin = 1.0 } = {}) {
+// 中心 = 最遠端の断面の中央、半径 = 断面の4隅までの距離 × margin（縁が断面の隅を通る）。
+// 断面より下ではステージの台形が必ず円より広いので、円の下部（約1/4）はステージに隠れる＝「ステージが門へ入っていく」見え方。
+// 中心を下げて円全体を画面内に収める案は、下半分以上がステージに隠れてドーム状に見えたので不採用（r2）。
+// 上端は iPad 11" で v≈1.018（約2%画面外）。topMax を超える分だけ半径を縮める（隅を覆う保証より上端を優先）。
+export function gateCircle(zone, aspect, { margin = 1.0, topMax = 1.02 } = {}) {
   const hw = Math.max(zone.farGround.uR, zone.farSky.uR) * aspect; // 断面の半幅（縦単位）
-  const vLo = Math.min(zone.farGround.v, zone.farSky.v), vHi = Math.max(zone.farGround.v, zone.farSky.v);
-  const need = (cy) => margin * Math.max(Math.hypot(hw, vHi - cy), Math.hypot(hw, cy - vLo));
-  let lo = -1, hi = (vLo + vHi) / 2;
-  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (m + need(m) > topMax) hi = m; else lo = m; }
-  return { cx: 0, cy: lo, r: need(lo) };
+  const cy = (zone.farGround.v + zone.farSky.v) / 2;
+  const hh = Math.abs(zone.farSky.v - zone.farGround.v) / 2;
+  const r = Math.min(Math.hypot(hw, hh) * margin, topMax - cy);
+  return { cx: 0, cy, r };
 }
 // GLSL: 画面上の真円までの符号付き距離（縦単位、内側が負）。uGate = (cx, cy, r, aspect)
 export const GATE_GLSL = /* glsl */ `

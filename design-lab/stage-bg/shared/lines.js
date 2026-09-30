@@ -29,7 +29,7 @@ export function buildLines(THREE, ctx, segs, opts = {}) {
       S[v * 2 + 1] = j % 2 ? 1 : -1;     // 帯の左右
       P[v] = p;
     }
-    idx.set([i * 4, i * 4 + 1, i * 4 + 3, i * 4, i * 4 + 3, i * 4 + 2], i * 6);
+    idx.set([i * 4, i * 4 + 3, i * 4 + 1, i * 4, i * 4 + 2, i * 4 + 3], i * 6); // 画面上で反時計回り（表面）
   });
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(A, 3)); // bounding 用（実位置はシェーダで決める）
@@ -79,7 +79,7 @@ export function buildLines(THREE, ctx, segs, opts = {}) {
         a *= 1.0 - museSpawnMask(museBaseNdc());
         gl_FragColor = vec4(col * a, a);
       }`,
-    vertexColors: true,
+    vertexColors: true, side: THREE.DoubleSide,
     transparent: true, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
   });
   const mesh = new THREE.Mesh(g, mat);
