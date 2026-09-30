@@ -23,10 +23,12 @@ const TAP_VERT = /* glsl */ `
     vS = s;
     vRo = (cameraPosition - modelMatrix[3].xyz) / s;
     vec3 pos = position;
+    // 横は各角を自分の側へ外向きにだけ広げる（r3 §16。旧: 奥の角をカメラの x から遠ざけていて、内側の端が欠けた）
+    float den = max(vRo.y - uH, 0.05 * uB);
+    pos.x += sign(pos.x) * abs(pos.x - vRo.x) * 1.1 * uH / den;
     if (pos.z < 0.0) {
-      float ext = max(vRo.z, 0.0) * uH / max(vRo.y - uH, 0.05 * uB);
+      float ext = max(vRo.z, 0.0) * uH / den;
       pos.z = -min(max(ext * 1.08 + 0.1 * uB, uB * 1.05), uB * 6.0);
-      pos.x = vRo.x + (pos.x - vRo.x) * (1.0 + 1.1 * uH / max(vRo.y - uH, 0.05 * uB));
     }
     vQ = pos.xz;
     gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(pos, 1.0);
