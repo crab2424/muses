@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stage Background Lab</title>
+<style>
+  :root {
+    --bg: #f4f4f1; --panel: #ffffff; --text: #1d1f1c; --muted: #6a6f68; --line: #d9dbd4;
+    --accent: #2f6fd6; --chip: #eceee8; --ok: #1f8a4c; --ng: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151714; --panel: #1f221e; --text: #e8eae4; --muted: #9aa096; --line: #343831;
+      --accent: #7fb0ff; --chip: #2a2e28; --ok: #5fd08f; --ng: #ff7b6b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151714; --panel: #1f221e; --text: #e8eae4; --muted: #9aa096; --line: #343831;
+    --accent: #7fb0ff; --chip: #2a2e28; --ok: #5fd08f; --ng: #ff7b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; }
+  label.ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  select, button { font: inherit; color: var(--text); background: var(--chip); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; min-height: 30px; }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #stageWrap { position: relative; flex: 1; min-height: 0; }
+  canvas#c { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: manipulation; }
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  .tileLabel { position: absolute; pointer-events: auto; cursor: pointer; padding: 3px 7px; margin: 6px;
+    border-radius: 6px; background: rgba(15,16,20,.72); color: #fff; font-size: 12px; max-width: calc(100% - 12px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tileLabel .badge { display: inline-block; font-size: 10px; padding: 0 5px; margin-right: 6px; border-radius: 4px;
+    background: #fff; color: #111; font-weight: 600; }
+  .tileMeter { position: absolute; padding: 2px 6px; margin: 6px; border-radius: 6px; background: rgba(15,16,20,.72);
+    color: #fff; font: 11px/1.4 ui-monospace, monospace; pointer-events: none; }
+  .tileMeter .ok { color: #7ee2a8; } .tileMeter .ng { color: #ff9a8a; }
+  .zoneBox { position: absolute; border: 1px dashed rgba(255,255,255,.85); outline: 1px dashed rgba(0,0,0,.6);
+    pointer-events: none; }
+  .tileErr { position: absolute; color: #fff; background: #a3262a; padding: 8px; margin: 36px 8px; border-radius: 6px;
+    font: 11px/1.4 ui-monospace, monospace; white-space: pre-wrap; max-width: calc(100% - 16px); }
+  #detail { display: none; border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px;
+    max-height: 32vh; overflow: auto; }
+  #detail.show { display: block; }
+  #detail h2 { font-size: 14px; margin: 0 0 4px; }
+  #detail p { margin: 4px 0; }
+  #detail .k { color: var(--muted); display: inline-block; min-width: 7em; }
+  .hint { color: var(--muted); font-size: 12px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>ステージ背景比較</h1>
+  <label class="ctl">ノーツ <select id="skin">
+    <option value="neon.js" selected>ネオン（既定）</option><option value="keycap.js">キーキャップ</option>
+    <option value="">なし（背景のみ）</option>
+  </select></label>
+  <label class="ctl">譜面 <select id="pattern"></select></label>
+  <label class="ctl">画面比 <select id="aspect">
+    <option value="1.4317" selected>iPad Pro 11"（2388×1668）</option>
+    <option value="1.3333">4:3（iPad 10.2" / mini）</option>
+    <option value="1.5">3:2</option>
+  </select></label>
+  <label class="ctl">共通の暗幕 <select id="shade">
+    <option value="theme" selected>テーマ既定</option><option value="0">なし</option>
+    <option value="0.5">0.5</option><option value="0.85">0.85</option>
+  </select></label>
+  <label class="ctl"><input type="checkbox" id="showZone" checked> 暗部ゾーン表示</label>
+  <button id="pause">⏸ 一時停止</button>
+  <label class="ctl">視点 <select id="view">
+    <option value="full">ゲーム画面そのまま</option>
+    <option value="far">出現位置付近 ×2.5</option>
+  </select></label>
+  <button id="back" style="display:none">← 一覧へ戻る</button>
+  <span class="hint" id="hint"></span>
+  <span class="hint" id="fps"></span>
+</header>
+<div id="stageWrap">
+  <canvas id="c"></canvas>
+  <div id="labels"></div>
+</div>
+<div id="detail"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { CFG as LAB_CFG, COLORS, derive, buildStage, placeNote, nominalDims, laneX } from '../note-tap/stage.js';
+import { PATTERNS, noteSpan, TAP_KINDS } from '../note-skin/patterns.js';
+import { GLSL_PLACE, GLSL_CLIP, makeSharedUniforms, sampleSlide, uAt, EASE } from '../note-long/long.js';
+import { THEME_PATHS } from './themes/registry.js';
+import { SPAWN_GLSL, makeZone, buildShade, setZoneView } from './shared/zone.js';
+
+// Unity の StageConfig.Default()（実機調整値）に合わせる。note-tap/stage.js の CFG はラボ用で φ 等が違う
+const CFG = { ...LAB_CFG, phiDeg: 77, yCam: 8, thetaDeg: 38, vSkyJudge: 0.15, vGroundJudge: -0.75, farFrac: 0.9, U: 0.87 };
+const SLIDE_COLORS = { ground: '#35e8ff', sky: '#4affa0', riser: '#4affa0' };
+const SKIN_COLORS = { ...COLORS, slide: SLIDE_COLORS, diver: '#c86aff' };
+
+const qs = new URLSearchParams(location.search);
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setScissorTest(true);
+renderer.autoClear = false;
+const envMap = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+// ---------- 視点・導出値（画面比で作り直す） ----------
+let ASPECT = +(qs.get('aspect') || 1.4317);
+document.getElementById('aspect').value = String(ASPECT);
+let d, uniforms, camera, zone;
+function rebuildView() {
+  d = derive(CFG, ASPECT);
+  const old = uniforms;
+  uniforms = makeSharedUniforms(CFG, d);
+  uniforms.uEdgeMinPx = { value: 0.5 };
+  uniforms.uEdgeScale = { value: 1 };
+  if (old) uniforms.uSongTime.value = old.uSongTime.value;
+  camera = new THREE.PerspectiveCamera(CFG.phiDeg, ASPECT, 0.05, 4000);
+  camera.position.set(0, CFG.yCam, 0);
+  camera.rotation.x = -d.theta;
+  camera.updateMatrixWorld(); camera.updateProjectionMatrix();
+  zone = makeZone(THREE, CFG, d, camera, laneX);
+}
+rebuildView();
+
+// ---------- state ----------
+const state = { skin: qs.get('skin') ?? 'neon.js', pattern: 'all', paused: false, view: 'full', focus: -1,
+  songTime: 0, wall: 0, shade: 'theme', showZone: true, dirty: true };
+document.getElementById('skin').value = state.skin;
+let skinDef = null;
+async function loadSkinDef() {
+  skinDef = state.skin ? (await import('../note-skin/skins/' + state.skin)).default : null;
+}
+
+// ---------- tiles（1タイル = 1テーマ） ----------
+const tiles = [];
+function tintStage(root, st) {
+  if (!st) return;
+  // buildStage の子は層ごとに [面, レーン線, 判定線]（地上→空中）
+  const kids = root.children;
+  const set = (m, c, a) => {
+    if (!m || c == null) return;
+    if (m.material.uniforms) { m.material.uniforms.uColor.value.set(c); if (a != null) m.material.uniforms.uAlpha.value = a; }
+    else { m.material.color.set(c); if (a != null) m.material.opacity = a; }
+  };
+  set(kids[0], st.groundFill, st.groundFillAlpha); set(kids[1], st.groundLine, st.groundLineAlpha); set(kids[2], st.groundJudge);
+  set(kids[3], st.skyFill, st.skyFillAlpha); set(kids[4], st.skyLine, st.skyLineAlpha); set(kids[5], st.skyJudge);
+}
+function buildTile(tile) {
+  tile.err = null;
+  if (tile.bg && tile.bg.dispose) try { tile.bg.dispose(); } catch (e) { console.warn(e); }
+  tile.bg = null; tile.skin = null; tile.notes = new Map();
+  // 背景シーン（先に描く）
+  tile.bgScene = new THREE.Scene();
+  // ステージ＋ノーツのシーン（深度クリア後に描く）
+  const scene = new THREE.Scene();
+  scene.environment = envMap;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.2));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+  sun.position.set(-4, 30, 6); sun.target.position.set(0, 0, -20);
+  scene.add(sun, sun.target);
+  const stage = buildStage(CFG, d);
+  scene.add(stage);
+  tile.scene = scene;
+  if (!tile.def) return;
+  try {
+    tintStage(stage, tile.def.stage);
+    const ctx = { THREE, cfg: CFG, d, camera, renderer, aspect: ASPECT, zone, glsl: { spawn: SPAWN_GLSL },
+      laneX: (u, layerF, z) => laneX(CFG, d, u, layerF, z) };
+    tile.bg = tile.def.create(ctx) || {};
+    if (tile.bg.object) tile.bgScene.add(tile.bg.object);
+    const sh = tile.def.shade || {};
+    tile.shade = buildShade(THREE, zone, sh.color || '#05060c');
+    tile.shadeDefault = sh.strength ?? 0.85;
+    tile.bgScene.add(tile.shade.mesh);
+    tile.clear = new THREE.Color(tile.def.clearColor || '#000000');
+  } catch (e) {
+    console.error(tile.path, e);
+    tile.err = String(e && e.stack || e);
+  }
+  if (skinDef) {
+    try {
+      tile.skin = skinDef.create({ THREE, cfg: CFG, d, colors: SKIN_COLORS, envMap, renderer, opts: {},
+        uniforms, glsl: { place: GLSL_PLACE, clip: GLSL_CLIP }, sampleSlide, uAt, EASE,
+        dims: (w) => nominalDims(CFG, d, w) });
+    } catch (e) { console.error(e); tile.err = String(e && e.stack || e); }
+  }
+}
+async function loadThemes() {
+  const only = qs.get('v');
+  const paths = only ? only.split(',').filter(Boolean) : THEME_PATHS;
+  for (const path of paths) {
+    const tile = { path, def: null };
+    try { tile.def = (await import('./themes/' + path)).default; }
+    catch (e) { console.error(path, e); tile.err = String(e && e.stack || e); }
+    tiles.push(tile);
+  }
+  tiles.forEach(buildTile);
+}
+function rebuildAll() { for (const t of tiles) buildTile(t); layout(); }
+
+// ---------- UI ----------
+const patSel = document.getElementById('pattern');
+for (const [k, p] of Object.entries(PATTERNS)) patSel.add(new Option(p.label, k));
+patSel.value = state.pattern;
+patSel.onchange = () => { state.pattern = patSel.value; for (const t of tiles) clearNotes(t); };
+document.getElementById('skin').onchange = async (e) => { state.skin = e.target.value; await loadSkinDef(); rebuildAll(); };
+document.getElementById('aspect').onchange = (e) => { ASPECT = +e.target.value; rebuildView(); rebuildAll(); };
+document.getElementById('shade').onchange = (e) => { state.shade = e.target.value; };
+document.getElementById('showZone').onchange = (e) => { state.showZone = e.target.checked; layout(); };
+document.getElementById('view').onchange = (e) => { state.view = e.target.value; layout(); };
+const pauseBtn = document.getElementById('pause');
+const setPaused = (p) => { state.paused = p; pauseBtn.textContent = p ? '▶ 再生' : '⏸ 一時停止'; pauseBtn.classList.toggle('on', p); };
+pauseBtn.onclick = () => setPaused(!state.paused);
+const backBtn = document.getElementById('back');
+backBtn.onclick = () => setFocus(-1);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); setPaused(!state.paused); }
+  else if (e.code === 'Escape') setFocus(-1);
+  else if (/^Digit[1-9]$/.test(e.code)) { const i = +e.code.slice(5) - 1; if (i < tiles.length) setFocus(i); }
+});
+function setFocus(i) {
+  state.focus = i;
+  backBtn.style.display = i >= 0 ? '' : 'none';
+  const det = document.getElementById('detail');
+  if (i >= 0 && tiles[i].def) {
+    const v = tiles[i].def;
+    const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    det.innerHTML = `<h2>${esc(v.name)}</h2>
+      <p><span class="k">担当モデル</span>${esc(v.model)}</p>
+      <p><span class="k">コンセプト</span>${esc(v.concept)}</p>
+      <p><span class="k">配色</span>${esc(v.palette)}</p>
+      <p><span class="k">動き</span>${esc(v.motion)}</p>
+      <p><span class="k">負荷</span>${esc(v.perf)}</p>
+      <p><span class="k">Unity移植</span>${esc(v.unityCost)}</p>`;
+    det.classList.add('show');
+  } else det.classList.remove('show');
+  layout();
+}
+
+// ---------- layout ----------
+let rects = [];
+const viewOffset = () => {
+  if (state.view === 'full') return null;
+  const z = 2.5, fw = 1000, fh = fw / ASPECT;
+  const cy = (1 - (zone.v0 + zone.v1) / 2) / 2 * fh;
+  return { fw, fh, x: fw / 2 - fw / z / 2, y: Math.min(fh - fh / z, Math.max(0, cy - fh / z / 2)), w: fw / z, h: fh / z };
+};
+function layout() {
+  const wrap = document.getElementById('stageWrap');
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  renderer.setSize(W, H, false);
+  const idx = state.focus >= 0 ? [state.focus] : tiles.map((_, i) => i);
+  const n = idx.length, gap = 6;
+  let best = { cols: 1, w: 0 };
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const w = Math.min((W - gap * (cols + 1)) / cols, ((H - gap * (rows + 1)) / rows) * ASPECT);
+    if (w > best.w) best = { cols, w };
+  }
+  const cols = best.cols, rows = Math.ceil(n / cols), w = best.w, h = w / ASPECT;
+  const ox = (W - (cols * w + (cols - 1) * gap)) / 2, oy = (H - (rows * h + (rows - 1) * gap)) / 2;
+  rects = idx.map((ti, k) => ({ ti, x: ox + (k % cols) * (w + gap), y: oy + Math.floor(k / cols) * (h + gap), w, h }));
+  document.getElementById('hint').textContent = 'タイルをタップで拡大 / Space: 停止 / 数字キー: 拡大';
+  const labels = document.getElementById('labels');
+  labels.innerHTML = '';
+  const vo = viewOffset();
+  for (const r of rects) {
+    const t = tiles[r.ti];
+    const el = document.createElement('div');
+    el.className = 'tileLabel';
+    el.style.left = r.x + 'px'; el.style.top = (r.y + r.h - 34) + 'px'; el.style.maxWidth = (r.w - 12) + 'px';
+    el.innerHTML = `<span class="badge">${r.ti + 1}</span>${t.def ? `[${t.def.model}] ${t.def.name}` : t.path}`;
+    el.onclick = () => onTileTap(r.ti);
+    labels.appendChild(el);
+    const m = document.createElement('div');
+    m.className = 'tileMeter'; m.style.left = r.x + 'px'; m.style.top = r.y + 'px';
+    t.meterEl = m; labels.appendChild(m);
+    if (state.showZone) {
+      // NDC → タイル内ピクセル（拡大視点ではオフセットを考慮）
+      const toPx = (u, v) => {
+        let px = (u + 1) / 2, py = (1 - v) / 2;
+        if (vo) { px = (px * vo.fw - vo.x) / vo.w; py = (py * vo.fh - vo.y) / vo.h; }
+        return [r.x + px * r.w, r.y + py * r.h];
+      };
+      const [x0, y0] = toPx(zone.u0, zone.v1), [x1, y1] = toPx(zone.u1, zone.v0);
+      const zb = document.createElement('div');
+      zb.className = 'zoneBox';
+      zb.style.left = Math.max(r.x, x0) + 'px'; zb.style.top = Math.max(r.y, y0) + 'px';
+      zb.style.width = Math.max(0, Math.min(r.x + r.w, x1) - Math.max(r.x, x0)) + 'px';
+      zb.style.height = Math.max(0, Math.min(r.y + r.h, y1) - Math.max(r.y, y0)) + 'px';
+      labels.appendChild(zb);
+    }
+    if (t.err) {
+      const er = document.createElement('div');
+      er.className = 'tileErr'; er.style.left = r.x + 'px'; er.style.top = r.y + 'px';
+      er.textContent = t.err.slice(0, 600);
+      labels.appendChild(er);
+    }
+  }
+}
+canvas.addEventListener('click', (e) => {
+  const b = canvas.getBoundingClientRect();
+  const x = e.clientX - b.left, y = e.clientY - b.top;
+  const r = rects.find((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  if (r) onTileTap(r.ti);
+});
+function onTileTap(ti) { setFocus(state.focus >= 0 ? -1 : ti); }
+window.addEventListener('resize', layout);
+
+// ---------- notes（note-skin と同じ配置） ----------
+const TAP_ORDER = { tap: 6, flick: 7, extap: 8 };
+const tmp = {};
+function releaseObj(tile, obj) {
+  if (obj.userData.isTap) { if (tile.skin && tile.skin.releaseTap) tile.skin.releaseTap(obj); }
+  else obj.traverse((o) => { if (o.geometry && !o.userData.sharedGeometry) o.geometry.dispose(); });
+}
+function clearNotes(tile) {
+  if (!tile.notes) return;
+  for (const obj of tile.notes.values()) { tile.scene.remove(obj); releaseObj(tile, obj); }
+  tile.notes.clear();
+}
+function updateNotes(tile, songTime, dt) {
+  if (!tile.skin) return;
+  const pat = PATTERNS[state.pattern];
+  const P = pat.period;
+  const lo = songTime - 0.3, hi = songTime + CFG.readAheadSec + 0.2;
+  const alive = new Set();
+  for (let k = Math.floor((lo - P) / P); k <= Math.floor(hi / P); k++) {
+    pat.notes.forEach((n, i) => {
+      const [s0, s1] = noteSpan(n);
+      const t0 = s0 + k * P, t1 = s1 + k * P;
+      if (t1 < lo || t0 > hi) return;
+      const key = k + ':' + i;
+      if (TAP_KINDS.has(n.kind)) {
+        if (t0 <= songTime) return;
+        placeNote(CFG, d, { t: t0, cell: n.cellF, width: n.width, layer: n.layer }, songTime, tmp);
+        if (tmp.progress > 1) return;
+        if (tmp.depth < (n.layer ? d.skyNear : d.groundNear)) return;
+        alive.add(key);
+        let obj = tile.notes.get(key);
+        if (!obj) {
+          obj = tile.skin.makeTap({ kind: n.kind, widthCells: n.width, layer: n.layer, ...nominalDims(CFG, d, n.width) });
+          obj.userData.isTap = true;
+          const base = TAP_ORDER[n.kind];
+          obj.traverse((o) => { o.frustumCulled = false; o.renderOrder = base + (o.renderOrder || 0) * 0.01; });
+          tile.scene.add(obj); tile.notes.set(key, obj);
+        }
+        obj.position.set(tmp.x, tmp.y + d.zJudge * 0.002, tmp.z);
+        obj.scale.set(tmp.sx, tmp.sx, tmp.sz);
+        if (tile.skin.updateTap) tile.skin.updateTap(obj, { t: songTime, dt, progress: tmp.progress, depth: tmp.depth,
+          layer: n.layer, sx: tmp.sx, sz: tmp.sz, timeToHit: t0 - songTime });
+        return;
+      }
+      alive.add(key);
+      if (tile.notes.has(key)) return;
+      const shift = k * P;
+      const obj = n.kind === 'slide'
+        ? tile.skin.makeSlide({ ...n, points: n.points.map((p) => ({ ...p, t: p.t + shift })) })
+        : tile.skin.makeRiser({ ...n, t: n.t + shift, dir: Math.sign(n.layerTo - n.layerF) });
+      const base = n.kind === 'slide' ? 5 : 9;
+      obj.traverse((o) => { o.frustumCulled = false; o.renderOrder = base + (o.renderOrder || 0) * 0.01; });
+      tile.scene.add(obj); tile.notes.set(key, obj);
+    });
+  }
+  for (const [key, obj] of tile.notes) {
+    if (!alive.has(key)) { tile.scene.remove(obj); releaseObj(tile, obj); tile.notes.delete(key); }
+  }
+}
+
+// ---------- 暗部ゾーンの輝度計測（背景＋暗幕のみ、ノーツ・ステージなし） ----------
+// ゾーン内の相対輝度（sRGB→linear→Rec.709）の平均と95パーセンタイルを出す。基準は README / stage-bg-r1.md
+const MW = 192;
+let meterRT = null, meterBuf = null;
+const LUMA = { mean: 0.06, p95: 0.12 };
+function measure(tile) {
+  const MH = Math.round(MW / ASPECT);
+  if (!meterRT || meterRT.height !== MH) {
+    meterRT = new THREE.WebGLRenderTarget(MW, MH, { colorSpace: THREE.SRGBColorSpace });
+    meterBuf = new Uint8Array(MW * MH * 4);
+  }
+  camera.clearViewOffset();
+  setZoneView(zone, { x: 0, y: 0, w: MW, h: MH }, null);
+  renderer.setRenderTarget(meterRT); // ビューポートは RT のもの（setViewport はピクセル比を掛けるので呼ばない）
+  renderer.setClearColor(tile.clear); renderer.clear();
+  renderer.render(tile.bgScene, camera);
+  renderer.readRenderTargetPixels(meterRT, 0, 0, MW, MH, meterBuf);
+  renderer.setRenderTarget(null);
+  const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const xs = Math.floor((zone.u0 + 1) / 2 * MW), xe = Math.ceil((zone.u1 + 1) / 2 * MW);
+  const ys = Math.floor((zone.v0 + 1) / 2 * MH), ye = Math.ceil((zone.v1 + 1) / 2 * MH);
+  const vals = [];
+  for (let y = Math.max(0, ys); y < Math.min(MH, ye); y++) for (let x = Math.max(0, xs); x < Math.min(MW, xe); x++) {
+    const i = (y * MW + x) * 4; // RT は下から上
+    vals.push(0.2126 * lin(meterBuf[i]) + 0.7152 * lin(meterBuf[i + 1]) + 0.0722 * lin(meterBuf[i + 2]));
+  }
+  if (!vals.length) return null;
+  vals.sort((a, b) => a - b);
+  return { mean: vals.reduce((a, b) => a + b, 0) / vals.length, p95: vals[Math.floor(vals.length * 0.95)] };
+}
+function showMeter(tile, m) {
+  if (!tile.meterEl) return;
+  if (!m) { tile.meterEl.textContent = '暗部: 計測不可'; return; }
+  const c = (v, lim) => `<span class="${v <= lim ? 'ok' : 'ng'}">${v.toFixed(3)}</span>`;
+  tile.meterEl.innerHTML = `暗部 平均${c(m.mean, LUMA.mean)} / p95 ${c(m.p95, LUMA.p95)}`;
+}
+
+// ---------- frame ----------
+let last = performance.now(), meterT = 0;
+const fpsEl = document.getElementById('fps');
+let fpsFrames = 0, fpsT0 = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  state.wall += dt; // 背景は実時間で動く（音楽・一時停止に反応しない）
+  if (!state.paused) state.songTime += dt;
+  uniforms.uSongTime.value = state.songTime;
+  fpsFrames++;
+  if (now - fpsT0 >= 500) { fpsEl.textContent = `${Math.round(fpsFrames * 1000 / (now - fpsT0))} fps`; fpsFrames = 0; fpsT0 = now; }
+  const doMeter = (meterT -= dt) <= 0;
+  if (doMeter) meterT = 0.5;
+  const H = canvas.clientHeight;
+  renderer.setScissor(0, 0, canvas.clientWidth, H);
+  renderer.setViewport(0, 0, canvas.clientWidth, H);
+  renderer.setClearColor(getComputedStyle(document.body).backgroundColor);
+  renderer.clear();
+  for (const r of rects) {
+    const tile = tiles[r.ti];
+    if (!tile.scene) continue;
+    const strength = state.shade === 'theme' ? (tile.shadeDefault ?? 0.85) : +state.shade;
+    if (tile.shade) tile.shade.setStrength(strength);
+    if (tile.bg && tile.bg.update) try { tile.bg.update({ t: state.wall, dt }); } catch (e) { tile.err = String(e.stack || e); }
+    if (doMeter && tile.bgScene) showMeter(tile, measure(tile));
+    renderer.setScissor(r.x, H - r.y - r.h, r.w, r.h);
+    renderer.setViewport(r.x, H - r.y - r.h, r.w, r.h);
+    renderer.setClearColor(tile.clear || new THREE.Color(CFG.bgColor));
+    renderer.clear();
+    const vo = viewOffset();
+    if (vo) camera.setViewOffset(vo.fw, vo.fh, vo.x, vo.y, vo.w, vo.h); else camera.clearViewOffset();
+    const pr = renderer.getPixelRatio();
+    setZoneView(zone, { x: r.x * pr, y: (H - r.y - r.h) * pr, w: r.w * pr, h: r.h * pr }, vo);
+    if (tile.bgScene) renderer.render(tile.bgScene, camera);
+    renderer.clearDepth();
+    updateNotes(tile, state.songTime, state.paused ? 0 : dt);
+    if (tile.skin && tile.skin.beforeRender) tile.skin.beforeRender({ t: state.songTime, dt });
+    renderer.render(tile.scene, camera);
+  }
+  requestAnimationFrame(frame);
+}
+
+await loadSkinDef();
+await loadThemes();
+layout();
+requestAnimationFrame(frame);
+window.__lab = { tiles, state, measure, get meterBuf() { return meterBuf; }, get d() { return d; }, get zone() { return zone; }, CFG };
+</script>
+</body>
+</html>
