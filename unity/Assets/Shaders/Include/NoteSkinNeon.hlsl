@@ -28,15 +28,18 @@ float3 SkinTapPlace(Attributes IN, float groupX, inout Varyings OUT, out float d
     float3 cam = TransformWorldToObject(_WorldSpaceCameraPos);
     float3 ro = float3((cam.x - f.center.x) / f.sx, (cam.y - f.center.y) / f.sx, -(cam.z - f.center.z) / f.sz);
 
-    // 板は奥側（side=+1）へ伸ばし、横にも広げて、ドームの側面・天面が板からはみ出さないようにする
-    float lx = (IN.uv3.x * 2.0 - 1.0) * a;
+    // 板は奥側（side=+1）へ伸ばし、横にも広げて、ドームの側面・天面が板からはみ出さないようにする。
+    // 横は「その角の側へ外向きにだけ」広げる（r3 §16）。ラボは奥の2角をカメラの x から遠ざける向きに広げていたため、
+    // 中央から外れたノーツでは内側（カメラ側）の奥の角が内へ寄って板が細り、判定線付近でドームの内側の端が欠けていた。
+    // ドームの点 P の板上の投影は P からカメラと逆向きに |P.x - ro.x|·H/(ro.y-H) まで動くので、その分を外へ足す。
+    float den = max(ro.y - H, 0.05 * b);
+    float lx0 = (IN.uv3.x * 2.0 - 1.0) * a;
+    float lx = lx0 + sign(lx0) * abs(lx0 - ro.x) * 1.1 * H / den;
     float lz;
     if (IN.uv1.y > 0.0)
     {
-        float den = max(ro.y - H, 0.05 * b);
         float ext = max(ro.z, 0.0) * H / den;
         lz = -min(max(ext * 1.08 + 0.1 * b, b * 1.05), b * 6.0);
-        lx = ro.x + (lx - ro.x) * (1.0 + 1.1 * H / den);
     }
     else
     {

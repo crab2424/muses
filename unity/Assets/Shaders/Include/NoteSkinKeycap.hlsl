@@ -79,7 +79,9 @@ void SkinFrag(Varyings IN, bool isFront, out float3 rgb, out float alpha, out fl
         // ---- Tap 系の立体: 背面は捨てる（凸形なので前向きの面は各ピクセル1枚だけ）----
         float c = IN.tapC.x;
         float fw = max(fwidth(c), 1e-5);
-        if (!isFront) discard;
+        // 外向きの面が「表」になるのは IS_FRONT_VFACE で false 側だった（ラボのローカル座標は Unity のワールドと z が逆向きで、
+        // 巻き方向が反転するため。r3 §16: 逆にしていて内側の面だけが見え、ノーツが途切れて暗く見えていた）
+        if (isFront) discard;
         rgb = KeycapShade(base, normalize(IN.tapB), normalize(IN.tapA));
         if (c >= 0.0)
         {
