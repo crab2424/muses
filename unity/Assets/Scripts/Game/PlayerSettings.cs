@@ -41,6 +41,9 @@ namespace Muses.Game
         // ---- ノーツスキン（r3、design-lab/note-skin）。メッシュの作り直しが要るので次の開始（はじめから・次の曲）から反映 ----
         public Notes.NoteSkin noteSkin = Notes.NoteSkin.Neon;
 
+        // ---- ステージ背景（memory/game/stage-bg-unity-port.md）。譜面に依存しないので即時反映 ----
+        public Stage.Background.BackgroundTheme stageBackground = Stage.Background.BackgroundTheme.OrbitCity;
+
         // ---- その他 ----
         public bool metronome;
 

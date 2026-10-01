@@ -113,6 +113,7 @@ namespace Muses.Game
             noteView.ThicknessFrac = ps.noteThickness;
             // r3: スキンは次の Rechart（はじめから・次の曲）でメッシュを作り直したときに反映される
             noteView.Skin = ps.noteSkin;
+            stageController.BackgroundTheme = ps.stageBackground; // 背景は即時反映
             AudioListener.volume = ps.masterVolume;
             if (musicSource != null) musicSource.volume = ps.bgmVolume;
             if (seSource != null) seSource.volume = ps.seVolume;

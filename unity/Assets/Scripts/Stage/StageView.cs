@@ -101,6 +101,24 @@ namespace Muses.Stage
             }
         }
 
+        /// <summary>
+        /// stage-bg-unity-port.md §1。背景テーマの色で面・線の色と不透明度を上書きする。Rebuild の後に呼ぶ
+        /// （Rebuild が毎回もとの色に戻すので、テーマを None に戻したときは呼ばなければよい）。
+        /// </summary>
+        public void ApplyTint(in Background.StageTint t)
+        {
+            void Set(LayerView lv, Color c, float a)
+            {
+                if (lv?.material == null) return;
+                lv.material.SetColor("_Color", c);
+                lv.material.SetFloat("_Alpha", a);
+            }
+            Set(groundPlane, t.groundFill, t.groundFillAlpha);
+            Set(groundLines, t.groundLine, t.groundLineAlpha);
+            Set(skyPlane, t.skyFill, t.skyFillAlpha);
+            Set(skyLines, t.skyLine, t.skyLineAlpha);
+        }
+
         private static void ApplyMaterial(Material mat, Color color, float alpha, float near, float far, bool hardFar)
         {
             mat.SetColor("_Color", color);

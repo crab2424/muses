@@ -1,3 +1,4 @@
+using Muses.Stage.Background;
 using UnityEngine;
 
 namespace Muses.Stage
@@ -13,6 +14,9 @@ namespace Muses.Stage
         [SerializeField] private Camera cam;
         [SerializeField] private StageView view;
         [SerializeField] private StageConfig cfg = StageConfig.Default();
+        /// <summary>stage-bg-unity-port.md。None = 従来の単色（cfg.bgColor）。ゲームでは GameController が設定から入れる</summary>
+        [SerializeField] private BackgroundTheme backgroundTheme = BackgroundTheme.None;
+        private StageBackground background;
 
         private Derived derived;
         private float lastAspect = -1f;
@@ -20,6 +24,13 @@ namespace Muses.Stage
 
         public Derived Derived => derived;
         public StageConfig Config => cfg;
+
+        /// <summary>ステージ背景。変えると次の EnsureBuilt で作り直す（譜面に依存しないので即時反映）</summary>
+        public BackgroundTheme BackgroundTheme
+        {
+            get => backgroundTheme;
+            set { if (backgroundTheme != value) { backgroundTheme = value; dirty = true; } }
+        }
 
         /// <summary>Rebuild のたびに増える。cfg/Derived を読んで描く側（StageOverlay 等）が
         /// 「描き直しが必要か」を安く判定するためのもの（perf-r1.md §5）。</summary>
@@ -92,6 +103,20 @@ namespace Muses.Stage
             }
 
             view.Rebuild(cfg, derived);
+
+            // 背景（カメラ姿勢を決めた後に作る。暗部ゾーンは最遠端の投影から求めるため）
+            if (backgroundTheme != BackgroundTheme.None || background != null)
+            {
+                if (background == null) background = GetComponent<StageBackground>();
+                if (background == null) background = gameObject.AddComponent<StageBackground>();
+                var b = background.Rebuild(backgroundTheme, cfg, derived, cam);
+                if (b != null)
+                {
+                    cam.clearFlags = CameraClearFlags.SolidColor;
+                    cam.backgroundColor = b.ClearColor;
+                    if (b.Tint.HasValue) view.ApplyTint(b.Tint.Value);
+                }
+            }
             Version++;
         }
     }

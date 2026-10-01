@@ -425,6 +425,17 @@ namespace Muses.Game
             skinHint.style.whiteSpace = WhiteSpace.Normal;
             scroll.Add(skinHint);
 
+            // stage-bg-unity-port.md: ステージ背景。並びは BackgroundTheme の値の順（None=0）。即時反映
+            var bgChoices = new List<string> { "なし（単色）", "神話の軌道都市", "天上の聖域" };
+            var bgDropdown = new DropdownField("ステージ背景", bgChoices,
+                Mathf.Clamp((int)settings.stageBackground, 0, bgChoices.Count - 1));
+            bgDropdown.RegisterValueChangedCallback(evt =>
+            {
+                settings.stageBackground = (Stage.Background.BackgroundTheme)Mathf.Max(0, bgChoices.IndexOf(evt.newValue));
+                ApplySettingsToGame();
+            });
+            scroll.Add(bgDropdown);
+
             var metronomeToggle = new Toggle("メトロノーム");
             metronomeToggle.value = settings.metronome;
             metronomeToggle.RegisterValueChangedCallback(evt => settings.metronome = evt.newValue);
