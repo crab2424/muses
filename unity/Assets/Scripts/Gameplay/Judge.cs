@@ -916,7 +916,7 @@ namespace Muses.Gameplay
         {
             if (c.history.Count == 0) return false;
             float back = dir * c.v;
-            bool passedBand = InBand(c, wp.layerF, wp.cellF, wp.width, songTime, cfg.riserMarginCells);
+            bool passedBand = InRiserColumn(c.cellF, wp);
             foreach (var (u, v, time) in c.history)
             {
                 back = MathF.Min(back, dir * v);
@@ -925,16 +925,18 @@ namespace Muses.Gameplay
             return passedBand && dir * c.v - back >= distanceV;
         }
 
-        /// <summary>履歴の1点 (u, v, time) が Riser の判定域の中か。<see cref="InBand"/> と同じ規則（layerF クランプ・handoff 読み替え・横余白）。</summary>
+        /// <summary>履歴の1点 (u, v, time) が Riser の判定域の中か（両層、横余白のみ）。</summary>
         private bool SampleInBand(Contact c, float u, float v, float time, Waypoint wp)
         {
-            float lf = time <= c.layerHandoffUntil ? c.layerHandoffTo
-                : (v - cfg.vGroundJudge) / (cfg.vSkyJudge - cfg.vGroundJudge);
-            lf = Math.Clamp(lf, 0f, 1f);
-            if (MathF.Abs(lf - wp.layerF) > cfg.layerJudgeRadius) return false;
             float cellF = (u + cfg.U) * cfg.cells / (2f * cfg.U);
-            float m = cfg.riserMarginCells;
-            return cellF >= wp.cellF - m && cellF <= wp.cellF + wp.width + m;
+            return InRiserColumn(cellF, wp);
         }
+
+        /// <summary>note-feel-r3。Riser/Diver の判定域は両層（層は問わず、横だけ見る）。layerF は [0,1] にクランプされ、
+        /// 地上・空中の両判定域（各 ±layerJudgeRadius）で全体が覆われるので、層の条件を外すのと同じ。
+        /// 指定方向への垂直移動量の閾値が残るので、縦に擦らない限り成立しない。
+        /// 空中側から触れてそのまま上へ擦る Tap+Riser の配置でも Riser が成立する。</summary>
+        private bool InRiserColumn(float cellF, Waypoint wp) =>
+            cellF >= wp.cellF - cfg.riserMarginCells && cellF <= wp.cellF + wp.width + cfg.riserMarginCells;
     }
 }

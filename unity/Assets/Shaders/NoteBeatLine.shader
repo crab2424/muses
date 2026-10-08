@@ -18,6 +18,7 @@ Shader "Muses/NoteBeatLine"
         _ZcFarGround ("Zc Far Ground", Float) = 1
         _ThicknessFrac ("Thickness Frac", Float) = 0.025
         _ThicknessMinFrac ("Thickness Min Frac", Float) = 0.004
+        _ThicknessExp ("Thickness Exp", Float) = 0.75
         _TanHalfPhi ("Tan Half Phi", Float) = 1
         // 拍線は常に地上(layerF=0)なので効かないが、NoteView.csが両マテリアルへ同じ
         // uniform一式を渡すのでプロパティとしては用意しておく（note-visual-r1.md §3.2）。

@@ -55,6 +55,7 @@ namespace Muses.Gameplay
             TestDualLayerChainCutsSkyTap();
             TestHandoffDoesNotTakeDualTap();
             TestRiserWindowExtend();
+            TestRiserBothLayersColumn();
 
             Debug.Log(fail == 0
                 ? $"JudgeSmokeTest: ALL PASS ({pass})"
@@ -654,6 +655,26 @@ namespace Muses.Gameplay
             Check("Riser 窓拡張: −80ms -> PERFECT+", Run(0.92f) == JudgeKind.PerfectPlus);
             Check("Riser 窓拡張: −110ms -> PERFECT (EARLY)", Run(0.89f) == JudgeKind.Perfect);
             Check("Riser 窓拡張: −140ms -> GOOD", Run(0.86f) == JudgeKind.Good);
+        }
+
+        /// <summary>Riser の判定域は両層: 空中側（layerF 0.8）から触れて上へ擦っても成立する。横が余白の外なら成立しない。</summary>
+        private void TestRiserBothLayersColumn()
+        {
+            var cfg = Cfg();
+            JudgeKind? Run(float cell, float fromLayerF, float toLayerF)
+            {
+                var rt = new NoteRuntime { note = RiserNote(1.0f) };
+                var judge = new Judge(cfg, (r, a) => { });
+                judge.Prepare(new List<NoteRuntime> { rt });
+                var c = ContactAt(cfg, cell, fromLayerF);
+                for (float t = 0.9f; t < 0.97f; t += 0.008f) { MoveTo(cfg, c, fromLayerF, t); judge.Update(t, new List<Contact> { c }); }
+                Stroke(judge, cfg, c, 0.97f, 0.04f, fromLayerF, toLayerF);
+                for (float t = 1.02f; t <= 1.4f; t += 0.008f) judge.Update(t, new List<Contact> { c });
+                var s = judge.Score;
+                return s.perfectPlus == 1 ? JudgeKind.PerfectPlus : s.miss == 1 ? JudgeKind.Miss : null;
+            }
+            Check("Riser 判定域が両層: 空中側 layerF 0.8 -> 1.8 で上へ擦っても成立", Run(3.5f, 0.8f, 1.8f) == JudgeKind.PerfectPlus);
+            Check("Riser 判定域が両層: 横が余白の外なら MISS", Run(8f, 0f, 0.8f) == JudgeKind.Miss);
         }
 
         private void TestSeekSkipsPastNotesWithoutScoring()

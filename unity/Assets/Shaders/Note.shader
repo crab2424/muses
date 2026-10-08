@@ -31,6 +31,7 @@ Shader "Muses/Note"
         _ZcFarGround ("Zc Far Ground", Float) = 1
         _ThicknessFrac ("Thickness Frac", Float) = 0.025
         _ThicknessMinFrac ("Thickness Min Frac", Float) = 0.004
+        _ThicknessExp ("Thickness Exp", Float) = 0.75
         _TanHalfPhi ("Tan Half Phi", Float) = 1
         // note-visual-r1.md §3.2: 空中ノーツの画面上の厚みを地上と揃えるための層依存係数。
         _SkyThicknessMul ("Sky Thickness Mul", Float) = 1.96

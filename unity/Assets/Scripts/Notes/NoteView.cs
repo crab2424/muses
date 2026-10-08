@@ -31,6 +31,15 @@ namespace Muses.Notes
         [SerializeField] private float thicknessFrac = 0.06f;
         [Tooltip("画面上の最小厚みを保つための下限。現在の奥行きに対する割合（半幅）。遠方の点滅防止にのみ効く")]
         [SerializeField] private float thicknessMinFrac = 0.01f;
+        [Tooltip("2026-10-08。判定線より奥で厚みを (奥行き/判定線の奥行き)^この値 倍に太らせる。0=ワールド固定（従来、" +
+            "判定線付近で画面上の厚みが奥の約19倍に膨らみ奥は平べったい）、0.75=約6倍、1=約3倍。")]
+        [SerializeField] private float thicknessExp = 0.75f;
+
+        public float ThicknessExp
+        {
+            get => thicknessExp;
+            set { thicknessExp = value; ApplyThicknessUniforms(); }
+        }
 
         [Tooltip("note-visual-r1.md §3: 空中ノーツの画面上の厚みを地上と揃える係数。既定1.96は" +
             "奥行き再マップ後の空中/地上の画面厚み比(0.509)の逆数（理論上、地上と完全一致する上限）。" +
@@ -63,12 +72,14 @@ namespace Muses.Notes
             {
                 m.SetFloat("_ThicknessFrac", thicknessFrac);
                 m.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                m.SetFloat("_ThicknessExp", thicknessExp);
                 m.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
             if (beatMaterial != null)
             {
                 beatMaterial.SetFloat("_ThicknessFrac", thicknessFrac);
                 beatMaterial.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                beatMaterial.SetFloat("_ThicknessExp", thicknessExp);
                 beatMaterial.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
         }
@@ -353,6 +364,7 @@ namespace Muses.Notes
                 m.SetFloat("_TanHalfPhi", dCopy.tanHalfPhi);
                 m.SetFloat("_ThicknessFrac", thicknessFrac);
                 m.SetFloat("_ThicknessMinFrac", thicknessMinFrac);
+                m.SetFloat("_ThicknessExp", thicknessExp);
                 m.SetFloat("_SkyThicknessMul", skyThicknessMul);
             }
 

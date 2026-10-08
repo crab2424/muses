@@ -19,6 +19,7 @@ CBUFFER_START(UnityPerMaterial)
     float _ZcFarGround;
     float _ThicknessFrac;
     float _ThicknessMinFrac;
+    float _ThicknessExp;
     float _TanHalfPhi;
     float _SkyThicknessMul;
 CBUFFER_END
@@ -162,7 +163,12 @@ float3 PlaceNoteCore(float u, float y, float x, float layerF, float dz, float gr
 // note-visual-r1.md §3: 空中は _SkyThicknessMul 倍（layerF で連続補間。層を跨ぐSlideが中間のlayerFを取り得るため）。
 float MusesHalfThickness(float d0, float layerF)
 {
-    return max(_ZJudge * _ThicknessFrac, d0 * _ThicknessMinFrac) * lerp(1.0, _SkyThicknessMul, layerF);
+    // 2026-10-08: 判定線より奥では (d0/zJudge)^_ThicknessExp 倍に太らせる。画面上の厚みはおおよそ
+    // 厚み/奥行き² に比例するので、指数 0（ワールド固定）だと判定線付近で奥の約19倍に膨らみ、奥は平べったくなる
+    // （レーンが平行＝laneConverge 1 のため横幅は縮まず、縦だけ潰れる）。0.75 で約6倍、1.0 で約3倍に収まる。
+    // 判定線より手前は太らせない（判定線で厚みが連続）。
+    float k = pow(max(d0 / _ZJudge, 1.0), _ThicknessExp);
+    return max(_ZJudge * _ThicknessFrac * k, d0 * _ThicknessMinFrac) * lerp(1.0, _SkyThicknessMul, layerF);
 }
 
 float3 PlaceNote(float3 positionOS, float2 uv0, float2 uv1, float groupX, out float depthOut)
