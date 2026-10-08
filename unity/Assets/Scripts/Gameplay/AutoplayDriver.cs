@@ -21,7 +21,8 @@ namespace Muses.Gameplay
     /// - Flick は Presence 駆動なので、開始time以降で毎フレーム「枠内に接触があり、
     ///   直近flickWindowMs以上の移動がある」ことを示す合成 Contact を供給する
     ///   （履歴を1件だけ manufactured すれば Judge.UpdateFlickPending が即座に移動成立と判定する）。
-    /// - Slide は始点も含め占有駆動（gameplay-feel-r1.md §2）なので、始点の判定窓が開いてから終わるまで
+    /// - Slide の始点は Ex Tap と同じ枠内更新駆動（note-feel-r3）なので、始点時刻を跨いだフレームで OnEnter を1回呼ぶ。
+    ///   コンボ点は占有駆動なので、始点の判定窓が開いてから終わるまで
     ///   各フレーム、ChartMath.At(note, songTime) の位置に合成 Contact を置き続ける
     ///   （Judge.UpdateSlide の帯占有サンプルがフレームごとに記録される。60fpsなら誤差は最大±8ms程度で
     ///   ティア窓(33.33ms〜)に対して実用上問題ない、というのは note-spec移植時に確立済みの許容範囲）。
@@ -66,6 +67,18 @@ namespace Muses.Gameplay
                 {
                     if (rt.state == NoteState.Hit || rt.state == NoteState.Missed) continue;
                     if (curTime < ChartMath.NoteStart(note) - 0.1f) continue; // 始点の判定窓(±100ms)より前
+                    // note-feel-r3: 始点は Ex Tap と同じ枠内更新駆動なので、始点時刻を跨いだフレームで1回叩く
+                    var sp = note.points[0];
+                    if (!rt.startResolved && prevTime < sp.time && curTime >= sp.time)
+                        judge.OnEnter(new EnterEvent
+                        {
+                            layer = sp.layerF > 0.5f ? Layer.Sky : Layer.Ground,
+                            cell = (int)MathF.Round(sp.cellF),
+                            fresh = true,
+                            at = sp.time,
+                            cellF = sp.cellF,
+                            layerF = sp.layerF,
+                        }, sp.time);
                     var (layerF, cellF, _) = ChartMath.At(note, curTime);
                     contacts.Add(new Contact
                     {

@@ -51,5 +51,9 @@ namespace Muses.TouchInput
         /// <summary>gameplay-feel-r2.md §3。地上パネル上端の重なり帯の接触なら true。Judge は layer に加えて
         /// 空中 Tap も候補にする（1タッチ1ノーツ）。</summary>
         public bool skyReach;
+        /// <summary>note-feel-r3。Riser 成立時に Judge が合成した行き先層のイベントなら true。
+        /// Riser と重なる Tap の両層判定（<c>NoteRuntime.dualLayer</c>）はこのイベントでは広げない
+        /// （擦るだけで、叩くべき Tap まで取れてしまうため）。</summary>
+        public bool fromHandoff;
     }
 }

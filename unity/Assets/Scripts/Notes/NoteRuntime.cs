@@ -58,6 +58,12 @@ namespace Muses.Notes
         /// </summary>
         public bool exBoosted;
 
+        /// <summary>note-feel-r3（2026-10-08）。Tap/ExTap専用: 譜面上で同時刻・同一層・セル範囲が交差する
+        /// Riser/Diver の始点に重なっているか（ロード時にprecompute）。true なら地上・空中どちらのパネルの
+        /// 接触でも同じセルなら取れる（Riser の壁が画面上で行き先層側に見えるため）。縦連判定も両層の
+        /// ノーツを相手にする（Riser 自身は従来どおり縦連を受けない）。</summary>
+        public bool dualLayer;
+
         /// <summary>
         /// ipad-test-findings-r1.md §④。Slide専用: comboTimes[i] と同じ添字で、その添字が表す
         /// 区間（1つ前のコンボ点〜comboTimes[i]）の頂点範囲。NoteGeometry.PushSlideBand が

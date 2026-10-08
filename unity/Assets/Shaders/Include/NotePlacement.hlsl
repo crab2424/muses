@@ -99,18 +99,33 @@ float DepthFromV(float h, float v, float theta)
     return h / tan(psi);
 }
 
-// 層ごとの奥行き再マップ（上のコメント参照）。地上・帯の外側は恒等。
-float MusesRemapDepth(float d0, float layerF)
+// 【2026-10-08 訂正3】判定線より手前 (d0 < _ZJudge) を恒等にしていたため、空中ノーツは判定線を
+// 越えた瞬間に再マップ（と _SkyThicknessMul の補正）が外れ、画面上の厚みが地上の 1.4 倍 → 50ms 後に 4.5 倍へ
+// 膨らんでいた（ユーザー報告「空中ノーツが近くで急に厚みを増す」）。Tap の手前の面は中心より先に判定線を越えるので、
+// 判定時刻の前後でちょうど目に付く。手前側も同じ式で外挿する（地上の進み具合 pg < 0 をそのまま延長）。
+// 外挿は d0 >= 0.5*_ZJudge まで（空中は手前端フェード 0.9*_ZJudge より十分手前＝もう見えない）。
+// それより手前は値が連続する傾き1の直線にして、訂正2と同じ「極・符号反転」が起きないようにする。
+float MusesRemapDepthExact(float d0, float hL, float theta)
 {
-    if (layerF <= 1e-6 || d0 <= _ZJudge || d0 >= _Far) return d0;
-    float hL = _YCam - layerF * _SkyHeight;
-    float theta = atan2(_SinTheta, _CosTheta);
     float vgj = VAt(_YCam, _ZJudge, theta);
     float vgf = VAt(_YCam, _Far, theta);
-    float pg = (VAt(_YCam, d0, theta) - vgj) / (vgf - vgj); // 構成上 [0,1]
+    float pg = (VAt(_YCam, d0, theta) - vgj) / (vgf - vgj); // 帯の内側で [0,1]、手前側の外挿で負
     float vj = VAt(hL, _ZJudge, theta);
     float vf = VAt(hL, _Far, theta);
-    return DepthFromV(hL, vj + pg * (vf - vj), theta);
+    float v = vj + pg * (vf - vj);
+    float psi = min(theta - atan(v * _TanHalfPhi), radians(89.0));
+    return hL / tan(psi);
+}
+
+// 層ごとの奥行き再マップ（上のコメント参照）。地上・奥側の帯の外は恒等。
+float MusesRemapDepth(float d0, float layerF)
+{
+    if (layerF <= 1e-6 || d0 >= _Far) return d0;
+    float hL = _YCam - layerF * _SkyHeight;
+    float theta = atan2(_SinTheta, _CosTheta);
+    float dLow = 0.5 * _ZJudge;
+    if (d0 >= dLow) return MusesRemapDepthExact(d0, hL, theta);
+    return MusesRemapDepthExact(dLow, hL, theta) + (d0 - dLow);
 }
 
 // レーンの横方向の係数（x = u * _LaneK * zcMix）。層 layerF・奥行き depth での値。

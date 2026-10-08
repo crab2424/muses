@@ -48,6 +48,13 @@ namespace Muses.Gameplay
             TestRiserNotCutByChain();
             TestRiserLateShift();
             TestResultCategoryAndEarlyLate();
+            // note-feel-r3
+            TestSlideStartNeedsEnter();
+            TestSlideStartAllPerfect();
+            TestDualLayerTapTakesOtherPanel();
+            TestDualLayerChainCutsSkyTap();
+            TestHandoffDoesNotTakeDualTap();
+            TestRiserWindowExtend();
 
             Debug.Log(fail == 0
                 ? $"JudgeSmokeTest: ALL PASS ({pass})"
@@ -61,6 +68,17 @@ namespace Muses.Gameplay
         }
 
         private static StageConfig Cfg() => StageConfig.Default();
+
+        /// <summary>note-feel-r3: Slide 始点は枠内更新駆動。始点の位置で OnEnter を1回呼ぶ。</summary>
+        private static void TapSlideStart(Judge judge, Note slide, float at)
+        {
+            var wp = slide.points[0];
+            judge.OnEnter(new EnterEvent
+            {
+                layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground, cell = (int)MathF.Round(wp.cellF), fresh = true,
+                at = at, cellF = wp.cellF + 0.5f, layerF = wp.layerF,
+            }, at);
+        }
 
         private static Note SingleWaypointNote(NoteKind kind, float time, Layer layer, float cell, float width = 2f) => new()
         {
@@ -124,18 +142,21 @@ namespace Muses.Gameplay
             var judge = new Judge(Cfg(), (r, a) => { });
             judge.Prepare(new List<NoteRuntime> { rt });
 
-            // gameplay-feel-r1.md §2: 始点も占有駆動。枠内更新(OnEnter)は不要で、帯の内側に居続ければよい。
+            // note-feel-r3: 始点は枠内更新で叩き、以降は帯の内側に居続ける。
             var contacts = new List<Contact> { new() { cellF = 3f, layerF = 0f } };
             for (float t = 0.9f; t <= 2.2f; t += 0.05f)
+            {
+                if (MathF.Abs(t - 1.0f) < 0.025f) TapSlideStart(judge, slide, t);
                 judge.Update(t, contacts);
+            }
 
-            Check("Slide 押しっぱなし -> 始点+コンボ点2つが全てPERFECT+ (計3)",
+            Check("Slide 始点を叩いて押しっぱなし -> 始点+コンボ点2つが全てPERFECT+ (計3)",
                 judge.Score.perfectPlus == 3 && rt.state == NoteState.Hit);
             Check("ComboPointCount(Slide) = comboTimes+始点 = 3", ChartMath.ComboPointCount(slide) == 3);
         }
 
-        /// <summary>gameplay-feel-r1.md §2.1。前のSlideの終点と次のSlideの始点が同じ位置のとき、
-        /// 指を動かさずに押し続けても次の始点が成立する（旧仕様では枠内更新が無いためMISSだった）。</summary>
+        /// <summary>note-feel-r3（ユーザー判断で gameplay-feel-r1.md §2.1 を撤回）。前のSlideの終点と次のSlideの始点が
+        /// 同じ位置でも、押し続けるだけでは次の始点は取れない（押し直しが必要）。</summary>
         private void TestSlideStartByHoldingFromPreviousSlide()
         {
             Note Hold(float t0, float t1) => new()
@@ -155,10 +176,13 @@ namespace Muses.Gameplay
 
             var contacts = new List<Contact> { new() { cellF = 4f, layerF = 0f } };
             for (float t = 0.9f; t <= 2.2f; t += 0.01f)
+            {
+                if (MathF.Abs(t - 1.0f) < 0.005f) TapSlideStart(judge, rt1.note, t);
                 judge.Update(t, contacts);
+            }
 
-            Check("連続Slide: 押しっぱなしで次の始点も成立 (4点全てPERFECT+)",
-                judge.Score.perfectPlus == 4 && judge.Score.miss == 0);
+            Check("連続Slide: 押しっぱなしでは次の始点はMISS（PERFECT+ 3 / MISS 1）",
+                judge.Score.perfectPlus == 3 && judge.Score.miss == 1);
         }
 
         /// <summary>gameplay-feel-r1.md §1.2。横に速く動くSlideを、指が80ms遅れて追いかけても落ちない。</summary>
@@ -184,6 +208,7 @@ namespace Muses.Gameplay
             for (float t = 0.9f; t <= 1.7f; t += 0.008f)
             {
                 c.cellF = ChartMath.At(slide, t - 0.08f).cellF + 0.5f; // 80ms前の帯の中央
+                if (MathF.Abs(t - 1.0f) < 0.004f) TapSlideStart(judge, slide, t);
                 judge.Update(t, contacts);
             }
 
@@ -209,6 +234,7 @@ namespace Muses.Gameplay
             judge.Prepare(new List<NoteRuntime> { rt });
 
             var contacts = new List<Contact> { new() { cellF = 4f, layerF = 1.8f } }; // 画面上端付近
+            judge.OnEnter(new EnterEvent { layer = Layer.Sky, cell = 4, fresh = true, at = 1.0f, cellF = 4f, layerF = 1.8f }, 1.0f);
             for (float t = 0.9f; t <= 1.7f; t += 0.01f)
                 judge.Update(t, contacts);
 
@@ -234,6 +260,7 @@ namespace Muses.Gameplay
 
             var contacts = new List<Contact> { new() { cellF = 3f, layerF = 0f } };
             float t = 0.9f;
+            TapSlideStart(judge, slide, 1.0f);
             for (; t <= 1.51f; t += 0.01f) judge.Update(t, contacts);
             // この時点で t≈1.51。始点(1.0)とコンボ点(1.5)の2つが確定済みのはず（旧実装では1.6まで待った）
             Check("コンボ点の早期確定: t_p直後に確定", judge.Score.perfectPlus == 2);
@@ -316,10 +343,10 @@ namespace Muses.Gameplay
                 judge.Score.perfectPlus >= 1 && rtRiser.state == NoteState.Hit &&
                 contact.layerHandoffUntil > 1.0f && contact.layerHandoffTo == 1f);
 
-            // gameplay-feel-r1.md §2.3: 後続Slide始点は占有駆動。指の実layerFは0のままでも、
-            // handoff中(〜1.2s)は実効layerFが1とみなされるので始点(1.05)が成立する。
+            // note-feel-r3: 後続Slide始点は枠内更新駆動。Riser 成立時に合成される空中の EnterEvent（判定時刻 1.0）で
+            // 始点(1.05)が −50ms・Ex Tap 扱いの PERFECT+ になる。
             for (float t = 1.01f; t <= 1.15f; t += 0.01f) judge.Update(t, contacts);
-            Check("Riser handoff -> 後続Slide始点が実効layerFの読み替えで成立",
+            Check("Riser handoff -> 後続Slide始点が合成EnterEventで成立",
                 rtSlide.state == NoteState.Active && rtSlide.startResolved && judge.Score.perfectPlus == 2);
         }
 
@@ -426,8 +453,8 @@ namespace Muses.Gameplay
             judge.Prepare(new List<NoteRuntime> { rt });
 
             var c = ContactAt(cfg, 3.5f, 0f);
-            Stroke(judge, cfg, c, 0.88f, 0.04f, 0f, 0.8f);                   // 反応 ≒ 0.92 (−80ms)
-            for (float t = 0.93f; t < 0.98f; t += 0.008f) { MoveTo(cfg, c, 0f, t); judge.Update(t, new List<Contact> { c }); } // 下へ戻す
+            Stroke(judge, cfg, c, 0.84f, 0.04f, 0f, 0.8f);                   // 反応 ≒ 0.865 (−135ms、ext 50 で GOOD)
+            for (float t = 0.89f; t < 0.98f; t += 0.008f) { MoveTo(cfg, c, 0f, t); judge.Update(t, new List<Contact> { c }); } // 下へ戻す
             bool pendingAfterEarly = rt.state == NoteState.Pending;
             Stroke(judge, cfg, c, 0.98f, 0.03f, 0f, 0.8f);                   // 反応 ≒ 1.00
             for (float t = 1.02f; t <= 1.3f; t += 0.008f) judge.Update(t, new List<Contact> { c });
@@ -445,8 +472,8 @@ namespace Muses.Gameplay
             judge.Prepare(new List<NoteRuntime> { rt });
 
             var c = ContactAt(cfg, 3.5f, 0f);
-            Stroke(judge, cfg, c, 0.88f, 0.04f, 0f, 0.8f); // 反応 ≒ 0.92 (−80ms)
-            for (float t = 0.93f; t <= 1.3f; t += 0.008f) { MoveTo(cfg, c, 0.8f, t); judge.Update(t, new List<Contact> { c }); } // 止めたまま
+            Stroke(judge, cfg, c, 0.84f, 0.04f, 0f, 0.8f); // 反応 ≒ 0.865 (−135ms、ext 50 で GOOD)
+            for (float t = 0.89f; t <= 1.3f; t += 0.008f) { MoveTo(cfg, c, 0.8f, t); judge.Update(t, new List<Contact> { c }); } // 止めたまま
 
             Check("Riser 早い反応のみ -> GOOD かつ EARLY",
                 judge.Score.good == 1 && judge.Score.early == 1 && judge.Score.perfectPlus == 0);
@@ -481,7 +508,8 @@ namespace Muses.Gameplay
             Check("Riser 直後に同セルTapがあっても窓が削られない", riser.state == NoteState.Hit && judge.Score.perfectPlus >= 1);
         }
 
-        /// <summary>§4.2。遅い側は riserLateShiftMs(50) ずらす: +70ms は PERFECT+、+110ms は PERFECT(LATE)。</summary>
+        /// <summary>§4.2 + note-feel-r3。遅い側は riserLateShiftMs(50)＋riserWindowExtendMs(50) ずらす:
+        /// +130ms は PERFECT+、+150ms は PERFECT(LATE)。</summary>
         private void TestRiserLateShift()
         {
             var cfg = Cfg();
@@ -498,8 +526,8 @@ namespace Muses.Gameplay
                 return s.perfectPlus == 1 ? JudgeKind.PerfectPlus : s.perfect == 1 && s.late == 1 ? JudgeKind.Perfect
                     : s.good == 1 ? JudgeKind.Good : s.miss == 1 ? JudgeKind.Miss : null;
             }
-            Check("Riser 遅い側延長: +70ms -> PERFECT+", Run(1.07f) == JudgeKind.PerfectPlus);
-            Check("Riser 遅い側延長: +110ms -> PERFECT (LATE)", Run(1.11f) == JudgeKind.Perfect);
+            Check("Riser 遅い側延長: +130ms -> PERFECT+", Run(1.13f) == JudgeKind.PerfectPlus);
+            Check("Riser 遅い側延長: +150ms -> PERFECT (LATE)", Run(1.15f) == JudgeKind.Perfect);
         }
 
         /// <summary>§6/§2。内訳は種別×層で数え、EARLY/LATE は PERFECT/GOOD のみ。</summary>
@@ -519,6 +547,113 @@ namespace Muses.Gameplay
             Check("内訳: Tap空中にPERFECT(EARLY)、Tap地上にPERFECT+",
                 tapSky.perfect == 1 && tapSky.early == 1 && tapGround.perfectPlus == 1 &&
                 tapGround.early + tapGround.late == 0 && s.early == 1 && s.late == 0);
+        }
+
+        // ================= note-feel-r3 =================
+
+        private static Note StillSlide(float t0, float t1, Layer layer = Layer.Ground) => new()
+        {
+            kind = NoteKind.Slide,
+            points = new List<Waypoint>
+            {
+                new() { time = t0, layerF = layer == Layer.Sky ? 1f : 0f, cellF = 3f, width = 2f },
+                new() { time = t1, layerF = layer == Layer.Sky ? 1f : 0f, cellF = 3f, width = 2f },
+            },
+            comboTimes = new List<float> { t1 },
+        };
+
+        /// <summary>Slide 始点は押しっぱなしでは拾わない（枠内更新が無ければ始点は MISS、コンボ点は占有で取れる）。</summary>
+        private void TestSlideStartNeedsEnter()
+        {
+            var rt = new NoteRuntime { note = StillSlide(1.0f, 1.5f) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+            var contacts = new List<Contact> { new() { cellF = 4f, layerF = 0f } };
+            for (float t = 0.8f; t <= 1.7f; t += 0.01f) judge.Update(t, contacts);
+            Check("Slide始点: 押しっぱなしだけでは始点MISS・終点PERFECT+",
+                judge.Score.miss == 1 && judge.Score.perfectPlus == 1);
+        }
+
+        /// <summary>Slide 始点は Ex Tap と同じ: ±100ms 内の枠内更新はすべて PERFECT+、EARLY/LATE は出ない。</summary>
+        private void TestSlideStartAllPerfect()
+        {
+            var rt = new NoteRuntime { note = StillSlide(1.0f, 1.5f) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { rt });
+            judge.Update(0.95f, new List<Contact>());
+            TapSlideStart(judge, rt.note, 1.08f); // +80ms
+            Check("Slide始点: +80ms でも PERFECT+（Ex Tap と同じ）",
+                rt.startResolved && judge.Score.perfectPlus == 1 && judge.Score.late == 0);
+        }
+
+        /// <summary>Riser と重なる地上 Tap は空中パネルの接触でも取れる。</summary>
+        private void TestDualLayerTapTakesOtherPanel()
+        {
+            var tap = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3) };
+            var riser = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { tap, riser });
+            judge.OnEnter(Enter(Layer.Sky, 3, 1.0f), 1.0f);
+            Check("Tap+Riser: 空中パネルの接触で地上Tapが取れる", tap.dualLayer && tap.state == NoteState.Hit);
+
+            var lone = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3) };
+            var judge2 = new Judge(Cfg(), (r, a) => { });
+            judge2.Prepare(new List<NoteRuntime> { lone });
+            judge2.OnEnter(Enter(Layer.Sky, 3, 1.0f), 1.0f);
+            Check("Riser の無い地上Tapは空中パネルでは取れない", !lone.dualLayer && lone.state == NoteState.Pending);
+        }
+
+        /// <summary>両層の Tap は直前の空中 Tap と縦連になり、空中 Tap の遅い側が中点で切られる。</summary>
+        private void TestDualLayerChainCutsSkyTap()
+        {
+            var sky = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 0.9f, Layer.Sky, 3) };
+            var tap = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3) };
+            var riser = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(Cfg(), (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { sky, tap, riser });
+            judge.Update(0.9f, new List<Contact>());
+            judge.OnEnter(Enter(Layer.Sky, 3, 0.96f), 0.96f); // 空中Tapの窓は中点0.95で切れている
+            Check("Tap+Riser: 直前の空中Tapは縦連で切られ、+60msの空中の接触は地上Tapへ",
+                tap.state == NoteState.Hit && sky.state == NoteState.Pending);
+        }
+
+        /// <summary>Riser 成立時の合成イベントでは両層 Tap を取らない（擦るだけで Tap まで取れないように）。</summary>
+        private void TestHandoffDoesNotTakeDualTap()
+        {
+            var cfg = Cfg();
+            var tap = new NoteRuntime { note = SingleWaypointNote(NoteKind.Tap, 1.0f, Layer.Ground, 3) };
+            var riser = new NoteRuntime { note = RiserNote(1.0f) };
+            var judge = new Judge(cfg, (r, a) => { });
+            judge.Prepare(new List<NoteRuntime> { tap, riser });
+            var c = ContactAt(cfg, 3.5f, 0f);
+            Stroke(judge, cfg, c, 0.97f, 0.04f, 0f, 0.8f);
+            for (float t = 1.02f; t <= 1.3f; t += 0.008f) judge.Update(t, new List<Contact> { c });
+            Check("Tap+Riser: 擦るだけなら Riser は成立、Tap は MISS",
+                riser.state == NoteState.Hit && tap.state == NoteState.Missed);
+        }
+
+        /// <summary>Riser の PERFECT+ 窓を ±50ms 広げた: −80ms は PERFECT+、−110ms は PERFECT(EARLY)。</summary>
+        private void TestRiserWindowExtend()
+        {
+            var cfg = Cfg();
+            JudgeKind? Run(float reactAt)
+            {
+                var rt = new NoteRuntime { note = RiserNote(1.0f) };
+                var judge = new Judge(cfg, (r, a) => { });
+                judge.Prepare(new List<NoteRuntime> { rt });
+                var c = ContactAt(cfg, 3.5f, 0f);
+                for (float t = 0.8f; t < reactAt - 0.016f; t += 0.008f) { MoveTo(cfg, c, 0f, t); judge.Update(t, new List<Contact> { c }); }
+                // 2フレームで閾値を超える（反応時刻 ≒ reactAt）
+                MoveTo(cfg, c, 0.3f, reactAt - 0.008f); judge.Update(reactAt - 0.008f, new List<Contact> { c });
+                MoveTo(cfg, c, 0.8f, reactAt); judge.Update(reactAt, new List<Contact> { c });
+                for (float t = reactAt + 0.008f; t <= 1.3f; t += 0.008f) { MoveTo(cfg, c, 0.8f, t); judge.Update(t, new List<Contact> { c }); }
+                var s = judge.Score;
+                return s.perfectPlus == 1 ? JudgeKind.PerfectPlus : s.perfect == 1 && s.early == 1 ? JudgeKind.Perfect
+                    : s.good == 1 ? JudgeKind.Good : s.miss == 1 ? JudgeKind.Miss : null;
+            }
+            Check("Riser 窓拡張: −80ms -> PERFECT+", Run(0.92f) == JudgeKind.PerfectPlus);
+            Check("Riser 窓拡張: −110ms -> PERFECT (EARLY)", Run(0.89f) == JudgeKind.Perfect);
+            Check("Riser 窓拡張: −140ms -> GOOD", Run(0.86f) == JudgeKind.Good);
         }
 
         private void TestSeekSkipsPastNotesWithoutScoring()

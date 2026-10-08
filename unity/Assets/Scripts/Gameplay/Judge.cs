@@ -38,6 +38,9 @@ namespace Muses.Gameplay
     /// gameplay-feel-r2.md（2026-09-28）: 重なり帯の接触は空中 Tap の候補にもなる（1タッチ1ノーツ、§3）、
     /// Riser/Diver を縦連なし・窓内最良・遅い側延長・救済GOOD廃止に作り直し（§4）、
     /// 判定ごとに種別×層の内訳と EARLY/LATE を Score へ記録（§2・§6）、演出に判定点の layerF を渡す（§5）。
+    ///
+    /// note-feel-r3（2026-10-08）: Slide 始点を Ex Tap と同じ枠内更新駆動・窓内全 PERFECT+ に戻した（押しっぱなしでは拾わない）、
+    /// Riser と重なる Tap は両層で取れる（縦連も両層が相手）、Riser の PERFECT+ 窓を ±riserWindowExtendMs 広げた。
     /// </summary>
     public class Judge
     {
@@ -155,11 +158,13 @@ namespace Muses.Gameplay
                     rt.note.kind == NoteKind.Flick || rt.note.kind == NoteKind.Riser)
                     group.Add(rt);
 
+            PrepareDualLayer(group);
+
             for (int i = 0; i < group.Count; i++)
             {
                 var rt = group[i];
                 var wp = rt.note.points[0];
-                var layer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
+                int mask = LayerMask(rt);
                 float t = wp.time;
 
                 float lo = float.NegativeInfinity;
@@ -169,8 +174,7 @@ namespace Muses.Gameplay
                 {
                     var pj = group[j].note.points[0];
                     if (pj.time >= t) continue; // 厳密不等号: 同時刻グループはprev/nextにならない(§6.4)
-                    var pLayer = pj.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                    if (pLayer != layer || !CellOverlap(pj, wp)) continue;
+                    if ((LayerMask(group[j]) & mask) == 0 || !CellOverlap(pj, wp)) continue;
                     lo = (pj.time + t) / 2f;
                     break;
                 }
@@ -178,8 +182,7 @@ namespace Muses.Gameplay
                 {
                     var nj = group[j].note.points[0];
                     if (nj.time <= t) continue;
-                    var nLayer = nj.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-                    if (nLayer != layer || !CellOverlap(nj, wp)) continue;
+                    if ((LayerMask(group[j]) & mask) == 0 || !CellOverlap(nj, wp)) continue;
                     hi = (t + nj.time) / 2f;
                     break;
                 }
@@ -195,6 +198,34 @@ namespace Muses.Gameplay
             }
 
             PrepareExBoost(group);
+        }
+
+        /// <summary>縦連判定で使う層の集合（bit0=地上, bit1=空中）。dualLayer の Tap は両層。</summary>
+        private static int LayerMask(NoteRuntime rt) =>
+            rt.dualLayer ? 3 : rt.note.points[0].layerF > 0.5f ? 2 : 1;
+
+        /// <summary>
+        /// note-feel-r3（2026-10-08）。同時刻・同一層・セル範囲が交差する Riser/Diver の始点に重なる Tap/ExTap を
+        /// dualLayer=true にする（地上・空中どちらのパネルの接触でも取れる）。ロード時に一度だけ計算する。
+        /// </summary>
+        private static void PrepareDualLayer(List<NoteRuntime> group)
+        {
+            foreach (var rt in group) rt.dualLayer = false;
+            foreach (var rt in group)
+            {
+                if (rt.note.kind != NoteKind.Tap && rt.note.kind != NoteKind.ExTap) continue;
+                var wp = rt.note.points[0];
+                bool sky = wp.layerF > 0.5f;
+                foreach (var r in group)
+                {
+                    if (r.note.kind != NoteKind.Riser) continue;
+                    var rp = r.note.points[0];
+                    if (MathF.Abs(rp.time - wp.time) >= 1e-4f) continue;
+                    if ((rp.layerF > 0.5f) != sky || !CellOverlap(rp, wp)) continue;
+                    rt.dualLayer = true;
+                    break;
+                }
+            }
         }
 
         /// <summary>
@@ -303,7 +334,11 @@ namespace Muses.Gameplay
         private static bool Contains(Waypoint wp, Layer layer, int eCell)
         {
             var noteLayer = wp.layerF > 0.5f ? Layer.Sky : Layer.Ground;
-            if (noteLayer != layer) return false;
+            return noteLayer == layer && ContainsCell(wp, eCell);
+        }
+
+        private static bool ContainsCell(Waypoint wp, int eCell)
+        {
             int cell = (int)MathF.Round(wp.cellF);
             int w = Math.Max(1, (int)MathF.Round(wp.width));
             return eCell >= cell && eCell < cell + w;
@@ -313,8 +348,11 @@ namespace Muses.Gameplay
         /// gameplay-feel-r2.md §3。EnterEvent がノーツの候補になるなら、そのノーツの層を返す。
         /// 重なり帯（e.skyReach）の接触は、本来の層（e.layer）に加えて空中ノーツの候補にもなる。
         /// </summary>
-        private static Layer? CandidateLayer(Waypoint wp, EnterEvent e)
+        private static Layer? CandidateLayer(NoteRuntime rt, EnterEvent e)
         {
+            var wp = rt.note.points[0];
+            // note-feel-r3: Riser と重なる Tap は層を問わない（Riser 成立時の合成イベントは除く）
+            if (rt.dualLayer && !e.fromHandoff && ContainsCell(wp, e.cell)) return e.layer;
             if (Contains(wp, e.layer, e.cell)) return e.layer;
             if (e.skyReach && e.layer != Layer.Sky && Contains(wp, Layer.Sky, e.cell)) return Layer.Sky;
             return null;
@@ -334,13 +372,25 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > songTime + rawWin) break; // これ以降は誰の実効窓にも入らない
-                if (!IsContactDriven(n.kind)) continue; // Flick/Riser/SlideはUpdate()側が扱う（§4/§4.6、gameplay-feel-r1.md §2）
-                if (rt.state != NoteState.Pending) continue;
-                if (!chainWindows.TryGetValue(rt, out var win)) continue;
-                if (songTime < win.lo || songTime > win.hi) continue;
                 var wp = n.points[0];
-                var layer = CandidateLayer(wp, e);
-                if (layer == null) continue;
+                Layer? layer;
+                if (n.kind == NoteKind.Slide)
+                {
+                    // note-feel-r3: Slide 始点は Ex Tap と同じ枠内更新駆動（包含は連続座標、窓は素の ±100ms）
+                    if (!SlideStartPending(rt)) continue;
+                    if (MathF.Abs(songTime - wp.time) > rawWin) continue;
+                    if (!SlideStartContains(n, e)) continue;
+                    layer = e.layer;
+                }
+                else
+                {
+                    if (!IsContactDriven(n.kind)) continue; // Flick/RiserはUpdate()側が扱う（§4/§4.6）
+                    if (rt.state != NoteState.Pending) continue;
+                    if (!chainWindows.TryGetValue(rt, out var win)) continue;
+                    if (songTime < win.lo || songTime > win.hi) continue;
+                    layer = CandidateLayer(rt, e);
+                    if (layer == null) continue;
+                }
                 float dt = wp.time - songTime;
                 // gameplay-feel-r2.md §3「1タッチ1ノーツ」: 両層の候補から |dt| 最小を1つ。
                 // |dt| が同じなら、その接触が本来いる層（e.layer）を優先する。
@@ -366,11 +416,17 @@ namespace Muses.Gameplay
                 var rt = rts[i];
                 var n = rt.note;
                 if (ChartMath.NoteStart(n) > bestTime + 1e-4f) break; // 開始時刻順ソート済みなので同時刻グループを過ぎたら終了
-                if (!IsContactDriven(n.kind)) continue;
-                if (rt.state != NoteState.Pending) continue;
                 var wp = n.points[0];
                 if (MathF.Abs(wp.time - bestTime) > 1e-4f) continue;
-                if (!Contains(wp, bestLayer, e.cell)) continue;
+                if (n.kind == NoteKind.Slide)
+                {
+                    if (SlideStartPending(rt) && SlideStartContains(n, e)) ResolveSlideStart(rt, songTime);
+                    continue;
+                }
+                if (!IsContactDriven(n.kind)) continue;
+                if (rt.state != NoteState.Pending) continue;
+                bool dual = rt.dualLayer && !e.fromHandoff;
+                if (dual ? !ContainsCell(wp, e.cell) : !Contains(wp, bestLayer, e.cell)) continue;
 
                 float dt = wp.time - songTime;
                 ResolveHit(rt, wp, dt, songTime);
@@ -379,6 +435,35 @@ namespace Muses.Gameplay
 
         /// <summary>枠内更新(EnterEvent)で駆動されるのは Tap / ExTap だけ（gameplay-feel-r1.md §2 で Slide 始点が外れた）。</summary>
         private static bool IsContactDriven(NoteKind kind) => kind == NoteKind.Tap || kind == NoteKind.ExTap;
+
+        /// <summary>note-feel-r3。Slide 始点がまだ判定されていないか（Update が窓を開く前の Pending も含む）。</summary>
+        private static bool SlideStartPending(NoteRuntime rt) =>
+            !rt.startResolved && (rt.state == NoteState.Pending || rt.state == NoteState.Active);
+
+        /// <summary>note-feel-r3。Slide 始点の包含判定（連続座標、note-spec §0.2）。層は layerF を [0,1] に
+        /// クランプして layerJudgeRadius、横は始点のセル範囲＋slideMarginCells。</summary>
+        private bool SlideStartContains(Note n, EnterEvent e)
+        {
+            var wp = n.points[0];
+            if (MathF.Abs(Math.Clamp(e.layerF, 0f, 1f) - wp.layerF) > cfg.layerJudgeRadius) return false;
+            float m = cfg.slideMarginCells;
+            return e.cellF >= wp.cellF - m && e.cellF <= wp.cellF + wp.width + m;
+        }
+
+        /// <summary>note-feel-r3（2026-10-08、ユーザー判断）。Slide 始点は Ex Tap と同じ: 窓内の枠内更新なら常に PERFECT+。
+        /// 押しっぱなしでは拾わない（gameplay-feel-r1.md §2 の占有駆動を撤回）。</summary>
+        private void ResolveSlideStart(NoteRuntime rt, float songTime)
+        {
+            var n = rt.note;
+            var wp = n.points[0];
+            CommitJudgement(JudgeKind.PerfectPlus, n, wp.layerF, wp.cellF, wp.width, songTime, (songTime - wp.time) * 1000f);
+            if (rt.state == NoteState.Pending)
+            {
+                rt.state = NoteState.Active;
+                rt.nextComboIndex = 0;
+            }
+            rt.startResolved = true;
+        }
 
         /// <summary>note-spec.md §6.1。トレイト（judgeProfile）駆動でティアを決める。理論上ここに来ない場合は null（呼び出し元がchainWindowで既に窓内を保証している）。
         /// exBoosted は §6.4「Ex Tap 巻き込みルール」（rev.7）: 同時刻・セル交差する Ex Tap があれば常に PERFECT+。</summary>
@@ -483,6 +568,7 @@ namespace Muses.Gameplay
         {
             var rts = runtimes;
             float rawWin = JudgeTiers.All[^1].halfWidthMs / 1000f; // GOODの素の半幅(=100ms)。Flick・Slide始点は早い側もこの分だけ窓が開く
+            float lookAhead = rawWin + MathF.Max(0f, cfg.riserWindowExtendMs / 1000f); // Riser は早い側が ext だけ広い
 
             while (cursor < rts.Count &&
                    (rts[cursor].state == NoteState.Hit || rts[cursor].state == NoteState.Missed))
@@ -496,7 +582,8 @@ namespace Muses.Gameplay
                 // note-spec.md §4.3: Flickは早い側もPERFECT+まで拾うため、窓は start-rawWin から開く。
                 // Slide始点（占有駆動、gameplay-feel-r1.md §2）も時間対称なので同じ時刻から見始める。
                 // 開始時刻順ソート済みなので、これより先の全ノーツも同様に未到達。
-                if (start - rawWin > songTime) break;
+                if (start - lookAhead > songTime) break;
+                if (n.kind != NoteKind.Riser && start - rawWin > songTime) continue; // Riser 以外の窓は従来どおり rawWin から
 
                 if (rt.state == NoteState.Pending)
                 {
@@ -572,8 +659,13 @@ namespace Muses.Gameplay
                 if (seg < comboTimes.Count) setSegmentEatable?.Invoke(rt, seg, true);
             }
 
-            if (!rt.startResolved && TryResolveSlidePoint(rt, n, t0, songTime, slideTick: false))
+            // note-feel-r3: 始点は OnEnter（枠内更新）で PERFECT+ 確定。窓（t0+100ms）を過ぎても来なければ MISS。
+            if (!rt.startResolved && songTime > t0 + JudgeTiers.All[^1].halfWidthMs / 1000f)
+            {
+                var wp0 = n.points[0];
+                CommitMiss(n, wp0.layerF, wp0.cellF, wp0.width, songTime);
                 rt.startResolved = true;
+            }
             if (rt.startResolved)
             {
                 while (rt.nextComboIndex < comboTimes.Count &&
@@ -715,7 +807,8 @@ namespace Muses.Gameplay
 
             float t = wp.time;
             float shift = cfg.riserLateShiftMs / 1000f;
-            float w = JudgeTiers.All[^1].halfWidthMs / 1000f;
+            float ext = cfg.riserWindowExtendMs / 1000f;
+            float w = JudgeTiers.All[^1].halfWidthMs / 1000f + ext;
             float lo = t - w, hi = t + w + shift;
 
             // note-spec.md §4.6.2: 絶対layerF 0.5への到達を基準1.0とする倍率。layerTo自体には依らない。
@@ -744,7 +837,7 @@ namespace Muses.Gameplay
             foreach (var (time, id) in rt.riserReactions)
             {
                 if (time < lo || time > hi) continue;
-                float eff = RiserEff(time - t, shift);
+                float eff = RiserEff(time - t, shift, ext);
                 if (!found || MathF.Abs(eff) < MathF.Abs(bestEff)) { bestEff = eff; bestContact = id; found = true; }
             }
 
@@ -752,7 +845,7 @@ namespace Muses.Gameplay
             // 既知の最良のティアがそれで取りうるティア以上なら、待っても判定は変わらない
             // （ずれの大小ではなくティアで比べる。PERFECT+ の反応なら t を過ぎた時点で確定できる）。
             bool final = songTime > hi ||
-                         (found && TierRank(bestEff) <= TierRank(RiserEff(songTime - t, shift)));
+                         (found && TierRank(bestEff) <= TierRank(RiserEff(songTime - t, shift, ext)));
             if (!final) return;
 
             if (!found)
@@ -789,12 +882,19 @@ namespace Muses.Gameplay
                 at = enterTime,
                 cellF = hitContact.cellF,
                 layerF = wp.layerTo,
+                fromHandoff = true,
             }, enterTime);
             hitContact.history.Clear(); // 1回の擦りで成立させられる Riser は1つまで
         }
 
-        /// <summary>gameplay-feel-r2.md §4.2。Riser の実効ずれ（秒）。早い側はそのまま、遅い側は shift を差し引いて 0 で止める。</summary>
-        private static float RiserEff(float diff, float shift) => diff <= 0f ? diff : MathF.Max(0f, diff - shift);
+        /// <summary>gameplay-feel-r2.md §4.2。Riser の実効ずれ（秒）。早い側はそのまま、遅い側は shift を差し引いて 0 で止める。
+        /// note-feel-r3: さらに両側から ext を差し引く（PERFECT+ 窓を ±ext 広げ、下位ティアの境界も同じだけ外側へずらす）。
+        /// 戻り値の絶対値で通常のティア表を引けば、そのまま広げた窓のティアになる。</summary>
+        private static float RiserEff(float diff, float shift, float ext)
+        {
+            float d = diff <= 0f ? diff : MathF.Max(0f, diff - shift);
+            return MathF.Sign(d) * MathF.Max(0f, MathF.Abs(d) - ext);
+        }
 
         /// <summary>ずれ（秒）のティアの順位。0=PERFECT+ / 1=PERFECT / 2=GOOD / 3=窓外。</summary>
         private static int TierRank(float diffSec)
